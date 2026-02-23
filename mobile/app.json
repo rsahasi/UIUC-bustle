@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "UIUC Bus",
+    "slug": "uiuc-bus-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "uiuc-bus",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.uiuc.bus",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Used to show nearby bus stops."
+      }
+    },
+    "android": {
+      "package": "com.uiuc.bus",
+      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-location",
+      ["expo-notifications", { "icon": "", "color": "#13294b", "sounds": [] }]
+    ]
+  }
+}

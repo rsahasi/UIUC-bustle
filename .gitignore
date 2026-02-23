@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Secrets & local config
+.env
+*.env.local
+
+# SQLite databases (seeded at runtime)
+*.db
+
+# macOS
+.DS_Store
+
+# Node / Expo
+node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/.cache/
+
+# Logs
+*.log
+/tmp/
+
+# Claude internal
+.claude/
