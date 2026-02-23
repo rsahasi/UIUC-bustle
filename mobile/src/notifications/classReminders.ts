@@ -1,5 +1,5 @@
 import type { ScheduleClass } from "@/src/api/types";
-import { getClassSummary } from "@/src/storage/classSummaryCache";
+import { getClassSummary, getClassRouteData } from "@/src/storage/classSummaryCache";
 import { getWalkedClassIdsToday } from "@/src/storage/walkedClassToday";
 import { getTodayCode } from "@/src/utils/nextClass";
 import * as Notifications from "expo-notifications";
@@ -61,6 +61,22 @@ export function getTodayClasses(
 }
 
 /**
+ * Format the clock time a user must leave by, given class start and depart offset.
+ * e.g. startTimeLocal="14:30", departInMinutes=15 → "2:15 PM"
+ */
+function leaveByLabel(startTimeLocal: string, departInMinutes: number): string {
+  const [h, m] = startTimeLocal.split(":").map(Number);
+  if (h == null || m == null || Number.isNaN(h) || Number.isNaN(m)) return "";
+  const totalMinutes = h * 60 + m - departInMinutes;
+  const leaveH = Math.floor(((totalMinutes % (24 * 60)) + 24 * 60) % (24 * 60) / 60);
+  const leaveM = ((totalMinutes % 60) + 60) % 60;
+  const period = leaveH < 12 ? "AM" : "PM";
+  const displayH = leaveH % 12 === 0 ? 12 : leaveH % 12;
+  const displayM = leaveM.toString().padStart(2, "0");
+  return `${displayH}:${displayM} ${period}`;
+}
+
+/**
  * Build trigger Date for (class start - offsetMinutes) in local time.
  * Returns null if that time is in the past.
  */
@@ -87,13 +103,15 @@ function triggerDateForClass(
 
 /**
  * Schedule local notifications per class today:
- * 1. At class_time - 20min with route summary embedded.
- * 2. A "Leave now" reminder at class_start - eta - 2min (if eta known from summary).
+ * 1. At class_time - 20min with route summary and leave-by clock time.
+ * 2. A "Leave now" reminder timed from structured route data (no regex).
  * Skips classes the user chose "walking" for today.
  */
 export async function scheduleClassReminders(
   classes: ScheduleClass[],
-  buildingIdToName: Record<string, string> = {}
+  buildingIdToName: Record<string, string> = {},
+  walkingSpeedMps: number = 1.2,
+  bufferMinutes: number = 5
 ): Promise<void> {
   await ensureChannel();
   const now = new Date();
@@ -111,11 +129,31 @@ export async function scheduleClassReminders(
         ? c.destination_name
         : (buildingIdToName[c.building_id] ?? c.building_id);
 
-    // Try to get cached route summary; fall back to generic body
-    const summary = await getClassSummary(c.class_id);
-    const body = summary
-      ? `${buildingName} · ${summary}`
-      : `Next class at ${c.start_time_local} in ${buildingName}. Open for best route options.`;
+    // Try structured route data first, fall back to raw summary, then generic
+    const routeData = await getClassRouteData(c.class_id);
+    let body: string;
+    let departOffset: number | null = null;
+
+    if (routeData) {
+      const leaveBy = leaveByLabel(c.start_time_local, routeData.bestDepartInMinutes);
+      const optionsList = routeData.options.map((o) => o.label).join(" or ");
+      body = leaveBy
+        ? `Leave by ${leaveBy} — ${optionsList}`
+        : `${buildingName} · ${routeData.summary}`;
+      departOffset = routeData.bestDepartInMinutes + bufferMinutes;
+    } else {
+      const summary = await getClassSummary(c.class_id);
+      if (summary) {
+        body = `${buildingName} · ${summary}`;
+        const nums = summary.match(/\d+/g);
+        const etaMinutes = nums ? Math.min(...nums.map(Number)) : null;
+        if (etaMinutes != null && etaMinutes > 0) {
+          departOffset = etaMinutes + 2;
+        }
+      } else {
+        body = `Next class at ${c.start_time_local} in ${buildingName}. Open for best route options.`;
+      }
+    }
 
     await Notifications.scheduleNotificationAsync({
       identifier: `${CLASS_REMINDER_PREFIX}${c.class_id}`,
@@ -127,25 +165,22 @@ export async function scheduleClassReminders(
       trigger: triggerAt as unknown as Notifications.NotificationTriggerInput,
     });
 
-    // Second "Leave now" reminder: parse eta_minutes from summary string
-    // Summary format: "Bus 22 in 4 min OR walk 12 min" — try extracting earliest number
-    if (summary) {
-      const nums = summary.match(/\d+/g);
-      const etaMinutes = nums ? Math.min(...nums.map(Number)) : null;
-      if (etaMinutes != null && etaMinutes > 0) {
-        const departOffset = etaMinutes + 2;
-        const departTrigger = triggerDateForClass(c.start_time_local, departOffset, now);
-        if (departTrigger) {
-          await Notifications.scheduleNotificationAsync({
-            identifier: `${CLASS_DEPART_PREFIX}${c.class_id}`,
-            content: {
-              title: `Leave now for ${c.title}`,
-              body: summary,
-              data: { url: DEEP_LINK_PATH },
-            },
-            trigger: departTrigger as unknown as Notifications.NotificationTriggerInput,
-          });
-        }
+    // Second "Leave now" notification
+    if (departOffset != null && departOffset > 0) {
+      const departTrigger = triggerDateForClass(c.start_time_local, departOffset, now);
+      if (departTrigger) {
+        const departBody = routeData
+          ? `Head out now — ${routeData.options.map((o) => o.label).join(" or ")}`
+          : body;
+        await Notifications.scheduleNotificationAsync({
+          identifier: `${CLASS_DEPART_PREFIX}${c.class_id}`,
+          content: {
+            title: `Leave now for ${c.title}`,
+            body: departBody,
+            data: { url: DEEP_LINK_PATH },
+          },
+          trigger: departTrigger as unknown as Notifications.NotificationTriggerInput,
+        });
       }
     }
   }

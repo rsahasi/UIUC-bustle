@@ -56,24 +56,22 @@ export default function WalkNavScreen() {
   const pedometerSubRef = useRef<{ remove: () => void } | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const arrivedRef = useRef(false);
+  const walkedDistanceMRef = useRef(0);
+  const lastPositionRef = useRef<{ lat: number; lng: number } | null>(null);
 
   const mapRef = useRef<MapView | null>(null);
 
-  // Start timer
+  // Start timer (duration only — calories are derived from walked distance)
   useEffect(() => {
     startTimeRef.current = Date.now();
     timerRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
       setDurationSeconds(elapsed);
-      // Update calories
-      const hours = elapsed / 3600;
-      const met = MET_BY_MODE[modeId] ?? 2.8;
-      setCaloriesBurned(calcCalories(met, WEIGHT_KG, hours));
     }, 1000);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [modeId]);
+  }, []);
 
   // Pedometer
   useEffect(() => {
@@ -112,6 +110,22 @@ export default function WalkNavScreen() {
           setUserLocation({ lat: latitude, lng: longitude });
           const dist = Math.round(haversineMeters(latitude, longitude, destLat, destLng));
           setDistanceM(dist);
+          // Accumulate walked distance (ignore GPS jumps > 100 m)
+          if (lastPositionRef.current) {
+            const delta = haversineMeters(
+              lastPositionRef.current.lat,
+              lastPositionRef.current.lng,
+              latitude,
+              longitude
+            );
+            if (delta < 100) {
+              walkedDistanceMRef.current += delta;
+              const met = MET_BY_MODE[modeId] ?? 2.8;
+              const walkedHours = walkedDistanceMRef.current / speedMps / 3600;
+              setCaloriesBurned(calcCalories(met, WEIGHT_KG, walkedHours));
+            }
+          }
+          lastPositionRef.current = { lat: latitude, lng: longitude };
           if (dist <= ARRIVAL_THRESHOLD_M && !arrivedRef.current) {
             arrivedRef.current = true;
             setArrived(true);
@@ -142,7 +156,7 @@ export default function WalkNavScreen() {
             },
             body: JSON.stringify({
               mode: modeId,
-              distance_m: distanceM ?? 0,
+              distance_m: Math.round(walkedDistanceMRef.current),
               calories: caloriesBurned,
               dest_name: destName,
             }),
@@ -160,7 +174,7 @@ export default function WalkNavScreen() {
     await addActivityEntry({
       date: todayDateString(),
       walkingModeId: modeId,
-      distanceM: distanceM ?? 0,
+      distanceM: Math.round(walkedDistanceMRef.current),
       stepCount,
       durationSeconds,
       caloriesBurned,
@@ -169,7 +183,7 @@ export default function WalkNavScreen() {
     });
     setShowCompletion(false);
     router.back();
-  }, [modeId, distanceM, stepCount, durationSeconds, caloriesBurned, destName, router]);
+  }, [modeId, stepCount, durationSeconds, caloriesBurned, destName, router]);
 
   const onCancel = useCallback(() => {
     locationSubRef.current?.remove();
@@ -263,7 +277,7 @@ export default function WalkNavScreen() {
             <Text style={styles.modalTitle}>You arrived!</Text>
             <Text style={styles.modalDest}>{destName}</Text>
             <View style={styles.modalStats}>
-              <Text style={styles.modalStat}>🚶 {distanceM ?? 0} m</Text>
+              <Text style={styles.modalStat}>🚶 {Math.round(walkedDistanceMRef.current)} m</Text>
               <Text style={styles.modalStat}>⏱ {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
               <Text style={styles.modalStat}>🔥 {caloriesBurned.toFixed(1)} kcal</Text>
               {pedometerAvailable && <Text style={styles.modalStat}>👣 {stepCount} steps</Text>}
