@@ -7,7 +7,8 @@ import type { DepartureItem, RecommendationOption, RecommendationStep, StopInfo 
 import { cancelClassReminder, cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
 import { addFavoriteStop, addFavoritePlace, getAfterLastClassPlaceId, getFavoritePlaces, type SavedPlace } from "@/src/storage/favorites";
 import { getLastKnownHomeData, setLastKnownHomeData } from "@/src/storage/lastKnownHome";
-import { setClassSummary } from "@/src/storage/classSummaryCache";
+import { setClassSummary, setClassRouteData } from "@/src/storage/classSummaryCache";
+import type { ClassRouteData } from "@/src/storage/classSummaryCache";
 import { markClassAsWalkedToday } from "@/src/storage/walkedClassToday";
 import { addRecentSearch, getRecentSearches, type RecentSearch } from "@/src/storage/recentSearches";
 import { log } from "@/src/telemetry/logBuffer";
@@ -49,6 +50,12 @@ function sumWalkingMinutes(steps: RecommendationStep[]): number {
   return steps
     .filter((s) => s.type === "WALK_TO_STOP" || s.type === "WALK_TO_DEST")
     .reduce((acc, s) => acc + (s.duration_minutes ?? 0), 0);
+}
+
+function formatOptionLabel(o: RecommendationOption): string {
+  if (o.type === "WALK") return `Walk (${Math.round(o.eta_minutes)} min)`;
+  const route = o.steps.find((s) => s.route)?.route;
+  return route ? `Bus ${route} (${Math.round(o.eta_minutes)} min)` : `Bus (${Math.round(o.eta_minutes)} min)`;
 }
 
 /** Build a short summary string from recommendation options for notification. */
@@ -234,6 +241,13 @@ export default function HomeScreen() {
             if (recommendationsList.length > 0) {
               const summary = buildRouteSummary(recommendationsList);
               if (summary) await setClassSummary(nextClass.class_id, summary);
+              const routeData: ClassRouteData = {
+                summary,
+                bestDepartInMinutes: Math.min(...recommendationsList.map((o) => o.depart_in_minutes)),
+                etaMinutes: recommendationsList[0]?.eta_minutes ?? 0,
+                options: recommendationsList.map((o) => ({ label: formatOptionLabel(o), departInMinutes: o.depart_in_minutes })),
+              };
+              await setClassRouteData(nextClass.class_id, routeData);
             }
           } catch {
             setRecommendations([]);
@@ -274,9 +288,9 @@ export default function HomeScreen() {
             const buildingsRes = await fetchBuildings(apiBaseUrl, { signal, apiKey: apiKey ?? undefined }).catch(() => ({ buildings: [] }));
             const buildingMap: Record<string, string> = {};
             for (const b of buildingsRes.buildings ?? []) buildingMap[b.building_id] = b.name;
-            await scheduleClassReminders(classesData.classes ?? [], buildingMap);
+            await scheduleClassReminders(classesData.classes ?? [], buildingMap, walkingSpeedMps, bufferMinutes);
           } catch (_) {
-            await scheduleClassReminders(classesData.classes ?? []);
+            await scheduleClassReminders(classesData.classes ?? [], {}, walkingSpeedMps, bufferMinutes);
           }
         }
 
