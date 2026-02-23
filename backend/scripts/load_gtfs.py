@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 
-GTFS_URL = "https://developer.cumtd.com/files/google_transit.zip"
+GTFS_URL = "https://developer.cumtd.com/gtfs/google_transit.zip"
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "gtfs.db"
 
 
@@ -45,6 +45,13 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_stop_times_stop ON gtfs_stop_times(stop_id);
         CREATE INDEX IF NOT EXISTS idx_stop_times_trip ON gtfs_stop_times(trip_id);
         CREATE INDEX IF NOT EXISTS idx_shapes_id ON gtfs_shapes(shape_id);
+        CREATE TABLE IF NOT EXISTS gtfs_stops (
+            stop_id TEXT PRIMARY KEY,
+            stop_name TEXT,
+            stop_lat REAL,
+            stop_lon REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_stops_id ON gtfs_stops(stop_id);
         """
     )
     conn.commit()
@@ -74,15 +81,19 @@ def load_gtfs() -> None:
             shapes = load_csv(zf, "shapes.txt")
         except KeyError:
             shapes = []
+        try:
+            stops = load_csv(zf, "stops.txt")
+        except KeyError:
+            stops = []
 
-    print(f"routes={len(routes)} trips={len(trips)} stop_times={len(stop_times)} shapes={len(shapes)}")
+    print(f"routes={len(routes)} trips={len(trips)} stop_times={len(stop_times)} shapes={len(shapes)} stops={len(stops)}")
 
     with sqlite3.connect(DB_PATH) as conn:
         init_db(conn)
         # Clear old data
         conn.executescript(
             "DELETE FROM gtfs_routes; DELETE FROM gtfs_trips; "
-            "DELETE FROM gtfs_stop_times; DELETE FROM gtfs_shapes;"
+            "DELETE FROM gtfs_stop_times; DELETE FROM gtfs_shapes; DELETE FROM gtfs_stops;"
         )
 
         conn.executemany(
@@ -135,6 +146,21 @@ def load_gtfs() -> None:
             conn.executemany(
                 "INSERT INTO gtfs_shapes (shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence) VALUES (?, ?, ?, ?)",
                 shape_rows[i : i + CHUNK],
+            )
+            conn.commit()
+
+        if stops:
+            conn.executemany(
+                "INSERT OR REPLACE INTO gtfs_stops (stop_id, stop_name, stop_lat, stop_lon) VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        s.get("stop_id", ""),
+                        s.get("stop_name", ""),
+                        float(s.get("stop_lat", 0) or 0),
+                        float(s.get("stop_lon", 0) or 0),
+                    )
+                    for s in stops
+                ],
             )
             conn.commit()
 

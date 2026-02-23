@@ -80,6 +80,9 @@ export interface RecommendationStep {
   building_lng?: number;
   route?: string;
   headsign?: string;
+  alighting_stop_id?: string | null;
+  alighting_stop_lat?: number | null;
+  alighting_stop_lng?: number | null;
 }
 
 export interface RecommendationOption {

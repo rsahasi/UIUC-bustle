@@ -279,6 +279,51 @@ export async function fetchBuildingSearch(
   return safeJson(res, "/buildings/search", { buildings: [] });
 }
 
+/** GET /directions/walk - real walking route via OSRM proxy */
+export async function fetchWalkingRoute(
+  baseUrl: string,
+  origLat: number,
+  origLng: number,
+  destLat: number,
+  destLng: number,
+  options?: RequestOptions
+): Promise<{ coords: [number, number][] }> {
+  const base = baseUrl.replace(/\/$/, "");
+  const url = `${base}/directions/walk?orig_lat=${origLat}&orig_lng=${origLng}&dest_lat=${destLat}&dest_lng=${destLng}`;
+  const res = await fetchWithRetry(url, "/directions/walk", options);
+  if (!res.ok) return { coords: [] };
+  return safeJson(res, "/directions/walk", { coords: [] });
+}
+
+export interface BusStop {
+  stop_id: string;
+  stop_name: string;
+  lat: number;
+  lng: number;
+  sequence: number;
+}
+
+/** GET /gtfs/route-stops - bus trip shape + stops between two stops */
+export async function fetchBusRouteStops(
+  baseUrl: string,
+  routeId: string,
+  fromStopId: string,
+  toStopId: string,
+  afterTime: string,
+  options?: RequestOptions
+): Promise<{ trip_id: string | null; stops: BusStop[]; shape_points: [number, number][] }> {
+  const base = baseUrl.replace(/\/$/, "");
+  const params = new URLSearchParams({
+    route_id: routeId,
+    from_stop_id: fromStopId,
+    to_stop_id: toStopId,
+    after_time: afterTime,
+  });
+  const res = await fetchWithRetry(`${base}/gtfs/route-stops?${params}`, "/gtfs/route-stops", options);
+  if (!res.ok) return { trip_id: null, stops: [], shape_points: [] };
+  return safeJson(res, "/gtfs/route-stops", { trip_id: null, stops: [], shape_points: [] });
+}
+
 /** GET /geocode?q=... - resolve place/address to lat, lng, display_name */
 export interface GeocodeResult {
   lat: number;

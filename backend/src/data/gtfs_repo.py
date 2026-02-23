@@ -72,7 +72,9 @@ def find_connecting_trips(
     after_min = _time_to_minutes(after_time) or 0
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        # Find trips with both stops, origin before dest
+        # Pad after_time to HH:MM:SS for string comparison (GTFS times are zero-padded)
+        padded_after = after_time.strip() if after_time.strip() else "00:00:00"
+        # Find trips with both stops, origin before dest, departing at or after after_time
         cur = conn.execute(
             """
             SELECT
@@ -86,11 +88,11 @@ def find_connecting_trips(
             FROM gtfs_stop_times o
             JOIN gtfs_stop_times d ON d.trip_id = o.trip_id AND d.stop_id = ? AND d.stop_sequence > o.stop_sequence
             JOIN gtfs_trips t ON t.trip_id = o.trip_id
-            WHERE o.stop_id = ?
+            WHERE o.stop_id = ? AND o.departure_time >= ?
             ORDER BY o.departure_time
             LIMIT 10
             """,
-            (dest_stop_id, origin_stop_id),
+            (dest_stop_id, origin_stop_id, padded_after),
         )
         results = []
         for r in cur.fetchall():
@@ -108,6 +110,58 @@ def find_connecting_trips(
                 "travel_minutes": travel_minutes,
             })
         return results
+
+
+def get_stops_for_trip_between(
+    db_path: str | Path,
+    trip_id: str,
+    from_stop_id: str,
+    to_stop_id: str,
+) -> list[dict]:
+    """
+    Return stops (inclusive) between from_stop_id and to_stop_id for a trip.
+    Each entry: { stop_id, stop_name, lat, lng, sequence, arrival_time }.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        # Get sequence numbers for from/to stops
+        cur = conn.execute(
+            "SELECT stop_id, stop_sequence FROM gtfs_stop_times WHERE trip_id = ? AND stop_id IN (?, ?)",
+            (trip_id, from_stop_id, to_stop_id),
+        )
+        rows = cur.fetchall()
+        seq_map: dict[str, int] = {}
+        for r in rows:
+            seq_map[r["stop_id"]] = r["stop_sequence"]
+        from_seq = seq_map.get(from_stop_id)
+        to_seq = seq_map.get(to_stop_id)
+        if from_seq is None or to_seq is None:
+            return []
+        cur2 = conn.execute(
+            """
+            SELECT st.stop_id, st.stop_sequence, st.arrival_time,
+                   gs.stop_name, gs.stop_lat, gs.stop_lon
+            FROM gtfs_stop_times st
+            LEFT JOIN gtfs_stops gs ON gs.stop_id = st.stop_id
+            WHERE st.trip_id = ? AND st.stop_sequence BETWEEN ? AND ?
+            ORDER BY st.stop_sequence
+            """,
+            (trip_id, from_seq, to_seq),
+        )
+        return [
+            {
+                "stop_id": r["stop_id"],
+                "stop_name": r["stop_name"] or r["stop_id"],
+                "lat": r["stop_lat"] or 0.0,
+                "lng": r["stop_lon"] or 0.0,
+                "sequence": r["stop_sequence"],
+                "arrival_time": r["arrival_time"] or "",
+            }
+            for r in cur2.fetchall()
+        ]
 
 
 def get_shape_for_trip(

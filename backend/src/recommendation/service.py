@@ -146,7 +146,10 @@ def compute_recommendations(
                 "steps": [
                     {"type": "WALK_TO_STOP", "stop_id": stop_id, "stop_name": stop_name, "duration_minutes": round(walk_to_stop_min, 1), "stop_lat": stop_lat, "stop_lng": stop_lng},
                     {"type": "WAIT", "stop_id": stop_id, "duration_minutes": round(wait_min, 1)},
-                    {"type": "RIDE", "route": route, "headsign": headsign or "", "stop_id": stop_id, "duration_minutes": round(ride_min, 1)},
+                    {"type": "RIDE", "route": route, "headsign": headsign or "", "stop_id": stop_id, "duration_minutes": round(ride_min, 1),
+                     "alighting_stop_id": exit_stop[0] if exit_stop else None,
+                     "alighting_stop_lat": exit_stop[2] if exit_stop else None,
+                     "alighting_stop_lng": exit_stop[3] if exit_stop else None},
                     {"type": "WALK_TO_DEST", "building_id": destination_building_id, "duration_minutes": round(walk_from_stop_min, 1), "building_lat": b_lat, "building_lng": b_lng},
                 ],
             }))

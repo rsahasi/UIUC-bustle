@@ -33,6 +33,7 @@ settings = get_settings()
 BACKEND_ROOT = Path(__file__).resolve().parent
 STOPS_DB = BACKEND_ROOT / settings.stops_db_path
 APP_DB = BACKEND_ROOT / settings.app_db_path
+GTFS_DB = BACKEND_ROOT / "data" / "gtfs.db"
 
 # Structured logging: include module and level; handlers can add JSON later
 logging.basicConfig(
@@ -486,6 +487,79 @@ def post_recommendation(request: Request, body: RecommendationRequest):
             pass  # AI ranking failure is non-fatal
 
     return RecommendationResponse(options=option_objects)
+
+
+# --- Walking directions proxy ---
+
+# Cache: (rounded orig/dest) → (result, expires_at)
+_walk_directions_cache: dict[str, tuple[dict, float]] = {}
+WALK_DIRECTIONS_CACHE_TTL = 300  # 5 minutes
+
+
+@app.get("/directions/walk")
+async def directions_walk(request: Request, orig_lat: float, orig_lng: float, dest_lat: float, dest_lng: float):
+    """Proxy walking directions via OSRM. Returns { coords: [[lat, lng], ...] }."""
+    import httpx
+
+    def _round5(v: float) -> float:
+        return round(v, 5)
+
+    cache_key = f"{_round5(orig_lat)},{_round5(orig_lng)}-{_round5(dest_lat)},{_round5(dest_lng)}"
+    now = time.time()
+    if cache_key in _walk_directions_cache:
+        result, expires_at = _walk_directions_cache[cache_key]
+        if now < expires_at:
+            return result
+
+    fallback = {"coords": [[orig_lat, orig_lng], [dest_lat, dest_lng]]}
+    try:
+        osrm_url = (
+            f"http://router.project-osrm.org/route/v1/foot/"
+            f"{orig_lng},{orig_lat};{dest_lng},{dest_lat}"
+            f"?geometries=geojson&overview=full"
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(osrm_url)
+            r.raise_for_status()
+            data = r.json()
+        coordinates = data["routes"][0]["geometry"]["coordinates"]  # [[lng, lat], ...]
+        coords = [[c[1], c[0]] for c in coordinates]  # reorder to [lat, lng]
+        result = {"coords": coords}
+    except Exception as e:
+        logger.warning("telemetry osrm_error error=%s", str(e))
+        result = fallback
+
+    _walk_directions_cache[cache_key] = (result, now + WALK_DIRECTIONS_CACHE_TTL)
+    return result
+
+
+# --- GTFS bus shape + stops ---
+
+
+@app.get("/gtfs/route-stops")
+def gtfs_route_stops(request: Request, route_id: str = "", from_stop_id: str = "", to_stop_id: str = "", after_time: str = ""):
+    """Return bus trip shape and stops between two stops. Gracefully returns empty if GTFS DB missing."""
+    from src.data.gtfs_repo import find_connecting_trips, get_shape_for_trip, get_stops_for_trip_between
+
+    empty = {"trip_id": None, "stops": [], "shape_points": []}
+    if not from_stop_id or not to_stop_id:
+        return empty
+    try:
+        trips = find_connecting_trips(GTFS_DB, from_stop_id, to_stop_id, after_time or "00:00:00")
+        if not trips:
+            return empty
+        trip = trips[0]
+        trip_id = trip["trip_id"]
+        stops = get_stops_for_trip_between(GTFS_DB, trip_id, from_stop_id, to_stop_id)
+        shape = get_shape_for_trip(GTFS_DB, trip_id)
+        return {
+            "trip_id": trip_id,
+            "stops": stops,
+            "shape_points": [[lat, lng] for lat, lng in shape],
+        }
+    except Exception as e:
+        logger.warning("telemetry gtfs_route_stops_error error=%s", str(e))
+        return empty
 
 
 # --- AI endpoints ---

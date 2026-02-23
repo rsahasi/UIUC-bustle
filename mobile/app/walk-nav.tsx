@@ -1,3 +1,5 @@
+import { fetchBusRouteStops, fetchVehicles, fetchWalkingRoute } from "@/src/api/client";
+import type { BusStop, VehicleInfo } from "@/src/api/client";
 import { getMpsForMode, WALKING_MODES } from "@/src/constants/walkingMode";
 import type { WalkingModeId } from "@/src/constants/walkingMode";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
@@ -23,6 +25,8 @@ import { theme } from "@/src/constants/theme";
 const WEIGHT_KG = 70; // default weight; could come from settings later
 const ARRIVAL_THRESHOLD_M = 30;
 
+type NavPhase = "walking" | "bus";
+
 export default function WalkNavScreen() {
   const router = useRouter();
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
@@ -31,14 +35,33 @@ export default function WalkNavScreen() {
     dest_lng: string;
     dest_name: string;
     walking_mode_id: string;
+    route_id: string;
+    stop_id: string;
+    alighting_stop_id: string;
+    alighting_lat: string;
+    alighting_lng: string;
   }>();
 
   const destLat = parseFloat(params.dest_lat ?? "0");
   const destLng = parseFloat(params.dest_lng ?? "0");
   const destName = params.dest_name ?? "Destination";
   const modeId = (params.walking_mode_id ?? "walk") as WalkingModeId;
+  const routeId = params.route_id ?? "";
+  const boardingStopId = params.stop_id ?? "";
+  const alightingStopId = params.alighting_stop_id ?? "";
+  const alightingLat = parseFloat(params.alighting_lat ?? "0");
+  const alightingLng = parseFloat(params.alighting_lng ?? "0");
+  // Bus mode: we have a route and an alighting stop
+  const isBusMode = routeId.length > 0 && alightingStopId.length > 0 && alightingLat !== 0;
+
   const modeLabel = WALKING_MODES.find((m) => m.id === modeId)?.label ?? "Walk";
   const speedMps = getMpsForMode(modeId);
+
+  const [navPhase, setNavPhase] = useState<NavPhase>("walking");
+  const [walkingRouteCoords, setWalkingRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [busStops, setBusStops] = useState<BusStop[]>([]);
+  const [busShapeCoords, setBusShapeCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [alightingStopName, setAlightingStopName] = useState<string>("");
 
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [distanceM, setDistanceM] = useState<number | null>(null);
@@ -50,18 +73,29 @@ export default function WalkNavScreen() {
   const [locationError, setLocationError] = useState<string | null>(null);
   const [pedometerAvailable, setPedometerAvailable] = useState(false);
   const [encouragement, setEncouragement] = useState<string | null>(null);
+  const [busVehicles, setBusVehicles] = useState<VehicleInfo[]>([]);
 
   const startTimeRef = useRef<number>(Date.now());
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const pedometerSubRef = useRef<{ remove: () => void } | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const vehiclePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const arrivedRef = useRef(false);
   const walkedDistanceMRef = useRef(0);
   const lastPositionRef = useRef<{ lat: number; lng: number } | null>(null);
+  const walkingRouteFetchedRef = useRef(false);
+  const navPhaseRef = useRef<NavPhase>("walking");
+  // Track current target for arrival detection
+  const currentTargetRef = useRef<{ lat: number; lng: number }>({ lat: destLat, lng: destLng });
 
   const mapRef = useRef<MapView | null>(null);
 
-  // Start timer (duration only — calories are derived from walked distance)
+  // Keep navPhaseRef in sync
+  useEffect(() => {
+    navPhaseRef.current = navPhase;
+  }, [navPhase]);
+
+  // Start timer
   useEffect(() => {
     startTimeRef.current = Date.now();
     timerRef.current = setInterval(() => {
@@ -72,6 +106,22 @@ export default function WalkNavScreen() {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
+
+  // Live bus vehicle poll
+  useEffect(() => {
+    if (!routeId) return;
+    const poll = async () => {
+      try {
+        const res = await fetchVehicles(apiBaseUrl, routeId, { apiKey: apiKey ?? undefined });
+        setBusVehicles(res.vehicles ?? []);
+      } catch {}
+    };
+    poll();
+    vehiclePollRef.current = setInterval(poll, 15_000);
+    return () => {
+      if (vehiclePollRef.current) clearInterval(vehiclePollRef.current);
+    };
+  }, [routeId, apiBaseUrl, apiKey]);
 
   // Pedometer
   useEffect(() => {
@@ -88,6 +138,48 @@ export default function WalkNavScreen() {
       pedometerSubRef.current?.remove();
     };
   }, []);
+
+  // Fetch walking route on first GPS fix
+  const fetchWalkRoute = useCallback(async (userLat: number, userLng: number) => {
+    if (walkingRouteFetchedRef.current) return;
+    walkingRouteFetchedRef.current = true;
+    try {
+      const res = await fetchWalkingRoute(
+        apiBaseUrl,
+        userLat, userLng,
+        destLat, destLng,
+        { apiKey: apiKey ?? undefined }
+      );
+      if (res.coords.length > 1) {
+        setWalkingRouteCoords(res.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
+      }
+    } catch {}
+  }, [apiBaseUrl, apiKey, destLat, destLng]);
+
+  // Fetch bus route data when switching to bus phase
+  const fetchBusData = useCallback(async () => {
+    if (!isBusMode || !boardingStopId || !alightingStopId) return;
+    try {
+      const now = new Date();
+      const afterTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:00`;
+      const res = await fetchBusRouteStops(
+        apiBaseUrl,
+        routeId,
+        boardingStopId,
+        alightingStopId,
+        afterTime,
+        { apiKey: apiKey ?? undefined }
+      );
+      if (res.stops.length > 0) {
+        setBusStops(res.stops);
+        const alightStop = res.stops.find((s) => s.stop_id === alightingStopId);
+        if (alightStop) setAlightingStopName(alightStop.stop_name);
+      }
+      if (res.shape_points.length > 1) {
+        setBusShapeCoords(res.shape_points.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
+      }
+    } catch {}
+  }, [apiBaseUrl, apiKey, routeId, boardingStopId, alightingStopId, isBusMode]);
 
   // Location tracking
   useEffect(() => {
@@ -108,8 +200,14 @@ export default function WalkNavScreen() {
           if (!mounted) return;
           const { latitude, longitude } = loc.coords;
           setUserLocation({ lat: latitude, lng: longitude });
-          const dist = Math.round(haversineMeters(latitude, longitude, destLat, destLng));
+
+          // Fetch walking route on first fix
+          fetchWalkRoute(latitude, longitude);
+
+          const target = currentTargetRef.current;
+          const dist = Math.round(haversineMeters(latitude, longitude, target.lat, target.lng));
           setDistanceM(dist);
+
           // Accumulate walked distance (ignore GPS jumps > 100 m)
           if (lastPositionRef.current) {
             const delta = haversineMeters(
@@ -126,9 +224,21 @@ export default function WalkNavScreen() {
             }
           }
           lastPositionRef.current = { lat: latitude, lng: longitude };
+
           if (dist <= ARRIVAL_THRESHOLD_M && !arrivedRef.current) {
-            arrivedRef.current = true;
-            setArrived(true);
+            const phase = navPhaseRef.current;
+            if (isBusMode && phase === "walking") {
+              // Arrived at boarding stop — switch to bus phase
+              arrivedRef.current = false; // reset so we can detect alighting stop arrival
+              setNavPhase("bus");
+              currentTargetRef.current = { lat: alightingLat, lng: alightingLng };
+              setDistanceM(null);
+              fetchBusData();
+            } else {
+              // Pure walk arrival OR arrived at alighting stop
+              arrivedRef.current = true;
+              setArrived(true);
+            }
           }
         }
       );
@@ -137,14 +247,13 @@ export default function WalkNavScreen() {
       mounted = false;
       locationSubRef.current?.remove();
     };
-  }, [destLat, destLng]);
+  }, [destLat, destLng, isBusMode, alightingLat, alightingLng, fetchWalkRoute, fetchBusData, modeId, speedMps]);
 
   // Show completion modal on arrival + fetch encouragement
   useEffect(() => {
     if (arrived) {
       if (timerRef.current) clearInterval(timerRef.current);
       setShowCompletion(true);
-      // Fetch AI encouragement
       (async () => {
         try {
           const base = apiBaseUrl.replace(/\/$/, "");
@@ -168,7 +277,7 @@ export default function WalkNavScreen() {
         } catch {}
       })();
     }
-  }, [arrived, apiBaseUrl, apiKey, modeId, distanceM, caloriesBurned, destName]);
+  }, [arrived, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
 
   const finishWalk = useCallback(async () => {
     await addActivityEntry({
@@ -189,13 +298,15 @@ export default function WalkNavScreen() {
     locationSubRef.current?.remove();
     pedometerSubRef.current?.remove();
     if (timerRef.current) clearInterval(timerRef.current);
+    if (vehiclePollRef.current) clearInterval(vehiclePollRef.current);
     router.back();
   }, [router]);
 
+  const target = currentTargetRef.current;
   const etaSeconds = distanceM != null && speedMps > 0 ? Math.round(distanceM / speedMps) : null;
   const etaMinutes = etaSeconds != null ? Math.ceil(etaSeconds / 60) : null;
 
-  const mapCenter = userLocation ?? { lat: destLat, lng: destLng };
+  const mapCenter = userLocation ?? { lat: target.lat, lng: target.lng };
 
   return (
     <View style={styles.container}>
@@ -212,12 +323,25 @@ export default function WalkNavScreen() {
           }}
           showsUserLocation
         >
+          {/* Destination marker (boarding stop in walking phase, alighting stop in bus phase) */}
           <Marker
-            coordinate={{ latitude: destLat, longitude: destLng }}
-            title={destName}
+            coordinate={navPhase === "bus"
+              ? { latitude: alightingLat, longitude: alightingLng }
+              : { latitude: destLat, longitude: destLng }
+            }
+            title={navPhase === "bus" ? (alightingStopName || "Alighting stop") : destName}
             pinColor={theme.colors.secondary}
           />
-          {userLocation && (
+
+          {/* Walking phase: fetched OSRM route or straight-line fallback */}
+          {navPhase === "walking" && walkingRouteCoords.length > 1 && (
+            <Polyline
+              coordinates={walkingRouteCoords}
+              strokeColor={theme.colors.primary}
+              strokeWidth={3}
+            />
+          )}
+          {navPhase === "walking" && walkingRouteCoords.length <= 1 && userLocation && (
             <Polyline
               coordinates={[
                 { latitude: userLocation.lat, longitude: userLocation.lng },
@@ -227,37 +351,112 @@ export default function WalkNavScreen() {
               strokeWidth={3}
             />
           )}
+
+          {/* Bus phase: route shape */}
+          {navPhase === "bus" && busShapeCoords.length > 1 && (
+            <Polyline
+              coordinates={busShapeCoords}
+              strokeColor={theme.colors.secondary}
+              strokeWidth={4}
+            />
+          )}
+
+          {/* Bus phase: stop markers */}
+          {navPhase === "bus" && busStops.map((s) => (
+            <Marker
+              key={s.stop_id}
+              coordinate={{ latitude: s.lat, longitude: s.lng }}
+              title={s.stop_name}
+              pinColor={s.stop_id === alightingStopId ? "#c41e3a" : "#13294b"}
+            />
+          ))}
+
+          {/* Live bus vehicles */}
+          {busVehicles.map((v) => (
+            <Marker
+              key={`bus-${v.vehicle_id}`}
+              coordinate={{ latitude: v.lat, longitude: v.lng }}
+              title={`Bus ${v.route_id}`}
+              description={v.headsign || undefined}
+              pinColor="#e35205"
+            />
+          ))}
         </MapView>
+      )}
+
+      {/* Board Bus banner (bus mode, walking phase) */}
+      {isBusMode && navPhase === "walking" && (
+        <View style={styles.boardBusBanner}>
+          <Text style={styles.boardBusText}>Walk to stop · Board Bus {routeId}</Text>
+        </View>
+      )}
+
+      {/* On Bus banner (bus phase) */}
+      {navPhase === "bus" && (
+        <View style={styles.onBusBanner}>
+          <Text style={styles.onBusText}>
+            On Bus {routeId} → alight at {alightingStopName || "destination stop"}
+          </Text>
+        </View>
       )}
 
       {/* HUD overlay */}
       <View style={styles.hud}>
-        <View style={styles.hudRow}>
-          <View style={styles.hudCell}>
-            <Text style={styles.hudLabel}>Distance</Text>
-            <Text style={styles.hudValue}>
-              {distanceM != null ? `${distanceM} m` : "—"}
-            </Text>
-          </View>
-          <View style={styles.hudCell}>
-            <Text style={styles.hudLabel}>ETA</Text>
-            <Text style={styles.hudValue}>
-              {etaMinutes != null ? `${etaMinutes} min` : "—"}
-            </Text>
-          </View>
-          <View style={styles.hudCell}>
-            <Text style={styles.hudLabel}>Calories</Text>
-            <Text style={styles.hudValue}>{caloriesBurned.toFixed(1)}</Text>
-          </View>
-          {pedometerAvailable && (
-            <View style={styles.hudCell}>
-              <Text style={styles.hudLabel}>Steps</Text>
-              <Text style={styles.hudValue}>{stepCount}</Text>
+        {navPhase === "walking" ? (
+          <>
+            <View style={styles.hudRow}>
+              <View style={styles.hudCell}>
+                <Text style={styles.hudLabel}>Distance</Text>
+                <Text style={styles.hudValue}>
+                  {distanceM != null ? `${distanceM} m` : "—"}
+                </Text>
+              </View>
+              <View style={styles.hudCell}>
+                <Text style={styles.hudLabel}>ETA</Text>
+                <Text style={styles.hudValue}>
+                  {etaMinutes != null ? `${etaMinutes} min` : "—"}
+                </Text>
+              </View>
+              <View style={styles.hudCell}>
+                <Text style={styles.hudLabel}>Calories</Text>
+                <Text style={styles.hudValue}>{caloriesBurned.toFixed(1)}</Text>
+              </View>
+              {pedometerAvailable && (
+                <View style={styles.hudCell}>
+                  <Text style={styles.hudLabel}>Steps</Text>
+                  <Text style={styles.hudValue}>{stepCount}</Text>
+                </View>
+              )}
             </View>
-          )}
-        </View>
-        <Text style={styles.hudMode}>{modeLabel} mode · {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
-        <Text style={styles.hudDest} numberOfLines={1}>→ {destName}</Text>
+            <Text style={styles.hudMode}>{modeLabel} mode · {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
+            <Text style={styles.hudDest} numberOfLines={1}>→ {destName}</Text>
+          </>
+        ) : (
+          <>
+            <View style={styles.hudRow}>
+              <View style={styles.hudCell}>
+                <Text style={styles.hudLabel}>Dist to stop</Text>
+                <Text style={styles.hudValue}>
+                  {distanceM != null ? `${distanceM} m` : "—"}
+                </Text>
+              </View>
+              <View style={styles.hudCell}>
+                <Text style={styles.hudLabel}>Calories</Text>
+                <Text style={styles.hudValue}>{caloriesBurned.toFixed(1)}</Text>
+              </View>
+              {pedometerAvailable && (
+                <View style={styles.hudCell}>
+                  <Text style={styles.hudLabel}>Steps</Text>
+                  <Text style={styles.hudValue}>{stepCount}</Text>
+                </View>
+              )}
+            </View>
+            <Text style={styles.hudMode}>Bus {routeId} · {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
+            <Text style={styles.hudDest} numberOfLines={1}>
+              Alight at {alightingStopName || alightingStopId || "destination"}
+            </Text>
+          </>
+        )}
       </View>
 
       {locationError && (
@@ -298,6 +497,26 @@ export default function WalkNavScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
+  boardBusBanner: {
+    position: "absolute",
+    top: 48,
+    left: 16,
+    right: 120,
+    backgroundColor: "rgba(19,41,75,0.88)",
+    padding: 10,
+    borderRadius: 8,
+  },
+  boardBusText: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  onBusBanner: {
+    position: "absolute",
+    top: 48,
+    left: 16,
+    right: 120,
+    backgroundColor: "rgba(227,82,5,0.92)",
+    padding: 10,
+    borderRadius: 8,
+  },
+  onBusText: { color: "#fff", fontSize: 13, fontWeight: "600" },
   hud: {
     position: "absolute",
     bottom: 0,

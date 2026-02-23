@@ -9,6 +9,7 @@ import { addFavoriteStop, addFavoritePlace, getAfterLastClassPlaceId, getFavorit
 import { getLastKnownHomeData, setLastKnownHomeData } from "@/src/storage/lastKnownHome";
 import { setClassSummary, setClassRouteData } from "@/src/storage/classSummaryCache";
 import type { ClassRouteData } from "@/src/storage/classSummaryCache";
+import { buildRouteSummary, formatOptionLabel } from "@/src/utils/routeFormatting";
 import { markClassAsWalkedToday } from "@/src/storage/walkedClassToday";
 import { addRecentSearch, getRecentSearches, type RecentSearch } from "@/src/storage/recentSearches";
 import { log } from "@/src/telemetry/logBuffer";
@@ -50,26 +51,6 @@ function sumWalkingMinutes(steps: RecommendationStep[]): number {
   return steps
     .filter((s) => s.type === "WALK_TO_STOP" || s.type === "WALK_TO_DEST")
     .reduce((acc, s) => acc + (s.duration_minutes ?? 0), 0);
-}
-
-function formatOptionLabel(o: RecommendationOption): string {
-  if (o.type === "WALK") return `Walk (${Math.round(o.eta_minutes)} min)`;
-  const route = o.steps.find((s) => s.route)?.route;
-  return route ? `Bus ${route} (${Math.round(o.eta_minutes)} min)` : `Bus (${Math.round(o.eta_minutes)} min)`;
-}
-
-/** Build a short summary string from recommendation options for notification. */
-function buildRouteSummary(options: RecommendationOption[]): string {
-  const bus = options.find((o) => o.type === "BUS");
-  const walk = options.find((o) => o.type === "WALK");
-  const parts: string[] = [];
-  if (bus) {
-    const rideStep = bus.steps.find((s) => s.type === "RIDE");
-    const route = rideStep?.route ?? "Bus";
-    parts.push(`Bus ${route} in ${bus.depart_in_minutes} min`);
-  }
-  if (walk) parts.push(`walk ${walk.eta_minutes} min`);
-  return parts.join(" OR ");
 }
 
 export default function HomeScreen() {
@@ -300,6 +281,7 @@ export default function HomeScreen() {
           departuresByStop: depMap,
           scheduleClasses: classesData.classes ?? [],
           recommendations: recommendationsList,
+          location: { lat: latitude, lng: longitude },
         });
       } catch (e) {
         const isAbort = e instanceof Error && e.name === "AbortError";
@@ -404,6 +386,11 @@ export default function HomeScreen() {
     (opt: RecommendationOption) => {
       // Walk to the bus stop using the internal walk-nav map (no app switching)
       const step = opt.steps.find((s) => s.type === "WALK_TO_STOP");
+      const rideStep = opt.steps.find((s) => s.type === "RIDE");
+      const routeId = rideStep?.route ?? "";
+      const alightingStopId = rideStep?.alighting_stop_id ?? "";
+      const alightingLat = rideStep?.alighting_stop_lat ?? null;
+      const alightingLng = rideStep?.alighting_stop_lng ?? null;
       if (step?.stop_lat != null && step?.stop_lng != null) {
         router.push({
           pathname: "/walk-nav",
@@ -412,6 +399,11 @@ export default function HomeScreen() {
             dest_lng: String(step.stop_lng),
             dest_name: step.stop_name ?? "Bus Stop",
             walking_mode_id: walkingModeId,
+            route_id: routeId,
+            stop_id: step.stop_id ?? "",
+            alighting_stop_id: alightingStopId ?? "",
+            alighting_lat: alightingLat != null ? String(alightingLat) : "",
+            alighting_lng: alightingLng != null ? String(alightingLng) : "",
           },
         });
       }
