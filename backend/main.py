@@ -199,6 +199,63 @@ async def _nominatim_lookup(query: str) -> dict:
     return result
 
 
+async def _nominatim_quick(query: str, limit: int = 3) -> list[dict]:
+    """Nominatim search for autocomplete — short timeout, no rate-limit semaphore."""
+    import httpx
+    contextual = query if any(h in query.lower() for h in _LOCATION_HINTS) else f"{query}, Champaign, IL"
+    try:
+        async with httpx.AsyncClient(timeout=3.0, headers={"User-Agent": GEOCODE_USER_AGENT}) as client:
+            r = await client.get(
+                NOMINATIM_URL,
+                params={"q": contextual, "format": "json", "limit": limit,
+                        "viewbox": NOMINATIM_VIEWBOX, "bounded": "0"},
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return []
+    results = []
+    for item in data[:limit]:
+        display = item.get("display_name", "")
+        short_name = display.split(",")[0].strip()
+        results.append({
+            "type": "place",
+            "name": short_name,
+            "display_name": display,
+            "lat": float(item.get("lat", 0)),
+            "lng": float(item.get("lon", 0)),
+        })
+    return results
+
+
+@app.get("/autocomplete")
+async def autocomplete(request: Request, q: str = "", limit: int = 8):
+    """
+    Combined autocomplete: local buildings (instant) + Nominatim places.
+    Returns { results: [{type, name, display_name?, lat, lng, building_id?}] }.
+    Buildings shown first; Nominatim backfills when few building matches.
+    """
+    query = (q or "").strip()
+    if not query or len(query) < 2:
+        return {"results": []}
+    results: list[dict] = []
+    seen_names: set[str] = set()
+    buildings = search_buildings(APP_DB, query, limit=min(5, limit))
+    for b in buildings:
+        key = b.name.lower()
+        if key not in seen_names:
+            seen_names.add(key)
+            results.append({"type": "building", "name": b.name, "lat": b.lat, "lng": b.lng, "building_id": b.building_id})
+    # Fetch Nominatim suggestions if fewer than 3 building matches
+    if len(results) < 3:
+        nom = await _nominatim_quick(query, limit=max(1, limit - len(results)))
+        for item in nom:
+            if item["name"].lower() not in seen_names:
+                seen_names.add(item["name"].lower())
+                results.append(item)
+    return {"results": results[:limit]}
+
+
 @app.get("/geocode")
 async def geocode(request: Request, q: str = ""):
     """

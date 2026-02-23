@@ -279,6 +279,31 @@ export async function fetchBuildingSearch(
   return safeJson(res, "/buildings/search", { buildings: [] });
 }
 
+/** GET /autocomplete - combined buildings + Nominatim suggestions */
+export interface AutocompleteResult {
+  type: "building" | "place";
+  name: string;
+  display_name?: string;
+  lat: number;
+  lng: number;
+  building_id?: string;
+}
+
+export async function fetchAutocomplete(
+  baseUrl: string,
+  query: string,
+  options?: RequestOptions
+): Promise<{ results: AutocompleteResult[] }> {
+  const base = baseUrl.replace(/\/$/, "");
+  const res = await fetchWithRetry(
+    `${base}/autocomplete?q=${encodeURIComponent(query)}&limit=8`,
+    "/autocomplete",
+    options
+  );
+  if (!res.ok) return { results: [] };
+  return safeJson(res, "/autocomplete", { results: [] });
+}
+
 /** GET /directions/walk - real walking route via OSRM proxy */
 export async function fetchWalkingRoute(
   baseUrl: string,

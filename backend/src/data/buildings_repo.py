@@ -110,38 +110,54 @@ def list_buildings(db_path: str | Path) -> list[BuildingRecord]:
 
 
 def search_buildings(db_path: str | Path, query: str, limit: int = 6) -> list[BuildingRecord]:
-    """Case-insensitive name search ranked: exact → starts-with → contains."""
+    """
+    Token-aware, case-insensitive search.
+    Splits query into words; returns buildings where ALL tokens appear in name.
+    Falls back to ANY-token match if no AND results found.
+    Scoring: 4=all tokens + starts with first, 3=exact full name, 2=starts with query, 1=contains.
+    """
     db_path = Path(db_path)
     if not db_path.exists() or not query.strip():
         return []
     q = query.strip()
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute(
-            """
-            SELECT building_id, name, lat, lng,
-                   CASE
-                       WHEN lower(name) = lower(?)           THEN 3
-                       WHEN lower(name) LIKE lower(?) || '%' THEN 2
-                       ELSE 1
-                   END AS score
-            FROM buildings
-            WHERE lower(name) LIKE '%' || lower(?) || '%'
-              AND building_id != 'custom'
-            ORDER BY score DESC, name ASC
-            LIMIT ?
-            """,
-            (q, q, q, limit),
-        )
-        return [
-            BuildingRecord(
-                building_id=r["building_id"],
-                name=r["name"],
-                lat=r["lat"],
-                lng=r["lng"],
+    tokens = [t for t in q.lower().split() if t]
+    if not tokens:
+        return []
+
+    def _fetch(where_clause: str, params: list) -> list[BuildingRecord]:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                f"""
+                SELECT building_id, name, lat, lng,
+                       CASE
+                           WHEN lower(name) = ?                   THEN 4
+                           WHEN lower(name) LIKE ? || '%'         THEN 3
+                           WHEN lower(name) LIKE ? || '%'         THEN 2
+                           ELSE 1
+                       END AS score
+                FROM buildings
+                WHERE {where_clause}
+                  AND building_id != 'custom'
+                ORDER BY score DESC, name ASC
+                LIMIT ?
+                """,
+                [q.lower(), tokens[0], q.lower()] + params + [limit],
             )
-            for r in cur.fetchall()
-        ]
+            return [
+                BuildingRecord(building_id=r["building_id"], name=r["name"], lat=r["lat"], lng=r["lng"])
+                for r in cur.fetchall()
+            ]
+
+    # Try AND match (all tokens must appear)
+    and_clause = " AND ".join(f"lower(name) LIKE '%' || ? || '%'" for _ in tokens)
+    results = _fetch(and_clause, list(tokens))
+    if results:
+        return results
+
+    # Fallback: OR match (any token appears)
+    or_clause = " OR ".join(f"lower(name) LIKE '%' || ? || '%'" for _ in tokens)
+    return _fetch(or_clause, list(tokens))
 
 
 def get_building(db_path: str | Path, building_id: str) -> BuildingRecord | None:

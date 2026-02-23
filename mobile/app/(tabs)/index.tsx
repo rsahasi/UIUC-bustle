@@ -1,5 +1,5 @@
-import { fetchBuildingSearch, fetchBuildings, fetchClasses, fetchDepartures, fetchGeocode, fetchNearbyStops, fetchRecommendation } from "@/src/api/client";
-import type { Building } from "@/src/api/client";
+import { fetchAutocomplete, fetchBuildings, fetchClasses, fetchDepartures, fetchNearbyStops, fetchRecommendation } from "@/src/api/client";
+import type { AutocompleteResult, Building } from "@/src/api/client";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
@@ -78,7 +78,7 @@ export default function HomeScreen() {
   const [searchDestinationName, setSearchDestinationName] = useState<string | null>(null);
   const [recentSearches, setRecentSearches] = useState<RecentSearch[]>([]);
   const [lastSearchGeo, setLastSearchGeo] = useState<{ lat: number; lng: number; displayName: string } | null>(null);
-  const [buildingSuggestions, setBuildingSuggestions] = useState<Building[]>([]);
+  const [autocompleteSuggestions, setAutocompleteSuggestions] = useState<AutocompleteResult[]>([]);
   const [useUiucArea, setUseUiucArea] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const recommendationsY = useRef(0);
@@ -95,18 +95,18 @@ export default function HomeScreen() {
     getRecentSearches().then(setRecentSearches);
   }, []);
 
-  // Debounced building suggestions as user types
+  // Debounced combined autocomplete (buildings + Nominatim) as user types
   useEffect(() => {
     const q = searchQuery.trim();
-    if (q.length < 2) { setBuildingSuggestions([]); return; }
+    if (q.length < 2) { setAutocompleteSuggestions([]); return; }
     const timer = setTimeout(async () => {
       try {
-        const res = await fetchBuildingSearch(apiBaseUrl, q, { apiKey: apiKey ?? undefined });
-        setBuildingSuggestions(res.buildings ?? []);
+        const res = await fetchAutocomplete(apiBaseUrl, q, { apiKey: apiKey ?? undefined });
+        setAutocompleteSuggestions(res.results ?? []);
       } catch {
-        setBuildingSuggestions([]);
+        setAutocompleteSuggestions([]);
       }
-    }, 250);
+    }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery, apiBaseUrl, apiKey]);
 
@@ -160,7 +160,13 @@ export default function HomeScreen() {
           accuracy: Location.Accuracy.Balanced,
         });
         if (signal?.aborted) return;
-        const { latitude, longitude } = loc.coords;
+        let { latitude, longitude } = loc.coords;
+        // Snap to UIUC if GPS is far away (e.g. simulator default = San Francisco)
+        const distToUiuc = haversineMeters(latitude, longitude, UIUC_FALLBACK.lat, UIUC_FALLBACK.lng);
+        if (distToUiuc > 100_000) {
+          latitude = UIUC_FALLBACK.lat;
+          longitude = UIUC_FALLBACK.lng;
+        }
         setLocation({ lat: latitude, lng: longitude });
 
         const [stopsData, classesData] = await Promise.all([
@@ -439,16 +445,17 @@ export default function HomeScreen() {
     setRecentSearches(await getRecentSearches());
   }, [apiBaseUrl, apiKey, location, walkingSpeedMps, bufferMinutes]);
 
-  /** Tap a building suggestion — bypasses geocode, uses exact OSM coords. */
-  const onSelectBuilding = useCallback(async (b: Building) => {
-    setSearchQuery(b.name);
-    setBuildingSuggestions([]);
+  /** Tap any autocomplete suggestion (building or place) — immediately loads routes. */
+  const onSelectSuggestion = useCallback(async (item: AutocompleteResult) => {
+    const displayName = item.display_name?.split(",")[0]?.trim() || item.name;
+    setSearchQuery(displayName);
+    setAutocompleteSuggestions([]);
     setSearchError(null);
     setSearchResults([]);
     setSearchDestinationName(null);
     setSearchLoading(true);
     try {
-      await _fetchRoutesTo(b.lat, b.lng, b.name, b.name);
+      await _fetchRoutesTo(item.lat, item.lng, item.display_name || item.name, displayName);
     } catch (e) {
       setSearchError(e instanceof Error ? e.message : "Search failed.");
       setSearchResults([]);
@@ -463,25 +470,23 @@ export default function HomeScreen() {
     setSearchError(null);
     setSearchResults([]);
     setSearchDestinationName(null);
-    setBuildingSuggestions([]);
+    setAutocompleteSuggestions([]);
     setSearchLoading(true);
     try {
-      // 1. Try local buildings DB first (instant, reliable for UIUC places)
-      let destLat: number, destLng: number, destName: string;
-      const bRes = await fetchBuildingSearch(apiBaseUrl, q, { apiKey: apiKey ?? undefined });
-      if (bRes.buildings.length > 0) {
-        const b = bRes.buildings[0];
-        destLat = b.lat; destLng = b.lng; destName = b.name;
+      // Use the autocomplete endpoint to resolve: tries buildings first, then Nominatim
+      const acRes = await fetchAutocomplete(apiBaseUrl, q, { apiKey: apiKey ?? undefined });
+      if (acRes.results.length > 0) {
+        const best = acRes.results[0];
+        const destName = best.display_name || best.name;
+        await _fetchRoutesTo(best.lat, best.lng, destName, q);
       } else {
-        // 2. Fall back to Nominatim geocode (with UIUC viewbox bias + Champaign,IL context)
-        const geo = await fetchGeocode(apiBaseUrl, q, { apiKey: apiKey ?? undefined });
-        destLat = geo.lat; destLng = geo.lng; destName = geo.display_name;
+        setSearchError("No results found. Try a different name or address.");
+        setSearchResults([]);
       }
-      await _fetchRoutesTo(destLat, destLng, destName, q);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Search failed.";
       setSearchError(msg.includes("Geocoding") || msg.includes("unavailable")
-        ? "Geocoding service unavailable. Is the backend running? Use 'Use UIUC area' below to test nearby stops."
+        ? "Geocoding service unavailable. Is the backend running?"
         : msg);
       setSearchResults([]);
     } finally {
@@ -567,19 +572,31 @@ export default function HomeScreen() {
           placeholder="e.g. Siebel, Illini Union, or an address"
           placeholderTextColor={theme.colors.textMuted}
           value={searchQuery}
-          onChangeText={(t) => { setSearchQuery(t); setSearchError(null); }}
+          onChangeText={(t) => { setSearchQuery(t); setSearchError(null); if (!t.trim()) setAutocompleteSuggestions([]); }}
           onSubmitEditing={onSearchDestination}
           editable={!searchLoading}
         />
-        {buildingSuggestions.length > 0 && (
+        {autocompleteSuggestions.length > 0 && (
           <View style={styles.suggestionsList}>
-            {buildingSuggestions.map((b) => (
+            {autocompleteSuggestions.map((item, i) => (
               <Pressable
-                key={b.building_id}
+                key={`${item.type}-${i}`}
                 style={styles.suggestionItem}
-                onPress={() => onSelectBuilding(b)}
+                onPress={() => onSelectSuggestion(item)}
               >
-                <Text style={styles.suggestionText}>{b.name}</Text>
+                <View style={styles.suggestionRow}>
+                  <Text style={styles.suggestionText} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                  {item.type === "place" && (
+                    <Text style={styles.suggestionType}>📍</Text>
+                  )}
+                </View>
+                {item.display_name && item.display_name !== item.name && (
+                  <Text style={styles.suggestionSub} numberOfLines={1}>
+                    {item.display_name.split(",").slice(1, 3).join(",").trim()}
+                  </Text>
+                )}
               </Pressable>
             ))}
           </View>
@@ -596,7 +613,7 @@ export default function HomeScreen() {
           )}
         </Pressable>
         {searchError && <Text style={styles.searchError}>{searchError}</Text>}
-        {recentSearches.length > 0 && !searchResults.length && !buildingSuggestions.length && (
+        {recentSearches.length > 0 && !searchResults.length && !autocompleteSuggestions.length && (
           <View style={styles.recentSearches}>
             <Text style={styles.recentLabel}>Recent:</Text>
             {recentSearches.map((r, i) => (
@@ -1001,7 +1018,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.cardBorder,
   },
-  suggestionText: { fontSize: 14, color: theme.colors.text },
+  suggestionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  suggestionText: { fontSize: 14, color: theme.colors.text, flex: 1 },
+  suggestionType: { fontSize: 12, marginLeft: 6 },
+  suggestionSub: { fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
   recentSearches: { marginTop: 8 },
   recentLabel: { fontSize: 12, color: theme.colors.textMuted, marginBottom: 4 },
   recentItem: { paddingVertical: 4 },
