@@ -2,6 +2,10 @@
 
 A campus bus + walk navigation app for University of Illinois Urbana-Champaign students. See nearby MTD stops with live departures, get route recommendations to your next class, and navigate on foot using a built-in map — no app switching.
 
+<p align="center">
+  <img src="assets/screenshots/home.png" width="300" alt="Home screen — route recommendations" />
+</p>
+
 ```
 mobile/      React Native app (Expo Router)
 backend/     FastAPI Python API
