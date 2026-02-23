@@ -1,7 +1,7 @@
 import { fetchDepartures, fetchNearbyStops, fetchVehicles } from "@/src/api/client";
 import type { DepartureItem, StopInfo, VehicleInfo } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
-import { haversineMeters } from "@/src/utils/distance";
+import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -29,7 +29,7 @@ export default function MapScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const router = useRouter();
   const [status, setStatus] = useState<"loading" | "denied" | "error" | "ready">("loading");
-  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(UIUC_FALLBACK);
   const [stops, setStops] = useState<StopWithDistance[]>([]);
   const [selectedStop, setSelectedStop] = useState<StopWithDistance | null>(null);
   const [departures, setDepartures] = useState<DepartureItem[]>([]);
@@ -80,6 +80,12 @@ export default function MapScreen() {
         });
         latitude = loc.coords.latitude;
         longitude = loc.coords.longitude;
+        // Snap to UIUC if GPS is far away (e.g. simulator default = San Francisco)
+        const distToUiuc = haversineMeters(latitude, longitude, UIUC_FALLBACK.lat, UIUC_FALLBACK.lng);
+        if (distToUiuc > 100_000) {
+          latitude = UIUC_FALLBACK.lat;
+          longitude = UIUC_FALLBACK.lng;
+        }
         setLocation({ lat: latitude, lng: longitude });
       }
       const data = await fetchNearbyStops(apiBaseUrl, latitude, longitude, MAP_RADIUS_M, { apiKey: apiKey ?? undefined });
@@ -219,7 +225,7 @@ export default function MapScreen() {
             key={stop.stop_id}
             coordinate={{ latitude: stop.lat, longitude: stop.lng }}
             title={stop.stop_name}
-            description={`${stop.distance_m} m away`}
+            description={`${formatDistance(stop.distance_m)} away`}
             onPress={() => onMarkerPress(stop)}
             pinColor={selectedStop?.stop_id === stop.stop_id ? "#13294b" : "#c41e3a"}
           />
@@ -255,7 +261,7 @@ export default function MapScreen() {
         <View style={styles.detailCard}>
           <View style={styles.detailHeader}>
             <Text style={styles.detailTitle}>{selectedStop.stop_name}</Text>
-            <Text style={styles.detailDistance}>{selectedStop.distance_m} m away</Text>
+            <Text style={styles.detailDistance}>{formatDistance(selectedStop.distance_m)} away</Text>
           </View>
           <Pressable
             style={styles.tripBtn}

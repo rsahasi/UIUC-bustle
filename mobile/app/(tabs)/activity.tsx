@@ -1,4 +1,5 @@
 import { fetchEodReport } from "@/src/api/client";
+import { formatDistance } from "@/src/utils/distance";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { type ActivityEntry, dateStringForOffset, getActivityForDate, getActivityLog, todayDateString } from "@/src/storage/activityLog";
 import { useCallback, useEffect, useState } from "react";
@@ -166,7 +167,7 @@ export default function ActivityScreen() {
           <View key={e.id} style={styles.entryCard}>
             <Text style={styles.entryRoute}>{e.from} → {e.to}</Text>
             <Text style={styles.entryMeta}>
-              {e.walkingModeId} · {e.distanceM} m · {Math.floor(e.durationSeconds / 60)} min · {e.caloriesBurned.toFixed(1)} kcal · {e.stepCount} steps
+              {e.walkingModeId} · {formatDistance(e.distanceM)} · {Math.floor(e.durationSeconds / 60)} min · {e.caloriesBurned.toFixed(1)} kcal · {e.stepCount} steps
             </Text>
           </View>
         ))

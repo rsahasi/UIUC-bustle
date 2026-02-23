@@ -5,7 +5,7 @@ import type { WalkingModeId } from "@/src/constants/walkingMode";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { addActivityEntry, todayDateString } from "@/src/storage/activityLog";
 import { MET_BY_MODE, calcCalories } from "@/src/utils/activity";
-import { haversineMeters } from "@/src/utils/distance";
+import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { Pedometer } from "expo-sensors";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -143,10 +143,15 @@ export default function WalkNavScreen() {
   const fetchWalkRoute = useCallback(async (userLat: number, userLng: number) => {
     if (walkingRouteFetchedRef.current) return;
     walkingRouteFetchedRef.current = true;
+    // Snap origin to UIUC if GPS is far away (simulator default = San Francisco)
+    const UIUC_LAT = 40.102, UIUC_LNG = -88.2272;
+    const distToUiuc = Math.sqrt((userLat - UIUC_LAT) ** 2 + (userLng - UIUC_LNG) ** 2) * 111_000;
+    const origLat = distToUiuc > 100_000 ? UIUC_LAT : userLat;
+    const origLng = distToUiuc > 100_000 ? UIUC_LNG : userLng;
     try {
       const res = await fetchWalkingRoute(
         apiBaseUrl,
-        userLat, userLng,
+        origLat, origLng,
         destLat, destLng,
         { apiKey: apiKey ?? undefined }
       );
@@ -306,7 +311,11 @@ export default function WalkNavScreen() {
   const etaSeconds = distanceM != null && speedMps > 0 ? Math.round(distanceM / speedMps) : null;
   const etaMinutes = etaSeconds != null ? Math.ceil(etaSeconds / 60) : null;
 
-  const mapCenter = userLocation ?? { lat: target.lat, lng: target.lng };
+  // Snap map center to UIUC if GPS is far away (simulator default = San Francisco)
+  const UIUC_CENTER = { lat: 40.102, lng: -88.2272 };
+  const rawCenter = userLocation ?? { lat: target.lat, lng: target.lng };
+  const rawDistToUiuc = Math.sqrt((rawCenter.lat - UIUC_CENTER.lat) ** 2 + (rawCenter.lng - UIUC_CENTER.lng) ** 2) * 111_000;
+  const mapCenter = rawDistToUiuc > 100_000 ? { lat: target.lat, lng: target.lng } : rawCenter;
 
   return (
     <View style={styles.container}>
@@ -408,7 +417,7 @@ export default function WalkNavScreen() {
               <View style={styles.hudCell}>
                 <Text style={styles.hudLabel}>Distance</Text>
                 <Text style={styles.hudValue}>
-                  {distanceM != null ? `${distanceM} m` : "—"}
+                  {distanceM != null ? formatDistance(distanceM) : "—"}
                 </Text>
               </View>
               <View style={styles.hudCell}>
@@ -437,7 +446,7 @@ export default function WalkNavScreen() {
               <View style={styles.hudCell}>
                 <Text style={styles.hudLabel}>Dist to stop</Text>
                 <Text style={styles.hudValue}>
-                  {distanceM != null ? `${distanceM} m` : "—"}
+                  {distanceM != null ? formatDistance(distanceM) : "—"}
                 </Text>
               </View>
               <View style={styles.hudCell}>
@@ -476,7 +485,7 @@ export default function WalkNavScreen() {
             <Text style={styles.modalTitle}>You arrived!</Text>
             <Text style={styles.modalDest}>{destName}</Text>
             <View style={styles.modalStats}>
-              <Text style={styles.modalStat}>🚶 {Math.round(walkedDistanceMRef.current)} m</Text>
+              <Text style={styles.modalStat}>🚶 {formatDistance(walkedDistanceMRef.current)}</Text>
               <Text style={styles.modalStat}>⏱ {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
               <Text style={styles.modalStat}>🔥 {caloriesBurned.toFixed(1)} kcal</Text>
               {pedometerAvailable && <Text style={styles.modalStat}>👣 {stepCount} steps</Text>}

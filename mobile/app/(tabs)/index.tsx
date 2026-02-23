@@ -14,7 +14,7 @@ import { markClassAsWalkedToday } from "@/src/storage/walkedClassToday";
 import { addRecentSearch, getRecentSearches, type RecentSearch } from "@/src/storage/recentSearches";
 import { log } from "@/src/telemetry/logBuffer";
 import { arriveByIsoToday } from "@/src/utils/arriveBy";
-import { haversineMeters } from "@/src/utils/distance";
+import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import { getNextClassToday } from "@/src/utils/nextClass";
 import * as Location from "expo-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -61,7 +61,7 @@ export default function HomeScreen() {
   const params = useLocalSearchParams<{ highlight?: string; focus?: string }>();
   const [status, setStatus] = useState<"loading" | "error" | "denied" | "ready">("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(UIUC_FALLBACK);
   const [stops, setStops] = useState<StopWithDistance[]>([]);
   const [departuresByStop, setDeparturesByStop] = useState<Record<string, DepartureItem[]>>({});
   const [scheduleClasses, setScheduleClasses] = useState<{ class_id: string; title: string; days_of_week: string[]; start_time_local: string; building_id: string }[]>([]);
@@ -819,7 +819,7 @@ export default function HomeScreen() {
                 <Text style={styles.favoriteStopBtnText}>☆ Favorite</Text>
               </Pressable>
             </View>
-            <Text style={styles.distance}>{stop.distance_m} m away</Text>
+            <Text style={styles.distance}>{formatDistance(stop.distance_m)} away</Text>
             <View style={styles.departures}>
               {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
                 <Text style={styles.depText}>No departures</Text>
