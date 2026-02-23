@@ -1,28 +1,36 @@
-# UIUC Bus — Mobile
+# UIUC Bustle — Mobile
 
-Expo (React Native) app: Home, Schedule, Settings, Trip, Report issue.
+React Native app (Expo Router) for UIUC campus bus and walk navigation.
 
-## Run (one command)
+See the [root README](../README.md) for full setup instructions.
 
-From the **mobile** directory:
+## Quick start
 
 ```bash
-npm start
+npm install
+./start-sim.sh        # iOS simulator with UIUC GPS pinned
+# or
+npx expo start --ios  # manual
 ```
 
-Then press `i` for iOS simulator or `a` for Android. Set the API base URL in Settings (e.g. `http://localhost:8000` for simulator).
+Set the API URL to `http://localhost:8000` in the **Settings** tab.
 
-## Telemetry & Report issue
+## Walking modes
 
-- In-memory log buffer (no PII): API path, status, errors, offline/cache events.
-- **Settings → Report issue**: copy recent logs to clipboard to paste when reporting a bug (no external service).
+Configured in Settings, used for route ETAs and walk navigation:
 
-## Map tab (optional)
+| Mode | Speed |
+|------|-------|
+| Walk | 1.2 m/s |
+| Brisk | 1.5 m/s |
+| Speed walk | 1.9 m/s |
+| Jog | 2.7 m/s |
 
-The **Map** tab shows your location and nearby stops. No API keys are required for basic use (iOS uses Apple Maps). For Google Maps on Android and optional setup, see **[docs/MAP_SETUP.md](docs/MAP_SETUP.md)**.
+## Map setup (Android / Google Maps)
 
-## Reliability
+See [docs/MAP_SETUP.md](docs/MAP_SETUP.md) for Google Maps API key setup on Android.
+iOS uses Apple Maps by default — no key required.
 
-- **Refresh**: Debounced (400ms) to avoid double-fetch.
-- **In-flight requests**: AbortController cancels Home API calls on unmount.
-- **Offline**: Last-known Home data (stops, departures, classes, recommendations) is persisted; on network failure the app shows cached data and an "Offline" banner.
+## Offline behaviour
+
+When the network is unavailable, the Home tab falls back to the last cached stops, departures, classes, and recommendations, with a banner and inline Retry button.
