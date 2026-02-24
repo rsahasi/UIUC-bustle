@@ -1,8 +1,15 @@
 import { NotificationRedirect } from "@/src/components/NotificationRedirect";
+import "@/src/tasks/notificationRefresh"; // registers defineTask at module level
+import { registerNotificationRefreshTask } from "@/src/tasks/notificationRefresh";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { useEffect } from "react";
 
 export default function RootLayout() {
+  useEffect(() => {
+    registerNotificationRefreshTask();
+  }, []);
+
   return (
     <>
       <StatusBar style="auto" />

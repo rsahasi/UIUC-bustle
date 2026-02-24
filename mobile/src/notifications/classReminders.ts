@@ -7,8 +7,10 @@ import { Platform } from "react-native";
 
 const CLASS_REMINDER_PREFIX = "class-";
 const CLASS_DEPART_PREFIX = "class-depart-";
+const CLASS_EARLY_PREFIX = "class-early-";
 const DEEP_LINK_PATH = "/(tabs)?focus=recommendations";
 const REMINDER_MINUTES_BEFORE = 20;
+const EARLY_REMINDER_MINUTES_BEFORE = 45;
 
 /** Ensure we can present notifications when app is in foreground. */
 export function setNotificationHandler(): void {
@@ -121,13 +123,28 @@ export async function scheduleClassReminders(
   );
 
   for (const c of todayClasses) {
-    const triggerAt = triggerDateForClass(c.start_time_local, REMINDER_MINUTES_BEFORE, now);
-    if (!triggerAt) continue;
-
     const buildingName =
       (c.building_id === "custom" && c.destination_name)
         ? c.destination_name
         : (buildingIdToName[c.building_id] ?? c.building_id);
+
+    // 45-minute early reminder
+    const earlyTrigger = triggerDateForClass(c.start_time_local, EARLY_REMINDER_MINUTES_BEFORE, now);
+    if (earlyTrigger) {
+      await Notifications.scheduleNotificationAsync({
+        identifier: `${CLASS_EARLY_PREFIX}${c.class_id}`,
+        content: {
+          title: `${c.title} in 45 minutes`,
+          body: `Head to ${buildingName} soon. Open app for live route options.`,
+          data: { url: DEEP_LINK_PATH },
+        },
+        trigger: earlyTrigger as unknown as Notifications.NotificationTriggerInput,
+      });
+    }
+
+    // 20-minute reminder (with route details)
+    const triggerAt = triggerDateForClass(c.start_time_local, REMINDER_MINUTES_BEFORE, now);
+    if (!triggerAt) continue;
 
     // Try structured route data first, fall back to raw summary, then generic
     const routeData = await getClassRouteData(c.class_id);
@@ -192,7 +209,8 @@ export async function cancelAllClassReminders(): Promise<void> {
   for (const req of scheduled) {
     if (
       req.identifier.startsWith(CLASS_REMINDER_PREFIX) ||
-      req.identifier.startsWith(CLASS_DEPART_PREFIX)
+      req.identifier.startsWith(CLASS_DEPART_PREFIX) ||
+      req.identifier.startsWith(CLASS_EARLY_PREFIX)
     ) {
       await Notifications.cancelScheduledNotificationAsync(req.identifier);
     }
@@ -201,6 +219,7 @@ export async function cancelAllClassReminders(): Promise<void> {
 
 /** Cancel the reminder for one class (e.g. when user taps "I'm walking to this class"). */
 export async function cancelClassReminder(classId: string): Promise<void> {
+  await Notifications.cancelScheduledNotificationAsync(`${CLASS_EARLY_PREFIX}${classId}`);
   await Notifications.cancelScheduledNotificationAsync(`${CLASS_REMINDER_PREFIX}${classId}`);
   await Notifications.cancelScheduledNotificationAsync(`${CLASS_DEPART_PREFIX}${classId}`);
 }

@@ -11,6 +11,9 @@ export interface LastKnownHomeData {
     days_of_week: string[];
     start_time_local: string;
     building_id: string;
+    destination_lat?: number | null;
+    destination_lng?: number | null;
+    destination_name?: string | null;
   }>;
   recommendations: Array<{
     type: string;
@@ -19,6 +22,7 @@ export interface LastKnownHomeData {
     depart_in_minutes: number;
     steps: unknown[];
   }>;
+  location?: { lat: number; lng: number };
   savedAt: number;
 }
 
