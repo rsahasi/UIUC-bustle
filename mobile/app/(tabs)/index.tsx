@@ -5,6 +5,7 @@ import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsE
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import type { DepartureItem, RecommendationOption, RecommendationStep, StopInfo } from "@/src/api/types";
 import { cancelClassReminder, cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
+import { scheduleLeaveNowAlert, cancelLeaveNowAlert, cancelAllLeaveNowAlerts, buildLeaveNowBody } from "@/src/notifications/leaveNow";
 import { addFavoriteStop, addFavoritePlace, getAfterLastClassPlaceId, getFavoritePlaces, type SavedPlace } from "@/src/storage/favorites";
 import { getLastKnownHomeData, setLastKnownHomeData } from "@/src/storage/lastKnownHome";
 import { setClassSummary, setClassRouteData } from "@/src/storage/classSummaryCache";
@@ -80,6 +81,7 @@ export default function HomeScreen() {
   const [lastSearchGeo, setLastSearchGeo] = useState<{ lat: number; lng: number; displayName: string } | null>(null);
   const [autocompleteSuggestions, setAutocompleteSuggestions] = useState<AutocompleteResult[]>([]);
   const [useUiucArea, setUseUiucArea] = useState(false);
+  const [leaveNowBanner, setLeaveNowBanner] = useState<{ option: RecommendationOption; classTitle: string } | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const recommendationsY = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -236,6 +238,12 @@ export default function HomeScreen() {
               };
               await setClassRouteData(nextClass.class_id, routeData);
             }
+            // Schedule / re-schedule live "Leave Now" push notification
+            if (classNotificationsEnabled && recommendationsList.length > 0) {
+              const best = recommendationsList[0];
+              try { await scheduleLeaveNowAlert(nextClass.class_id, nextClass.title, best); } catch (_) {}
+              setLeaveNowBanner(best.depart_in_minutes <= 2 ? { option: best, classTitle: nextClass.title } : null);
+            }
           } catch {
             setRecommendations([]);
           }
@@ -272,6 +280,7 @@ export default function HomeScreen() {
         if (classNotificationsEnabled) {
           try {
             await cancelAllClassReminders();
+            await cancelAllLeaveNowAlerts();
             const buildingsRes = await fetchBuildings(apiBaseUrl, { signal, apiKey: apiKey ?? undefined }).catch(() => ({ buildings: [] }));
             const buildingMap: Record<string, string> = {};
             for (const b of buildingsRes.buildings ?? []) buildingMap[b.building_id] = b.name;
@@ -421,6 +430,8 @@ export default function HomeScreen() {
     if (!nextUp) return;
     await markClassAsWalkedToday(nextUp.class_id);
     await cancelClassReminder(nextUp.class_id);
+    await cancelLeaveNowAlert(nextUp.class_id);
+    setLeaveNowBanner(null);
   }, [nextUp]);
 
   /** Shared recommendation fetch used by both search paths. */
@@ -670,6 +681,33 @@ export default function HomeScreen() {
           })}
         </View>
       )}
+      {/* Leave Now Banner — shown when departure is imminent (≤ 2 min) */}
+      {leaveNowBanner && (
+        <View style={styles.leaveNowBanner}>
+          <View style={styles.leaveNowLeft}>
+            <Text style={styles.leaveNowTitle}>
+              ⚡ {buildLeaveNowBody(leaveNowBanner.option, leaveNowBanner.classTitle).title}
+            </Text>
+            <Text style={styles.leaveNowBody} numberOfLines={1}>
+              {buildLeaveNowBody(leaveNowBanner.option, leaveNowBanner.classTitle).body}
+            </Text>
+          </View>
+          <Pressable
+            style={styles.leaveNowStartBtn}
+            onPress={() => {
+              setLeaveNowBanner(null);
+              if (leaveNowBanner.option.type === "WALK") onStartWalk(leaveNowBanner.option);
+              else onStartBus(leaveNowBanner.option);
+            }}
+          >
+            <Text style={styles.leaveNowStartBtnText}>Start</Text>
+          </Pressable>
+          <Pressable style={styles.leaveNowDismiss} onPress={() => setLeaveNowBanner(null)}>
+            <Text style={styles.leaveNowDismissText}>✕</Text>
+          </Pressable>
+        </View>
+      )}
+
       <View style={styles.nextUpCard}>
         <Text style={styles.nextUpLabel}>Next up:</Text>
         {nextUp ? (
@@ -1030,4 +1068,29 @@ const styles = StyleSheet.create({
   saveFavBtn: { fontSize: 13, color: theme.colors.secondary, fontWeight: "600" },
   planEveningBtn: { marginTop: 10, alignSelf: "flex-start" },
   planEveningBtnText: { fontSize: 14, color: theme.colors.secondary, fontWeight: "600" },
+  leaveNowBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: theme.colors.secondary,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
+    marginBottom: theme.spacing.md,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  leaveNowLeft: { flex: 1, marginRight: theme.spacing.sm },
+  leaveNowTitle: { fontSize: 15, fontWeight: "700", color: "#fff", marginBottom: 2 },
+  leaveNowBody: { fontSize: 13, color: "rgba(255,255,255,0.88)" },
+  leaveNowStartBtn: {
+    backgroundColor: "#fff",
+    borderRadius: theme.radius.sm,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+  },
+  leaveNowStartBtnText: { fontSize: 14, fontWeight: "700", color: theme.colors.secondary },
+  leaveNowDismiss: { padding: 8 },
+  leaveNowDismissText: { fontSize: 15, color: "rgba(255,255,255,0.75)", fontWeight: "600" },
 });

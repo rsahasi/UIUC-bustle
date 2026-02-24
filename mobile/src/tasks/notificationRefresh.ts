@@ -1,5 +1,6 @@
 import { fetchBuildings, fetchRecommendation } from "@/src/api/client";
 import { cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
+import { scheduleLeaveNowAlert, cancelAllLeaveNowAlerts } from "@/src/notifications/leaveNow";
 import { getStoredApiKey } from "@/src/storage/apiKey";
 import { getStoredApiBaseUrl } from "@/src/storage/apiUrl";
 import { getClassNotificationsEnabled } from "@/src/storage/classNotifications";
@@ -75,6 +76,8 @@ TaskManager.defineTask(NOTIFICATION_REFRESH_TASK, async () => {
               departInMinutes: o.depart_in_minutes,
             })),
           });
+          // Re-anchor leave-now notification to current departure time
+          await scheduleLeaveNowAlert(nextClass.class_id, nextClass.title, options[0]);
         }
       } catch {
         // Graceful fail — still reschedule with previously cached data
@@ -89,6 +92,7 @@ TaskManager.defineTask(NOTIFICATION_REFRESH_TASK, async () => {
     } catch {}
 
     await cancelAllClassReminders();
+    await cancelAllLeaveNowAlerts();
     await scheduleClassReminders(classes as Parameters<typeof scheduleClassReminders>[0], buildingMap, walkingSpeedMps, bufferMinutes);
 
     return BackgroundFetch.BackgroundFetchResult.NewData;
