@@ -208,7 +208,7 @@ async def _nominatim_quick(query: str, limit: int = 3) -> list[dict]:
             r = await client.get(
                 NOMINATIM_URL,
                 params={"q": contextual, "format": "json", "limit": limit,
-                        "viewbox": NOMINATIM_VIEWBOX, "bounded": "0"},
+                        "viewbox": NOMINATIM_VIEWBOX, "bounded": "1"},
             )
             r.raise_for_status()
             data = r.json()

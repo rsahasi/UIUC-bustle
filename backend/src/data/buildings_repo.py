@@ -149,15 +149,11 @@ def search_buildings(db_path: str | Path, query: str, limit: int = 6) -> list[Bu
                 for r in cur.fetchall()
             ]
 
-    # Try AND match (all tokens must appear)
+    # AND match only — all tokens must appear in the name.
+    # No OR fallback: broad token matches (e.g. "avenue", "hall") return garbage when
+    # the exact building isn't in the DB. Nominatim handles those cases instead.
     and_clause = " AND ".join(f"lower(name) LIKE '%' || ? || '%'" for _ in tokens)
-    results = _fetch(and_clause, list(tokens))
-    if results:
-        return results
-
-    # Fallback: OR match (any token appears)
-    or_clause = " OR ".join(f"lower(name) LIKE '%' || ? || '%'" for _ in tokens)
-    return _fetch(or_clause, list(tokens))
+    return _fetch(and_clause, list(tokens))
 
 
 def get_building(db_path: str | Path, building_id: str) -> BuildingRecord | None:

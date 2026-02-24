@@ -203,7 +203,12 @@ export default function WalkNavScreen() {
         },
         (loc) => {
           if (!mounted) return;
-          const { latitude, longitude } = loc.coords;
+          let { latitude, longitude } = loc.coords;
+          // Snap to UIUC if GPS is far away (simulator default = San Francisco)
+          if (haversineMeters(latitude, longitude, 40.102, -88.2272) > 100_000) {
+            latitude = 40.102;
+            longitude = -88.2272;
+          }
           setUserLocation({ lat: latitude, lng: longitude });
 
           // Fetch walking route on first fix
@@ -330,8 +335,18 @@ export default function WalkNavScreen() {
             latitudeDelta: 0.005,
             longitudeDelta: 0.005,
           }}
-          showsUserLocation
         >
+          {/* User location — blue dot using snapped coords so it shows on UIUC map */}
+          {userLocation && (
+            <Marker
+              coordinate={{ latitude: userLocation.lat, longitude: userLocation.lng }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              tracksViewChanges={false}
+            >
+              <View style={styles.userDot} />
+            </Marker>
+          )}
+
           {/* Destination marker (boarding stop in walking phase, alighting stop in bus phase) */}
           <Marker
             coordinate={navPhase === "bus"
@@ -506,6 +521,18 @@ export default function WalkNavScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
+  userDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#2196F3",
+    borderWidth: 3,
+    borderColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 4,
+  },
   boardBusBanner: {
     position: "absolute",
     top: 48,
