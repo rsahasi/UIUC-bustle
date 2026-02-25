@@ -130,13 +130,16 @@ def compute_recommendations(
         for d in get_departures(stop_id):
             route = (d.get("route") or "").strip()
             headsign = (d.get("headsign") or "").strip()
-            expected_mins = int(d.get("expected_mins") or 0)
-            # Wait at stop: if we walk there in walk_to_stop_min, we wait max(0, expected_mins - walk_to_stop_min)
-            wait_min = max(0.0, float(expected_mins) - walk_to_stop_min)
+            expected_mins = float(d.get("expected_mins") or 0)
+            # Skip buses that will have departed before you reach the stop
+            if expected_mins < walk_to_stop_min:
+                continue
+            wait_min = expected_mins - walk_to_stop_min  # time waiting at stop for this bus
             total_eta = walk_to_stop_min + wait_min + ride_min + walk_from_stop_min
             if total_eta > minutes_until_arrival - buffer_minutes:
                 continue
-            depart_in = max(0.0, minutes_until_arrival - total_eta - buffer_minutes)
+            # depart_in = when to leave NOW to catch this specific bus
+            depart_in = max(0.0, expected_mins - walk_to_stop_min)
             score = total_eta  # lower is better
             bus_candidates.append((score, {
                 "type": "BUS",

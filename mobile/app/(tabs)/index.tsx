@@ -660,7 +660,11 @@ export default function HomeScreen() {
               <View key={`search-${index}`} style={styles.optionCard}>
                 <Text style={styles.optionCardTitle}>{title}</Text>
                 <Text style={styles.optionMeta}>
-                  Leave in {opt.depart_in_minutes} min · {opt.eta_minutes} min total
+                  {opt.type === "WALK"
+                    ? `${opt.eta_minutes} min walk`
+                    : opt.depart_in_minutes <= 1
+                    ? `Leave now · ${opt.eta_minutes} min total`
+                    : `Leave in ${opt.depart_in_minutes} min · ${opt.eta_minutes} min total`}
                 </Text>
                 <View style={styles.stepList}>
                   {opt.steps.slice(0, 4).map((s, i) => {
@@ -759,7 +763,11 @@ export default function HomeScreen() {
               <View key={index} style={styles.optionCard}>
                 <Text style={styles.optionCardTitle}>{title}</Text>
                 <Text style={styles.optionMeta}>
-                  Leave in {opt.depart_in_minutes} min · {opt.eta_minutes} min total
+                  {opt.type === "WALK"
+                    ? `${opt.eta_minutes} min walk`
+                    : opt.depart_in_minutes <= 1
+                    ? `Leave now · ${opt.eta_minutes} min total`
+                    : `Leave in ${opt.depart_in_minutes} min · ${opt.eta_minutes} min total`}
                 </Text>
                 <View style={styles.stepList}>
                   {opt.steps.slice(0, 4).map((s, i) => {
@@ -803,7 +811,11 @@ export default function HomeScreen() {
               >
                 <Text style={styles.optionCardTitle}>{title}</Text>
                 <Text style={styles.optionMeta}>
-                  Leave in {opt.depart_in_minutes} min · {opt.eta_minutes} min total
+                  {opt.type === "WALK"
+                    ? `${opt.eta_minutes} min walk`
+                    : opt.depart_in_minutes <= 1
+                    ? `Leave now · ${opt.eta_minutes} min total`
+                    : `Leave in ${opt.depart_in_minutes} min · ${opt.eta_minutes} min total`}
                 </Text>
                 {opt.ai_explanation && (
                   <Text style={styles.aiExplanation}>Claude suggests: {opt.ai_explanation}</Text>
