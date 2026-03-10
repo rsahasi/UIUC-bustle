@@ -123,33 +123,39 @@ export default function MapScreen() {
 
   const loadStops = useCallback(async () => {
     setStatus("loading");
-    try {
-      let latitude: number;
-      let longitude: number;
-      if (useUiucArea) {
-        latitude = UIUC_FALLBACK.lat;
-        longitude = UIUC_FALLBACK.lng;
-        setLocation(UIUC_FALLBACK);
-      } else {
+    let latitude: number;
+    let longitude: number;
+
+    if (useUiucArea) {
+      latitude = UIUC_FALLBACK.lat;
+      longitude = UIUC_FALLBACK.lng;
+      setLocation(UIUC_FALLBACK);
+    } else {
+      try {
         const { status: perm } = await Location.requestForegroundPermissionsAsync();
         if (perm !== "granted") {
           setStatus("denied");
           setLocation(null);
           return;
         }
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
         latitude = loc.coords.latitude;
         longitude = loc.coords.longitude;
-        // Snap to UIUC if GPS is far away (e.g. simulator default = San Francisco)
         const distToUiuc = haversineMeters(latitude, longitude, UIUC_FALLBACK.lat, UIUC_FALLBACK.lng);
         if (distToUiuc > 100_000) {
           latitude = UIUC_FALLBACK.lat;
           longitude = UIUC_FALLBACK.lng;
         }
         setLocation({ lat: latitude, lng: longitude });
+      } catch {
+        // GPS unavailable (e.g. simulator) — silently fall back to UIUC centre
+        latitude = UIUC_FALLBACK.lat;
+        longitude = UIUC_FALLBACK.lng;
+        setLocation(UIUC_FALLBACK);
       }
+    }
+
+    try {
       const data = await fetchNearbyStops(apiBaseUrl, latitude, longitude, MAP_RADIUS_M, { apiKey: apiKey ?? undefined });
       const withDist = data.stops
         .map((s) => ({
@@ -481,6 +487,9 @@ export default function MapScreen() {
         <Text style={styles.hint}>Check API URL in Settings and try again.</Text>
         <Pressable style={styles.retryBtn} onPress={loadStops}>
           <Text style={styles.retryBtnText}>Retry</Text>
+        </Pressable>
+        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => { setUseUiucArea(true); loadStops(); }}>
+          <Text style={styles.retryBtnSecondaryText}>Use UIUC area instead</Text>
         </Pressable>
       </View>
     );
