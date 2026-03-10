@@ -205,7 +205,7 @@ export default function WalkNavScreen() {
     } catch {}
   }, [apiBaseUrl, apiKey, destLat, destLng]);
 
-  // Fetch bus route data when switching to bus phase
+  // Fetch bus route shape + stops; used both at mount (preview) and on phase switch
   const fetchBusData = useCallback(async () => {
     if (!isBusMode || !boardingStopId || !alightingStopId) return;
     try {
@@ -226,9 +226,23 @@ export default function WalkNavScreen() {
       }
       if (res.shape_points.length > 1) {
         setBusShapeCoords(res.shape_points.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
+      } else {
+        // GTFS shape unavailable — use OSRM road-following route as fallback
+        const walk = await fetchWalkingRoute(
+          apiBaseUrl, destLat, destLng, alightingLat, alightingLng,
+          { apiKey: apiKey ?? undefined }
+        );
+        if (walk.coords.length > 1) {
+          setBusShapeCoords(walk.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
+        }
       }
     } catch {}
-  }, [apiBaseUrl, apiKey, routeId, boardingStopId, alightingStopId, isBusMode]);
+  }, [apiBaseUrl, apiKey, routeId, boardingStopId, alightingStopId, isBusMode, destLat, destLng, alightingLat, alightingLng]);
+
+  // Eagerly fetch bus shape at mount so it's visible during the walking phase
+  useEffect(() => {
+    if (isBusMode) fetchBusData();
+  }, [isBusMode, fetchBusData]);
 
   // Location tracking
   useEffect(() => {
@@ -461,8 +475,8 @@ export default function WalkNavScreen() {
             />
           )}
 
-          {/* Bus phase: route shape */}
-          {navPhase === "bus" && busShapeCoords.length > 1 && (
+          {/* Bus route shape — visible in BOTH walking and bus phases */}
+          {isBusMode && busShapeCoords.length > 1 && (
             <Polyline
               coordinates={busShapeCoords}
               strokeColor="rgba(29, 111, 240, 1)"

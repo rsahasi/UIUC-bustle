@@ -267,6 +267,18 @@ export default function MapScreen() {
           // Alighting coords — fall back to destination if missing
           const aLat = step.alighting_stop_lat ?? selectedPlace.lat;
           const aLng = step.alighting_stop_lng ?? selectedPlace.lng;
+
+          const roadFallback = async () => {
+            try {
+              const w = await fetchWalkingRoute(apiBaseUrl, prevLat, prevLng, aLat, aLng, { apiKey: apiKey ?? undefined });
+              return w.coords.length >= 2
+                ? w.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+                : [{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }];
+            } catch {
+              return [{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }];
+            }
+          };
+
           if (step.alighting_stop_id) {
             const afterTime = new Date().toTimeString().slice(0, 5);
             try {
@@ -274,14 +286,13 @@ export default function MapScreen() {
               newBus.push(
                 res.shape_points.length >= 2
                   ? res.shape_points.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
-                  : [{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }]
+                  : await roadFallback()
               );
             } catch {
-              newBus.push([{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }]);
+              newBus.push(await roadFallback());
             }
           } else {
-            // No GTFS stop id — straight line is the best we can do
-            newBus.push([{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }]);
+            newBus.push(await roadFallback());
           }
           prevLat = aLat;
           prevLng = aLng;
