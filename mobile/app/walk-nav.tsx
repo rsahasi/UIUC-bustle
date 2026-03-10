@@ -10,7 +10,7 @@ import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { Pedometer } from "expo-sensors";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Bus, Flame, Footprints, Timer, X } from "lucide-react-native";
+import { Bus, Flame, Footprints, MapPin, Timer, X } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -463,7 +463,7 @@ export default function WalkNavScreen() {
             pinColor={theme.colors.secondary}
           />
 
-          {/* Final destination — always visible */}
+          {/* Final destination pin — always visible */}
           {hasFinalDest && (
             <Marker
               coordinate={{ latitude: finalDestLat, longitude: finalDestLng }}
@@ -471,10 +471,7 @@ export default function WalkNavScreen() {
               anchor={{ x: 0.5, y: 1 }}
               tracksViewChanges={false}
             >
-              <View style={styles.finalDestPin}>
-                <View style={styles.finalDestPinHead} />
-                <View style={styles.finalDestPinTail} />
-              </View>
+              <MapPin size={38} color={theme.colors.navy} fill={theme.colors.navy} />
             </Marker>
           )}
 
@@ -838,24 +835,4 @@ const styles = StyleSheet.create({
   zoomBtn: { width: 44, height: 42, alignItems: "center", justifyContent: "center" },
   zoomBtnText: { fontSize: 22, fontFamily: "DMSans_400Regular", color: theme.colors.navy, lineHeight: 26 },
   zoomDivider: { height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.border, marginHorizontal: 8 },
-  finalDestPin: { alignItems: "center" },
-  finalDestPinHead: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: "rgba(29, 111, 240, 1)",
-    borderWidth: 2.5,
-    borderColor: "#fff",
-    shadowColor: "#000",
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 5,
-  },
-  finalDestPinTail: {
-    width: 2.5,
-    height: 8,
-    backgroundColor: "rgba(29, 111, 240, 1)",
-    borderBottomLeftRadius: 2,
-    borderBottomRightRadius: 2,
-  },
 });
