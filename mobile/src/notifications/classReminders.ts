@@ -1,6 +1,7 @@
 import type { ScheduleClass } from "@/src/api/types";
 import { getClassSummary, getClassRouteData } from "@/src/storage/classSummaryCache";
 import { getWalkedClassIdsToday } from "@/src/storage/walkedClassToday";
+import { getDisabledClassIds } from "@/src/storage/classNotifPrefs";
 import { getTodayCode } from "@/src/utils/nextClass";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
@@ -8,6 +9,10 @@ import { Platform } from "react-native";
 const CLASS_REMINDER_PREFIX = "class-";
 const CLASS_DEPART_PREFIX = "class-depart-";
 const CLASS_EARLY_PREFIX = "class-early-";
+
+export const MISS_CLASS_PREFIX = "miss_class_";
+export const STOP_THRESHOLD_PREFIX = "stop_threshold_";
+export const MORNING_DIGEST_PREFIX = "morning_digest_";
 const DEEP_LINK_PATH = "/(tabs)?focus=recommendations";
 const REMINDER_MINUTES_BEFORE = 20;
 const EARLY_REMINDER_MINUTES_BEFORE = 45;
@@ -117,9 +122,12 @@ export async function scheduleClassReminders(
 ): Promise<void> {
   await ensureChannel();
   const now = new Date();
-  const walkedIds = await getWalkedClassIdsToday(now);
+  const [walkedIds, disabledIds] = await Promise.all([
+    getWalkedClassIdsToday(now),
+    getDisabledClassIds(),
+  ]);
   const todayClasses = getTodayClasses(classes, now).filter(
-    (c) => !walkedIds.includes(c.class_id)
+    (c) => !walkedIds.includes(c.class_id) && !disabledIds.includes(c.class_id)
   );
 
   for (const c of todayClasses) {
@@ -222,6 +230,84 @@ export async function cancelClassReminder(classId: string): Promise<void> {
   await Notifications.cancelScheduledNotificationAsync(`${CLASS_EARLY_PREFIX}${classId}`);
   await Notifications.cancelScheduledNotificationAsync(`${CLASS_REMINDER_PREFIX}${classId}`);
   await Notifications.cancelScheduledNotificationAsync(`${CLASS_DEPART_PREFIX}${classId}`);
+}
+
+/**
+ * Fire immediately when no bus can get the user to class on time.
+ * Identifier: MISS_CLASS_PREFIX + classId
+ */
+export async function scheduleMissClassAlert(
+  classId: string,
+  classTitle: string,
+  walkMins: number
+): Promise<void> {
+  await ensureChannel();
+  await Notifications.scheduleNotificationAsync({
+    identifier: `${MISS_CLASS_PREFIX}${classId}`,
+    content: {
+      title: "You might miss class",
+      body: `No bus gets you to ${classTitle} on time — walk is ${walkMins} min`,
+      data: { url: DEEP_LINK_PATH },
+    },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+      seconds: 1,
+    },
+  });
+}
+
+/**
+ * Fire immediately when a favorited stop's bus is N minutes away.
+ * Cancels any existing notification for the same stop+route before scheduling.
+ * Identifier: STOP_THRESHOLD_PREFIX + stopId + "_" + routeId
+ */
+export async function scheduleStopThresholdAlert(
+  stopId: string,
+  stopName: string,
+  routeId: string,
+  minsAway: number
+): Promise<void> {
+  await ensureChannel();
+  const identifier = `${STOP_THRESHOLD_PREFIX}${stopId}_${routeId}`;
+  // Cancel existing before rescheduling
+  await Notifications.cancelScheduledNotificationAsync(identifier).catch(() => {});
+  await Notifications.scheduleNotificationAsync({
+    identifier,
+    content: {
+      title: `Route ${routeId} approaching`,
+      body: `${routeId} arriving at ${stopName} in ${minsAway} min`,
+      data: { url: DEEP_LINK_PATH },
+    },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+      seconds: 1,
+    },
+  });
+}
+
+/**
+ * Schedule a morning digest notification at a specific Date.
+ * Identifier: MORNING_DIGEST_PREFIX + classId
+ */
+export async function scheduleMorningDigest(
+  classId: string,
+  classTitle: string,
+  firstDepartTime: string,
+  digestTime: Date
+): Promise<void> {
+  await ensureChannel();
+  await Notifications.scheduleNotificationAsync({
+    identifier: `${MORNING_DIGEST_PREFIX}${classId}`,
+    content: {
+      title: "Good morning — class day",
+      body: `${classTitle} starts soon. Leave by ${firstDepartTime} for your best route.`,
+      data: { url: DEEP_LINK_PATH },
+    },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.DATE,
+      date: digestTime,
+    },
+  });
 }
 
 /** Schedule a one-off test notification in 3 seconds. Use for "Send test notification" in Settings. */

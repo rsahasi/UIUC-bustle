@@ -10,6 +10,8 @@ import {
   type FavoriteStop,
   type SavedPlace,
 } from "@/src/storage/favorites";
+import { MapPin, Plus, Star } from "lucide-react-native";
+import { theme } from "@/src/constants/theme";
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
@@ -92,7 +94,7 @@ export default function FavoritesScreen() {
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#13294b" />
+        <ActivityIndicator size="large" color={theme.colors.navy} />
       </View>
     );
   }
@@ -138,7 +140,8 @@ export default function FavoritesScreen() {
         </View>
       ) : (
         <Pressable style={styles.addPlaceBtn} onPress={() => setAddingPlace(true)}>
-          <Text style={styles.addPlaceBtnText}>+ Add place</Text>
+          <Plus size={16} color={theme.colors.orange} style={{ marginRight: 6 }} />
+          <Text style={styles.addPlaceBtnText}>Add place</Text>
         </Pressable>
       )}
       {places.map((p) => (
@@ -159,7 +162,11 @@ export default function FavoritesScreen() {
       <Text style={styles.sectionTitle}>Favorite stops</Text>
       <Text style={styles.hint}>Add stops from Home or Map. Quick access to departures.</Text>
       {stops.length === 0 ? (
-        <Text style={styles.empty}>No favorite stops yet.</Text>
+        <View style={styles.emptyState}>
+          <Star size={28} color={theme.colors.textMuted} style={{ marginBottom: 8 }} />
+          <Text style={styles.empty}>No favorite stops yet.</Text>
+          <Text style={styles.emptyHint}>Tap the star on any stop in Home or Map.</Text>
+        </View>
       ) : (
         stops.map((s) => (
           <View key={s.stop_id} style={styles.card}>
@@ -185,29 +192,31 @@ export default function FavoritesScreen() {
 const styles = StyleSheet.create({
   container: { padding: 16, paddingBottom: 32 },
   centered: { flex: 1, justifyContent: "center", alignItems: "center" },
-  sectionTitle: { fontSize: 18, fontWeight: "700", color: "#13294b", marginTop: 16, marginBottom: 8 },
-  hint: { fontSize: 14, color: "#666", marginBottom: 12 },
+  sectionTitle: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, marginTop: 16, marginBottom: 8 },
+  hint: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 12 },
   afterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
-  chip: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: "#eee" },
-  chipSelected: { backgroundColor: "#13294b" },
-  chipText: { fontSize: 14, color: "#333", fontWeight: "500" },
-  chipTextSelected: { color: "#fff" },
+  chip: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: theme.radius.lg, backgroundColor: theme.colors.surfaceAlt },
+  chipSelected: { backgroundColor: theme.colors.navy },
+  chipText: { fontSize: 14, fontFamily: "DMSans_500Medium", color: theme.colors.text },
+  chipTextSelected: { color: theme.colors.surface },
   addRow: { marginBottom: 12 },
-  input: { borderWidth: 1, borderColor: "#ccc", borderRadius: 8, padding: 12, marginBottom: 8, fontSize: 16 },
-  addBtn: { backgroundColor: "#13294b", padding: 12, borderRadius: 8, alignItems: "center", marginBottom: 8 },
-  addBtnText: { color: "#fff", fontWeight: "600" },
+  input: { borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.md, padding: 12, marginBottom: 8, fontSize: 16, fontFamily: "DMSans_400Regular" },
+  addBtn: { backgroundColor: theme.colors.navy, padding: 12, borderRadius: theme.radius.md, alignItems: "center", marginBottom: 8 },
+  addBtnText: { color: theme.colors.surface, fontFamily: "DMSans_600SemiBold", fontSize: 15 },
   cancelBtn: { alignItems: "center" },
-  cancelBtnText: { color: "#666", fontSize: 14 },
-  addPlaceBtn: { padding: 14, borderRadius: 8, borderWidth: 1, borderColor: "#13294b", alignItems: "center", marginBottom: 12 },
-  addPlaceBtnText: { color: "#13294b", fontWeight: "600" },
-  card: { backgroundColor: "#f5f5f5", borderRadius: 12, padding: 14, marginBottom: 10 },
-  placeName: { fontSize: 16, fontWeight: "600", color: "#13294b" },
-  placeCoords: { fontSize: 12, color: "#666", marginTop: 4 },
-  stopName: { fontSize: 16, fontWeight: "600", color: "#13294b" },
+  cancelBtnText: { color: theme.colors.textSecondary, fontSize: 14, fontFamily: "DMSans_400Regular" },
+  addPlaceBtn: { flexDirection: "row", padding: 14, borderRadius: theme.radius.md, borderWidth: 1.5, borderColor: theme.colors.orange, borderStyle: "dashed", alignItems: "center", justifyContent: "center", marginBottom: 12 },
+  addPlaceBtnText: { color: theme.colors.orange, fontFamily: "DMSans_600SemiBold", fontSize: 15 },
+  emptyState: { alignItems: "center", paddingVertical: 20, marginBottom: 12 },
+  emptyHint: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 4 },
+  card: { backgroundColor: theme.colors.surfaceAlt, borderRadius: theme.radius.lg, padding: 14, marginBottom: 10 },
+  placeName: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
+  placeCoords: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
+  stopName: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
   cardRow: { flexDirection: "row", marginTop: 10, gap: 12 },
-  linkBtn: { paddingVertical: 8, paddingHorizontal: 12, backgroundColor: "#13294b", borderRadius: 8 },
-  linkBtnText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  linkBtn: { paddingVertical: 8, paddingHorizontal: 12, backgroundColor: theme.colors.navy, borderRadius: theme.radius.md },
+  linkBtnText: { color: theme.colors.surface, fontSize: 14, fontFamily: "DMSans_600SemiBold" },
   removeBtn: { paddingVertical: 8, paddingHorizontal: 12, justifyContent: "center" },
-  removeBtnText: { color: "#c41e3a", fontSize: 14 },
-  empty: { fontSize: 14, color: "#666", marginBottom: 16 },
+  removeBtnText: { color: theme.colors.error, fontSize: 14, fontFamily: "DMSans_400Regular" },
+  empty: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 16 },
 });

@@ -39,4 +39,40 @@ export async function setStoredBufferMinutes(minutes: number): Promise<void> {
   await AsyncStorage.setItem(BUFFER_KEY, String(clamped));
 }
 
+const WEIGHT_KEY = "@uiuc_bus_weight_kg";
+export const DEFAULT_WEIGHT_KG = 70;
+export const MIN_WEIGHT_KG = 40;
+export const MAX_WEIGHT_KG = 150;
+
+export async function getStoredWeightKg(): Promise<number> {
+  try {
+    const v = await AsyncStorage.getItem(WEIGHT_KEY);
+    if (v != null) {
+      const n = parseInt(v, 10);
+      if (!Number.isNaN(n) && n >= MIN_WEIGHT_KG && n <= MAX_WEIGHT_KG) return n;
+    }
+  } catch (_) {}
+  return DEFAULT_WEIGHT_KG;
+}
+
+export async function setStoredWeightKg(kg: number): Promise<void> {
+  const clamped = Math.round(Math.max(MIN_WEIGHT_KG, Math.min(MAX_WEIGHT_KG, kg)));
+  await AsyncStorage.setItem(WEIGHT_KEY, String(clamped));
+}
+
 export { DEFAULT_WALKING, DEFAULT_BUFFER, MIN_BUFFER, MAX_BUFFER };
+
+const RAIN_KEY = "@uiuc_bus_rain_mode";
+
+export async function getStoredRainMode(): Promise<boolean> {
+  try {
+    const v = await AsyncStorage.getItem(RAIN_KEY);
+    return v === "true";
+  } catch {
+    return false;
+  }
+}
+
+export async function setStoredRainMode(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(RAIN_KEY, enabled ? "true" : "false");
+}

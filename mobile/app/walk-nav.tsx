@@ -3,12 +3,14 @@ import type { BusStop, VehicleInfo } from "@/src/api/client";
 import { getMpsForMode, WALKING_MODES } from "@/src/constants/walkingMode";
 import type { WalkingModeId } from "@/src/constants/walkingMode";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
+import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { addActivityEntry, todayDateString } from "@/src/storage/activityLog";
 import { MET_BY_MODE, calcCalories } from "@/src/utils/activity";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { Pedometer } from "expo-sensors";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { Bus, Flame, Footprints, Timer, X } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -21,15 +23,40 @@ import {
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { theme } from "@/src/constants/theme";
+import { getEntranceCoords } from "@/src/utils/buildingEntrance";
 
-const WEIGHT_KG = 70; // default weight; could come from settings later
 const ARRIVAL_THRESHOLD_M = 30;
+const OFF_ROUTE_THRESHOLD_M = 120;
+
+/** Minimum distance (meters) from point (pLat, pLng) to a line segment [(aLat,aLng)-(bLat,bLng)] */
+function distToSegmentM(
+  pLat: number, pLng: number,
+  aLat: number, aLng: number,
+  bLat: number, bLng: number
+): number {
+  const dx = bLng - aLng, dy = bLat - aLat;
+  if (dx === 0 && dy === 0) return haversineMeters(pLat, pLng, aLat, aLng);
+  const t = Math.max(0, Math.min(1, ((pLng - aLng) * dx + (pLat - aLat) * dy) / (dx * dx + dy * dy)));
+  return haversineMeters(pLat, pLng, aLat + t * dy, aLng + t * dx);
+}
+
+function minDistToPolylineM(lat: number, lng: number, coords: { latitude: number; longitude: number }[]): number {
+  if (coords.length === 0) return Infinity;
+  if (coords.length === 1) return haversineMeters(lat, lng, coords[0].latitude, coords[0].longitude);
+  let min = Infinity;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const d = distToSegmentM(lat, lng, coords[i].latitude, coords[i].longitude, coords[i + 1].latitude, coords[i + 1].longitude);
+    if (d < min) min = d;
+  }
+  return min;
+}
 
 type NavPhase = "walking" | "bus";
 
 export default function WalkNavScreen() {
   const router = useRouter();
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
+  const { weightKg } = useRecommendationSettings();
   const params = useLocalSearchParams<{
     dest_lat: string;
     dest_lng: string;
@@ -40,10 +67,15 @@ export default function WalkNavScreen() {
     alighting_stop_id: string;
     alighting_lat: string;
     alighting_lng: string;
+    building_id: string;
+    arrive_by_class_time: string;
+    bus_dep_epoch_ms: string;
   }>();
 
-  const destLat = parseFloat(params.dest_lat ?? "0");
-  const destLng = parseFloat(params.dest_lng ?? "0");
+  const buildingId = params.building_id ?? "";
+  const entranceOverride = buildingId ? getEntranceCoords(buildingId) : null;
+  const destLat = entranceOverride ? entranceOverride.lat : parseFloat(params.dest_lat ?? "0");
+  const destLng = entranceOverride ? entranceOverride.lng : parseFloat(params.dest_lng ?? "0");
   const destName = params.dest_name ?? "Destination";
   const modeId = (params.walking_mode_id ?? "walk") as WalkingModeId;
   const routeId = params.route_id ?? "";
@@ -74,6 +106,11 @@ export default function WalkNavScreen() {
   const [pedometerAvailable, setPedometerAvailable] = useState(false);
   const [encouragement, setEncouragement] = useState<string | null>(null);
   const [busVehicles, setBusVehicles] = useState<VehicleInfo[]>([]);
+  const [entranceDesc] = useState<string | null>(entranceOverride?.desc ?? null);
+  const [busDepEpochMs] = useState<number | null>(
+    params.bus_dep_epoch_ms ? parseInt(params.bus_dep_epoch_ms, 10) : null
+  );
+  const [busMissed, setBusMissed] = useState(false);
 
   const startTimeRef = useRef<number>(Date.now());
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
@@ -89,11 +126,18 @@ export default function WalkNavScreen() {
   const currentTargetRef = useRef<{ lat: number; lng: number }>({ lat: destLat, lng: destLng });
 
   const mapRef = useRef<MapView | null>(null);
+  const walkingRouteCoordsRef = useRef<{ latitude: number; longitude: number }[]>([]);
+  const offRouteRefetchRef = useRef(false);
 
   // Keep navPhaseRef in sync
   useEffect(() => {
     navPhaseRef.current = navPhase;
   }, [navPhase]);
+
+  // Keep walkingRouteCoordsRef in sync
+  useEffect(() => {
+    walkingRouteCoordsRef.current = walkingRouteCoords;
+  }, [walkingRouteCoords]);
 
   // Start timer
   useEffect(() => {
@@ -117,7 +161,7 @@ export default function WalkNavScreen() {
       } catch {}
     };
     poll();
-    vehiclePollRef.current = setInterval(poll, 15_000);
+    vehiclePollRef.current = setInterval(poll, 8_000);
     return () => {
       if (vehiclePollRef.current) clearInterval(vehiclePollRef.current);
     };
@@ -139,9 +183,9 @@ export default function WalkNavScreen() {
     };
   }, []);
 
-  // Fetch walking route on first GPS fix
-  const fetchWalkRoute = useCallback(async (userLat: number, userLng: number) => {
-    if (walkingRouteFetchedRef.current) return;
+  // Fetch walking route on first GPS fix or when off-route
+  const fetchWalkRoute = useCallback(async (userLat: number, userLng: number, force = false) => {
+    if (walkingRouteFetchedRef.current && !force) return;
     walkingRouteFetchedRef.current = true;
     // Snap origin to UIUC if GPS is far away (simulator default = San Francisco)
     const UIUC_LAT = 40.102, UIUC_LNG = -88.2272;
@@ -230,10 +274,32 @@ export default function WalkNavScreen() {
               walkedDistanceMRef.current += delta;
               const met = MET_BY_MODE[modeId] ?? 2.8;
               const walkedHours = walkedDistanceMRef.current / speedMps / 3600;
-              setCaloriesBurned(calcCalories(met, WEIGHT_KG, walkedHours));
+              setCaloriesBurned(calcCalories(met, weightKg, walkedHours));
             }
           }
           lastPositionRef.current = { lat: latitude, lng: longitude };
+
+          // Missed bus detection
+          if (busDepEpochMs && navPhaseRef.current === "walking" && Date.now() > busDepEpochMs + 30000 && !busMissed) {
+            setBusMissed(true);
+          }
+
+          // Off-route detection: if >120m from polyline, re-fetch OSRM route
+          if (
+            navPhaseRef.current === "walking" &&
+            !arrivedRef.current &&
+            !offRouteRefetchRef.current &&
+            walkingRouteCoordsRef.current.length > 1
+          ) {
+            const distToRoute = minDistToPolylineM(latitude, longitude, walkingRouteCoordsRef.current);
+            if (distToRoute > OFF_ROUTE_THRESHOLD_M) {
+              offRouteRefetchRef.current = true;
+              walkingRouteFetchedRef.current = false;
+              fetchWalkRoute(latitude, longitude, true).finally(() => {
+                offRouteRefetchRef.current = false;
+              });
+            }
+          }
 
           if (dist <= ARRIVAL_THRESHOLD_M && !arrivedRef.current) {
             const phase = navPhaseRef.current;
@@ -257,7 +323,7 @@ export default function WalkNavScreen() {
       mounted = false;
       locationSubRef.current?.remove();
     };
-  }, [destLat, destLng, isBusMode, alightingLat, alightingLng, fetchWalkRoute, fetchBusData, modeId, speedMps]);
+  }, [destLat, destLng, isBusMode, alightingLat, alightingLng, fetchWalkRoute, fetchBusData, modeId, speedMps, weightKg]);
 
   // Show completion modal on arrival + fetch encouragement
   useEffect(() => {
@@ -315,6 +381,21 @@ export default function WalkNavScreen() {
   const target = currentTargetRef.current;
   const etaSeconds = distanceM != null && speedMps > 0 ? Math.round(distanceM / speedMps) : null;
   const etaMinutes = etaSeconds != null ? Math.ceil(etaSeconds / 60) : null;
+
+  // Pace warning calculation
+  const classStartTime = params.arrive_by_class_time as string | undefined;
+  let paceStatus: 'on-track' | 'behind' | 'ahead' | null = null;
+  let minsUntilClass: number | null = null;
+  if (classStartTime && etaMinutes != null) {
+    const now = new Date();
+    const [h, m] = classStartTime.split(':').map(Number);
+    const classMs = new Date().setHours(h, m, 0, 0);
+    minsUntilClass = (classMs - now.getTime()) / 60000;
+    const marginMins = minsUntilClass - etaMinutes;
+    if (marginMins < -1) paceStatus = 'behind';
+    else if (marginMins > 3) paceStatus = 'ahead';
+    else paceStatus = 'on-track';
+  }
 
   // Snap map center to UIUC if GPS is far away (simulator default = San Francisco)
   const UIUC_CENTER = { lat: 40.102, lng: -88.2272 };
@@ -391,19 +472,24 @@ export default function WalkNavScreen() {
               key={s.stop_id}
               coordinate={{ latitude: s.lat, longitude: s.lng }}
               title={s.stop_name}
-              pinColor={s.stop_id === alightingStopId ? "#c41e3a" : "#13294b"}
+              pinColor={s.stop_id === alightingStopId ? theme.colors.error : theme.colors.navy}
             />
           ))}
 
-          {/* Live bus vehicles */}
+          {/* Live bus vehicles — navy circle with white Bus icon */}
           {busVehicles.map((v) => (
             <Marker
               key={`bus-${v.vehicle_id}`}
               coordinate={{ latitude: v.lat, longitude: v.lng }}
               title={`Bus ${v.route_id}`}
               description={v.headsign || undefined}
-              pinColor="#e35205"
-            />
+              anchor={{ x: 0.5, y: 0.5 }}
+              tracksViewChanges={false}
+            >
+              <View style={styles.busMarker}>
+                <Bus size={14} color="#fff" strokeWidth={2.5} />
+              </View>
+            </Marker>
           ))}
         </MapView>
       )}
@@ -421,6 +507,16 @@ export default function WalkNavScreen() {
           <Text style={styles.onBusText}>
             On Bus {routeId} → alight at {alightingStopName || "destination stop"}
           </Text>
+        </View>
+      )}
+
+      {/* Missed bus banner */}
+      {busMissed && (
+        <View style={styles.missedBusBanner}>
+          <Text style={styles.missedBusText}>Bus departed — continue walking to destination</Text>
+          <Pressable onPress={() => setBusMissed(false)} style={styles.missedBusDismiss}>
+            <Text style={styles.missedBusDismissText}>Got it</Text>
+          </Pressable>
         </View>
       )}
 
@@ -454,6 +550,15 @@ export default function WalkNavScreen() {
             </View>
             <Text style={styles.hudMode}>{modeLabel} mode · {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
             <Text style={styles.hudDest} numberOfLines={1}>→ {destName}</Text>
+            {entranceDesc != null && (
+              <Text style={styles.entranceNotice}>→ {entranceDesc}</Text>
+            )}
+            {paceStatus === 'behind' && etaMinutes != null && minsUntilClass != null && (
+              <Text style={styles.paceWarning}>Behind pace — {Math.abs(Math.round(minsUntilClass - etaMinutes))} min late at this speed</Text>
+            )}
+            {paceStatus === 'ahead' && (
+              <Text style={styles.paceAhead}>On track — arriving early</Text>
+            )}
           </>
         ) : (
           <>
@@ -489,8 +594,9 @@ export default function WalkNavScreen() {
         </View>
       )}
 
-      <Pressable style={styles.cancelBtn} onPress={onCancel}>
-        <Text style={styles.cancelBtnText}>✕ Cancel walk</Text>
+      <Pressable style={[styles.cancelBtn, { flexDirection: "row", alignItems: "center", gap: 4 }]} onPress={onCancel}>
+        <X size={14} color="#fff" />
+        <Text style={styles.cancelBtnText}>Cancel walk</Text>
       </Pressable>
 
       {/* Completion modal */}
@@ -500,10 +606,24 @@ export default function WalkNavScreen() {
             <Text style={styles.modalTitle}>You arrived!</Text>
             <Text style={styles.modalDest}>{destName}</Text>
             <View style={styles.modalStats}>
-              <Text style={styles.modalStat}>🚶 {formatDistance(walkedDistanceMRef.current)}</Text>
-              <Text style={styles.modalStat}>⏱ {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
-              <Text style={styles.modalStat}>🔥 {caloriesBurned.toFixed(1)} kcal</Text>
-              {pedometerAvailable && <Text style={styles.modalStat}>👣 {stepCount} steps</Text>}
+              <View style={styles.modalStatRow}>
+                <Footprints size={18} color={theme.colors.text} />
+                <Text style={styles.modalStat}>{formatDistance(walkedDistanceMRef.current)}</Text>
+              </View>
+              <View style={styles.modalStatRow}>
+                <Timer size={18} color={theme.colors.text} />
+                <Text style={styles.modalStat}>{Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
+              </View>
+              <View style={styles.modalStatRow}>
+                <Flame size={18} color={theme.colors.text} />
+                <Text style={styles.modalStat}>{caloriesBurned.toFixed(1)} kcal</Text>
+              </View>
+              {pedometerAvailable && (
+                <View style={styles.modalStatRow}>
+                  <Footprints size={18} color={theme.colors.text} />
+                  <Text style={styles.modalStat}>{stepCount} steps</Text>
+                </View>
+              )}
             </View>
             {encouragement && (
               <Text style={styles.encouragementText}>{encouragement}</Text>
@@ -533,6 +653,20 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 4,
   },
+  busMarker: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: theme.colors.navy,
+    borderWidth: 2,
+    borderColor: theme.colors.orange,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
   boardBusBanner: {
     position: "absolute",
     top: 48,
@@ -542,17 +676,17 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
   },
-  boardBusText: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  boardBusText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_600SemiBold" },
   onBusBanner: {
     position: "absolute",
     top: 48,
     left: 16,
     right: 120,
-    backgroundColor: "rgba(227,82,5,0.92)",
+    backgroundColor: "rgba(232,74,39,0.92)",
     padding: 10,
-    borderRadius: 8,
+    borderRadius: theme.radius.md,
   },
-  onBusText: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  onBusText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_600SemiBold" },
   hud: {
     position: "absolute",
     bottom: 0,
@@ -561,35 +695,35 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(19,41,75,0.92)",
     padding: 16,
     paddingBottom: 32,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: theme.radius.lg,
+    borderTopRightRadius: theme.radius.lg,
   },
   hudRow: { flexDirection: "row", justifyContent: "space-around", marginBottom: 8 },
   hudCell: { alignItems: "center" },
-  hudLabel: { fontSize: 11, color: "rgba(255,255,255,0.7)", marginBottom: 2 },
-  hudValue: { fontSize: 20, fontWeight: "700", color: "#fff" },
-  hudMode: { fontSize: 13, color: "rgba(255,255,255,0.8)", textAlign: "center", marginBottom: 4 },
-  hudDest: { fontSize: 14, color: "#e35205", fontWeight: "600", textAlign: "center" },
+  hudLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", marginBottom: 2 },
+  hudValue: { fontSize: 20, fontFamily: "DMSans_700Bold", color: "#fff" },
+  hudMode: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.8)", textAlign: "center", marginBottom: 4 },
+  hudDest: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange, textAlign: "center" },
   cancelBtn: {
     position: "absolute",
     top: 48,
     right: 16,
-    backgroundColor: "rgba(196,30,58,0.9)",
+    backgroundColor: "rgba(220,38,38,0.9)",
     paddingVertical: 10,
     paddingHorizontal: 16,
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
   },
-  cancelBtnText: { color: "#fff", fontWeight: "600", fontSize: 14 },
+  cancelBtnText: { color: "#fff", fontFamily: "DMSans_600SemiBold", fontSize: 14 },
   errorBanner: {
     position: "absolute",
     top: 48,
     left: 16,
     right: 120,
-    backgroundColor: "#c41e3a",
+    backgroundColor: theme.colors.error,
     padding: 10,
-    borderRadius: 8,
+    borderRadius: theme.radius.md,
   },
-  errorBannerText: { color: "#fff", fontSize: 13 },
+  errorBannerText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_400Regular" },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -598,16 +732,17 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   modalCard: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
     padding: 24,
     width: "100%",
     alignItems: "center",
   },
-  modalTitle: { fontSize: 24, fontWeight: "700", color: theme.colors.primary, marginBottom: 4 },
-  modalDest: { fontSize: 16, color: theme.colors.textSecondary, marginBottom: 16 },
+  modalTitle: { fontSize: 24, fontFamily: "DMSans_700Bold", color: theme.colors.primary, marginBottom: 4 },
+  modalDest: { fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 16 },
   modalStats: { flexDirection: "row", flexWrap: "wrap", gap: 12, justifyContent: "center", marginBottom: 20 },
-  modalStat: { fontSize: 18, fontWeight: "600", color: theme.colors.text },
+  modalStatRow: { flexDirection: "row", alignItems: "center", gap: 4 },
+  modalStat: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
   encouragementText: {
     fontSize: 14,
     color: theme.colors.secondary,
@@ -622,5 +757,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     borderRadius: 12,
   },
-  modalBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  modalBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_700Bold" },
+  entranceNotice: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", marginTop: 2, textAlign: "center" },
+  paceWarning: { fontSize: 12, fontFamily: "DMSans_600SemiBold", color: theme.colors.error, backgroundColor: "rgba(220,38,38,0.15)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, marginTop: 4, textAlign: "center" },
+  paceAhead: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.6)", marginTop: 2, textAlign: "center" },
+  missedBusBanner: { position: "absolute", top: 0, left: 0, right: 0, backgroundColor: theme.colors.error, padding: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", zIndex: 20 },
+  missedBusText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff", flex: 1 },
+  missedBusDismiss: { paddingHorizontal: 10, paddingVertical: 4 },
+  missedBusDismissText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff" },
 });

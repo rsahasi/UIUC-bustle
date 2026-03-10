@@ -1,6 +1,7 @@
 """
 Buildings and schedule tables in app SQLite DB.
 """
+import asyncio
 import json
 import sqlite3
 import uuid
@@ -78,6 +79,28 @@ def init_app_db(db_path: str | Path) -> None:
             "INSERT OR IGNORE INTO buildings (building_id, name, lat, lng) VALUES (?, ?, ?, ?)",
             ("custom", "Custom Location", 0.0, 0.0),
         )
+        # FTS5 virtual table for fast building name search
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS buildings_fts USING fts5(
+                name, building_id UNINDEXED,
+                content=buildings, content_rowid=rowid
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS buildings_fts_insert AFTER INSERT ON buildings BEGIN
+                INSERT INTO buildings_fts(rowid, name, building_id) VALUES (new.rowid, new.name, new.building_id);
+            END
+            """
+        )
+        # Rebuild FTS index from buildings table (idempotent)
+        try:
+            conn.execute("INSERT INTO buildings_fts(buildings_fts) VALUES('rebuild')")
+        except Exception:
+            pass  # May fail if trigger already kept it in sync
+
         # Optional columns (backward-compatible migration)
         cols = [r[1] for r in conn.execute("PRAGMA table_info(schedule_classes)").fetchall()]
         for col, typ in (
@@ -154,6 +177,42 @@ def search_buildings(db_path: str | Path, query: str, limit: int = 6) -> list[Bu
     # the exact building isn't in the DB. Nominatim handles those cases instead.
     and_clause = " AND ".join(f"lower(name) LIKE '%' || ? || '%'" for _ in tokens)
     return _fetch(and_clause, list(tokens))
+
+
+def search_buildings_fts(db_path: str | Path, query: str, limit: int = 6) -> list[BuildingRecord]:
+    """
+    FTS5-accelerated building name search with prefix matching.
+    Falls back to search_buildings() if FTS table missing or query unsupported.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists() or not query.strip():
+        return []
+    tokens = [t for t in query.strip().lower().split() if t]
+    if not tokens:
+        return []
+    # Build FTS5 MATCH pattern: each token as a prefix match
+    match_expr = " AND ".join(f"name:{t}*" for t in tokens)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                """
+                SELECT b.building_id, b.name, b.lat, b.lng
+                FROM buildings_fts f
+                JOIN buildings b ON b.rowid = f.rowid
+                WHERE buildings_fts MATCH ?
+                  AND b.building_id != 'custom'
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (match_expr, limit),
+            )
+            rows = cur.fetchall()
+            if rows:
+                return [BuildingRecord(building_id=r["building_id"], name=r["name"], lat=r["lat"], lng=r["lng"]) for r in rows]
+    except Exception:
+        pass  # FTS not available yet — fall through to regular search
+    return search_buildings(db_path, query, limit)
 
 
 def get_building(db_path: str | Path, building_id: str) -> BuildingRecord | None:

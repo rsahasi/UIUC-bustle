@@ -281,12 +281,56 @@ export async function fetchBuildingSearch(
 
 /** GET /autocomplete - combined buildings + Nominatim suggestions */
 export interface AutocompleteResult {
-  type: "building" | "place";
+  type: "building" | "place" | "google_place";
   name: string;
   display_name?: string;
+  secondary_text?: string;
   lat: number;
   lng: number;
   building_id?: string;
+  place_id?: string;
+}
+
+export interface PlacePrediction {
+  place_id: string;
+  main_text: string;
+  secondary_text: string;
+  description: string;
+}
+
+/** POST /places/autocomplete - Google Places autocomplete via backend proxy */
+export async function fetchPlacesAutocomplete(
+  baseUrl: string,
+  query: string,
+  sessionToken?: string,
+  options?: RequestOptions
+): Promise<{ predictions: PlacePrediction[] }> {
+  const base = baseUrl.replace(/\/$/, "");
+  const res = await fetchWithRetry(`${base}/places/autocomplete`, "/places/autocomplete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ q: query, session_token: sessionToken }),
+    signal: options?.signal,
+    apiKey: options?.apiKey,
+  });
+  if (!res.ok) return { predictions: [] };
+  return safeJson(res, "/places/autocomplete", { predictions: [] });
+}
+
+/** GET /places/details - resolve a place_id to lat/lng */
+export async function fetchPlaceDetails(
+  baseUrl: string,
+  placeId: string,
+  options?: RequestOptions
+): Promise<{ lat: number; lng: number; display_name: string }> {
+  const base = baseUrl.replace(/\/$/, "");
+  const res = await fetchWithRetry(
+    `${base}/places/details?place_id=${encodeURIComponent(placeId)}`,
+    "/places/details",
+    options
+  );
+  if (!res.ok) throw new Error(`Places details: ${res.status}`);
+  return safeJson(res, "/places/details", { lat: 0, lng: 0, display_name: "" });
 }
 
 export async function fetchAutocomplete(
@@ -347,6 +391,22 @@ export async function fetchBusRouteStops(
   const res = await fetchWithRetry(`${base}/gtfs/route-stops?${params}`, "/gtfs/route-stops", options);
   if (!res.ok) return { trip_id: null, stops: [], shape_points: [] };
   return safeJson(res, "/gtfs/route-stops", { trip_id: null, stops: [], shape_points: [] });
+}
+
+/** GET /gtfs/route-all-stops - all stops in order for a route (canonical trip) */
+export async function fetchAllStopsForRoute(
+  baseUrl: string,
+  routeId: string,
+  options?: RequestOptions
+): Promise<{ stops: BusStop[] }> {
+  const base = baseUrl.replace(/\/$/, "");
+  const res = await fetchWithRetry(
+    `${base}/gtfs/route-all-stops?route_id=${encodeURIComponent(routeId)}`,
+    "/gtfs/route-all-stops",
+    options
+  );
+  if (!res.ok) return { stops: [] };
+  return safeJson(res, "/gtfs/route-all-stops", { stops: [] });
 }
 
 /** GET /geocode?q=... - resolve place/address to lat, lng, display_name */

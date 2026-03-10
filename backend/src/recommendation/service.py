@@ -1,7 +1,7 @@
 """
 MVP recommendation: options from user location to destination building.
 Uses nearby stops, cached departures, and heuristic ride/walk times.
-TODO: Replace heuristic with real route shapes and stop sequences when available.
+GTFS-based exit stops used when available; falls back to heuristic.
 """
 from datetime import datetime, timezone
 from typing import Callable
@@ -15,7 +15,6 @@ DEST_STOP_RADIUS_M = 500
 
 
 def _minutes_now(now: datetime) -> float:
-    """Minutes since midnight (local or UTC for consistency). Use UTC for stability."""
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     return now.hour * 60 + now.minute + now.second / 60.0
@@ -38,7 +37,6 @@ def _walk_minutes(distance_m: float, walking_speed_mps: float) -> float:
 
 
 def _ride_minutes_heuristic(distance_m: float) -> float:
-    # TODO: use real route shapes and stop sequence for ride time
     if BUS_SPEED_MPS <= 0:
         return 0.0
     return distance_m / (BUS_SPEED_MPS * 60.0)
@@ -58,12 +56,14 @@ def compute_recommendations(
     max_options: int = 3,
     now: datetime | None = None,
     get_building: Callable[[str], tuple[float, float, str] | None],
-    search_nearby_stops: Callable[[float, float, float, int], list[tuple[str, str, float, float]]],  # stop_id, name, lat, lng
+    search_nearby_stops: Callable[[float, float, float, int], list[tuple[str, str, float, float]]],
     get_departures: Callable[[str], list[dict]],
+    find_exit_stop_fn: Callable[[str, str, float, float, str], dict | None] | None = None,
+    prefer_bus: bool = False,
 ) -> list[dict]:
     """
     Return list of option dicts (type, summary, eta_minutes, depart_in_minutes, steps).
-    destination_lat/lng/name are the actual destination; destination_building_id is for step labels.
+    find_exit_stop_fn: optional GTFS callback(route_id, from_stop_id, dest_lat, dest_lng, after_time) -> dict|None
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -75,7 +75,6 @@ def compute_recommendations(
     walk_speed = max(0.1, walking_speed_mps)
     max_opts = max(1, min(10, max_options))
 
-    # Distance user -> building (meters)
     dist_user_building_m = haversine_distance_m(lat, lng, b_lat, b_lng)
     walk_only_min = _walk_minutes(dist_user_building_m, walk_speed)
     arrive_by_ts = arrive_by.timestamp()
@@ -101,67 +100,113 @@ def compute_recommendations(
             ],
         }
 
-    # Stops near user and near destination (for heuristic exit stop)
     user_stops = search_nearby_stops(lat, lng, USER_STOP_RADIUS_M, 10)
     dest_stops = search_nearby_stops(b_lat, b_lng, DEST_STOP_RADIUS_M, 5)
-    # Closest stop to building for walk-from-stop heuristic
-    exit_stop = None
-    exit_dist_m = float("inf")
+
+    # Fallback heuristic exit stop (closest stop to building, used when GTFS unavailable)
+    heuristic_exit: tuple[str, str, float, float] | None = None
+    heuristic_exit_dist_m = float("inf")
     for sid, sname, slat, slng in dest_stops:
         d = haversine_distance_m(slat, slng, b_lat, b_lng)
-        if d < exit_dist_m:
-            exit_dist_m = d
-            exit_stop = (sid, sname, slat, slng)
-    walk_from_stop_min = _walk_minutes(exit_dist_m, walk_speed) if exit_stop else 5.0  # default 5 min
+        if d < heuristic_exit_dist_m:
+            heuristic_exit_dist_m = d
+            heuristic_exit = (sid, sname, slat, slng)
 
-    # TODO: use real route shapes to determine which bus goes to which stop; for now heuristic
+    heuristic_walk_from_stop = (
+        _walk_minutes(heuristic_exit_dist_m, walk_speed) if heuristic_exit else 5.0
+    )
+
+    now_time_str = now.strftime("%H:%M:%S")
+
     bus_candidates: list[tuple[float, dict]] = []
 
     for stop_id, stop_name, stop_lat, stop_lng in user_stops:
         walk_to_stop_m = haversine_distance_m(lat, lng, stop_lat, stop_lng)
         walk_to_stop_min = _walk_minutes(walk_to_stop_m, walk_speed)
-        # Heuristic ride: straight-line from this stop to building (or to exit stop)
-        if exit_stop:
-            ride_dist_m = haversine_distance_m(stop_lat, stop_lng, exit_stop[2], exit_stop[3])
-        else:
-            ride_dist_m = haversine_distance_m(stop_lat, stop_lng, b_lat, b_lng)
-        ride_min = _ride_minutes_heuristic(ride_dist_m)
 
         for d in get_departures(stop_id):
             route = (d.get("route") or "").strip()
             headsign = (d.get("headsign") or "").strip()
             expected_mins = float(d.get("expected_mins") or 0)
-            # Skip buses that will have departed before you reach the stop
+
             if expected_mins < walk_to_stop_min:
                 continue
-            wait_min = expected_mins - walk_to_stop_min  # time waiting at stop for this bus
-            total_eta = walk_to_stop_min + wait_min + ride_min + walk_from_stop_min
+
+            wait_min = expected_mins - walk_to_stop_min
+
+            # --- Per-route exit stop via GTFS, fallback to heuristic ---
+            gtfs_exit = None
+            if find_exit_stop_fn and route:
+                try:
+                    gtfs_exit = find_exit_stop_fn(route, stop_id, b_lat, b_lng, now_time_str)
+                except Exception:
+                    pass
+
+            if gtfs_exit:
+                ex_stop_id = gtfs_exit["stop_id"]
+                ex_stop_name = gtfs_exit.get("stop_name", ex_stop_id)
+                ex_lat = gtfs_exit["lat"]
+                ex_lng = gtfs_exit["lng"]
+                if gtfs_exit.get("travel_minutes") is not None and gtfs_exit["travel_minutes"] > 0:
+                    ride_min = float(gtfs_exit["travel_minutes"])
+                else:
+                    ride_min = _ride_minutes_heuristic(
+                        haversine_distance_m(stop_lat, stop_lng, ex_lat, ex_lng)
+                    )
+                walk_from_min = _walk_minutes(
+                    haversine_distance_m(ex_lat, ex_lng, b_lat, b_lng), walk_speed
+                )
+            else:
+                ex_stop_id = heuristic_exit[0] if heuristic_exit else None
+                ex_stop_name = heuristic_exit[1] if heuristic_exit else None
+                ex_lat = heuristic_exit[2] if heuristic_exit else b_lat
+                ex_lng = heuristic_exit[3] if heuristic_exit else b_lng
+                ride_dist_m = haversine_distance_m(stop_lat, stop_lng, ex_lat, ex_lng)
+                ride_min = _ride_minutes_heuristic(ride_dist_m)
+                walk_from_min = heuristic_walk_from_stop
+
+            total_eta = walk_to_stop_min + wait_min + ride_min + walk_from_min
             if total_eta > minutes_until_arrival - buffer_minutes:
                 continue
-            # depart_in = when to leave NOW to catch this specific bus
+
             depart_in = max(0.0, expected_mins - walk_to_stop_min)
-            score = total_eta  # lower is better
+            score = total_eta
             bus_candidates.append((score, {
                 "type": "BUS",
                 "summary": f"Bus {route} to {headsign or 'destination'} ({total_eta:.0f} min)",
                 "eta_minutes": round(total_eta, 1),
                 "depart_in_minutes": round(depart_in, 1),
                 "steps": [
-                    {"type": "WALK_TO_STOP", "stop_id": stop_id, "stop_name": stop_name, "duration_minutes": round(walk_to_stop_min, 1), "stop_lat": stop_lat, "stop_lng": stop_lng},
+                    {"type": "WALK_TO_STOP", "stop_id": stop_id, "stop_name": stop_name,
+                     "duration_minutes": round(walk_to_stop_min, 1), "stop_lat": stop_lat, "stop_lng": stop_lng},
                     {"type": "WAIT", "stop_id": stop_id, "duration_minutes": round(wait_min, 1)},
-                    {"type": "RIDE", "route": route, "headsign": headsign or "", "stop_id": stop_id, "duration_minutes": round(ride_min, 1),
-                     "alighting_stop_id": exit_stop[0] if exit_stop else None,
-                     "alighting_stop_lat": exit_stop[2] if exit_stop else None,
-                     "alighting_stop_lng": exit_stop[3] if exit_stop else None},
-                    {"type": "WALK_TO_DEST", "building_id": destination_building_id, "duration_minutes": round(walk_from_stop_min, 1), "building_lat": b_lat, "building_lng": b_lng},
+                    {"type": "RIDE", "route": route, "headsign": headsign or "", "stop_id": stop_id,
+                     "duration_minutes": round(ride_min, 1),
+                     "alighting_stop_id": ex_stop_id,
+                     "alighting_stop_lat": ex_lat,
+                     "alighting_stop_lng": ex_lng},
+                    {"type": "WALK_TO_DEST", "building_id": destination_building_id,
+                     "duration_minutes": round(walk_from_min, 1), "building_lat": b_lat, "building_lng": b_lng},
                 ],
             }))
 
-    # Take best BUS options (by score = eta), stable sort by (score, summary)
+    # Sort then deduplicate by (route, headsign) — keep best ETA per unique bus
     bus_candidates.sort(key=lambda x: (x[0], x[1]["summary"]))
-    options = [opt for _, opt in bus_candidates[: max_opts - 1 if walk_option else max_opts]]
+    seen_route_keys: set[tuple[str, str]] = set()
+    deduped: list[tuple[float, dict]] = []
+    for score, opt in bus_candidates:
+        ride_step = next((s for s in opt.get("steps", []) if s["type"] == "RIDE"), None)
+        key = (ride_step.get("route", ""), ride_step.get("headsign", "")) if ride_step else ("", "")
+        if key not in seen_route_keys:
+            seen_route_keys.add(key)
+            deduped.append((score, opt))
+
+    options = [opt for _, opt in deduped[: max_opts - 1 if walk_option else max_opts]]
     if walk_option:
         options.append(walk_option)
-    # Stable order: by eta_minutes, then summary for debuggability
-    options.sort(key=lambda o: (o["eta_minutes"], o["summary"]))
+    if prefer_bus:
+        # Rain mode: bus options first (sorted by eta), walk last
+        options.sort(key=lambda o: (1 if o["type"] == "WALK" else 0, o["eta_minutes"]))
+    else:
+        options.sort(key=lambda o: (o["eta_minutes"], o["summary"]))
     return options[:max_opts]

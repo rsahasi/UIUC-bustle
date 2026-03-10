@@ -185,3 +185,139 @@ def get_shape_for_trip(
             (shape_id,),
         )
         return [(r["shape_pt_lat"], r["shape_pt_lon"]) for r in cur2.fetchall()]
+
+
+def find_best_exit_stop_for_route(
+    db_path: str | Path,
+    route_id: str,
+    from_stop_id: str,
+    dest_lat: float,
+    dest_lng: float,
+    after_time: str = "00:00:00",
+) -> dict | None:
+    """
+    For a specific route departing from from_stop_id, find the downstream stop
+    closest to (dest_lat, dest_lng). Returns { stop_id, stop_name, lat, lng, travel_minutes }
+    or None if GTFS DB unavailable or no matching trip found.
+    """
+    import math
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    dep_min_floor = _time_to_minutes(after_time) or 0
+    padded = after_time.strip() if after_time.strip() else "00:00:00"
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            # Find the soonest trip for this route that serves from_stop_id
+            cur = conn.execute(
+                """
+                SELECT st.trip_id, st.stop_sequence AS from_seq, st.departure_time
+                FROM gtfs_stop_times st
+                JOIN gtfs_trips t ON t.trip_id = st.trip_id
+                WHERE t.route_id = ? AND st.stop_id = ? AND st.departure_time >= ?
+                ORDER BY st.departure_time
+                LIMIT 1
+                """,
+                (route_id, from_stop_id, padded),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            trip_id = row["trip_id"]
+            from_seq = row["from_seq"]
+            dep_min = _time_to_minutes(row["departure_time"] or "") or dep_min_floor
+
+            # All downstream stops for this trip
+            cur2 = conn.execute(
+                """
+                SELECT st.stop_id, st.arrival_time,
+                       gs.stop_name, gs.stop_lat, gs.stop_lon
+                FROM gtfs_stop_times st
+                LEFT JOIN gtfs_stops gs ON gs.stop_id = st.stop_id
+                WHERE st.trip_id = ? AND st.stop_sequence > ?
+                ORDER BY st.stop_sequence
+                """,
+                (trip_id, from_seq),
+            )
+            stops = cur2.fetchall()
+            if not stops:
+                return None
+
+            best: dict | None = None
+            best_dist = float("inf")
+            for s in stops:
+                slat = float(s["stop_lat"] or 0)
+                slng = float(s["stop_lon"] or 0)
+                if slat == 0.0 and slng == 0.0:
+                    continue
+                dist = math.sqrt((slat - dest_lat) ** 2 + (slng - dest_lng) ** 2) * 111_000
+                if dist < best_dist:
+                    best_dist = dist
+                    arr_min = _time_to_minutes(s["arrival_time"] or "")
+                    travel_min = (arr_min - dep_min) if arr_min is not None and arr_min > dep_min else None
+                    best = {
+                        "stop_id": s["stop_id"],
+                        "stop_name": s["stop_name"] or s["stop_id"],
+                        "lat": slat,
+                        "lng": slng,
+                        "travel_minutes": travel_min,
+                    }
+            return best
+    except Exception:
+        return None
+
+
+def get_all_stops_for_route(db_path: str | Path, route_id: str) -> list[dict]:
+    """
+    Return the ordered stop list for a route using the most common trip as the reference.
+    Each entry: { stop_id, stop_name, lat, lng, sequence }.
+    Returns [] if GTFS DB is unavailable or the route has no trips.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            # Find the trip_id with the most stops for this route (canonical trip)
+            cur = conn.execute(
+                """
+                SELECT st.trip_id, COUNT(*) AS stop_count
+                FROM gtfs_stop_times st
+                JOIN gtfs_trips t ON t.trip_id = st.trip_id
+                WHERE t.route_id = ?
+                GROUP BY st.trip_id
+                ORDER BY stop_count DESC
+                LIMIT 1
+                """,
+                (route_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return []
+            trip_id = row["trip_id"]
+            cur2 = conn.execute(
+                """
+                SELECT st.stop_id, st.stop_sequence,
+                       gs.stop_name, gs.stop_lat, gs.stop_lon
+                FROM gtfs_stop_times st
+                LEFT JOIN gtfs_stops gs ON gs.stop_id = st.stop_id
+                WHERE st.trip_id = ?
+                ORDER BY st.stop_sequence
+                """,
+                (trip_id,),
+            )
+            return [
+                {
+                    "stop_id": r["stop_id"],
+                    "stop_name": r["stop_name"] or r["stop_id"],
+                    "lat": float(r["stop_lat"] or 0),
+                    "lng": float(r["stop_lon"] or 0),
+                    "sequence": r["stop_sequence"],
+                }
+                for r in cur2.fetchall()
+                if float(r["stop_lat"] or 0) != 0 or float(r["stop_lon"] or 0) != 0
+            ]
+    except Exception:
+        return []

@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from settings import get_settings
-from src.data.buildings_repo import create_class, delete_class, init_app_db, list_buildings, list_classes, search_buildings
+from src.data.buildings_repo import create_class, delete_class, init_app_db, list_buildings, list_classes, search_buildings, search_buildings_fts
 from src.data.stops_repo import search_nearby
 from src.middleware import OptionalAPIKeyMiddleware, RequestLoggingMiddleware, get_valid_api_keys
 from src.monitoring import get_metrics
@@ -132,6 +132,11 @@ _LOCATION_HINTS = frozenset(["champaign", "urbana", "illinois", " il,", "uiuc", 
 GEOCODE_CACHE_TTL = 86400  # 24 hours in seconds
 GEOCODE_CACHE_MAX = 1000
 
+# Overpass API for local POI search (restaurants, shops, etc.)
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# Bounding box covering all of Champaign-Urbana: lat_min,lon_min,lat_max,lon_max
+OVERPASS_BBOX = "40.08,-88.28,40.15,-88.18"
+
 # Cache: query_string → (result_dict, expires_at)
 _geocode_cache: dict[str, tuple[dict, float]] = {}
 # Rate limiter: max 1 Nominatim request per second
@@ -228,31 +233,138 @@ async def _nominatim_quick(query: str, limit: int = 3) -> list[dict]:
     return results
 
 
+async def _overpass_poi_search(query: str, limit: int = 5) -> list[dict]:
+    """
+    Search Champaign-Urbana POIs via OpenStreetMap Overpass API.
+    Uses the first 4 chars as a prefix regex to tolerate typos in the suffix
+    (e.g. "sakanaya" → prefix "saka" → finds "Sakayana"), then ranks results
+    by string similarity to the full query.
+    """
+    import re
+    import httpx
+    from difflib import SequenceMatcher
+
+    if len(query) < 2:
+        return []
+
+    # Build prefix pattern from first 4 significant chars (tolerates typos after char 4)
+    prefix_len = min(4, len(query))
+    prefix = re.escape(query[:prefix_len])
+    # Overpass QL: search nodes + ways with matching name, case-insensitive (,i flag)
+    overpass_q = (
+        f'[out:json][timeout:6];'
+        f'(node["name"~"{prefix}",i]({OVERPASS_BBOX});'
+        f'way["name"~"{prefix}",i]({OVERPASS_BBOX}););'
+        f'out center {limit * 5};'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=7.0, headers={"User-Agent": GEOCODE_USER_AGENT}) as client:
+            r = await client.post(OVERPASS_URL, data={"data": overpass_q})
+            r.raise_for_status()
+            elements = r.json().get("elements", [])
+    except Exception as e:
+        logger.warning("overpass_poi_search_error query=%s error=%s", query[:30], str(e))
+        return []
+
+    def similarity(name: str) -> float:
+        return SequenceMatcher(None, query.lower(), name.lower()).ratio()
+
+    scored: list[tuple[float, dict]] = []
+    for el in elements:
+        tags = el.get("tags", {})
+        name = tags.get("name", "")
+        if not name:
+            continue
+        lat = el.get("lat") or el.get("center", {}).get("lat", 0)
+        lng = el.get("lon") or el.get("center", {}).get("lon", 0)
+        if not lat or not lng:
+            continue
+        addr_parts = [
+            tags.get("addr:housenumber", ""),
+            tags.get("addr:street", ""),
+            tags.get("addr:city", "Champaign"),
+        ]
+        addr = " ".join(p for p in addr_parts if p).strip()
+        category = tags.get("amenity") or tags.get("shop") or tags.get("tourism") or ""
+        scored.append((similarity(name), {
+            "type": "place",
+            "name": name,
+            "display_name": f"{name}, {addr}" if addr else name,
+            "secondary_text": addr or category,
+            "lat": float(lat),
+            "lng": float(lng),
+        }))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # Filter: require some word in the result name starts with the query prefix.
+    # This eliminates "Airport & Willow" for "portillo" (no word starts with "port")
+    # while correctly passing "Portillo's" ("portillo's" starts with "port"),
+    # "Raising Cane's" for "raising cane" ("raising" starts with "rais"), etc.
+    q_prefix = query[:min(4, len(query))].lower()
+    threshold = 0.35 if len(query) <= 4 else 0.45
+
+    filtered = []
+    for score, item in scored:
+        if score < threshold:
+            continue
+        name_words = item["name"].lower().split()
+        any_word_starts = any(w.startswith(q_prefix) for w in name_words)
+        if any_word_starts:
+            filtered.append(item)
+
+    return filtered[:limit]
+
+
 @app.get("/autocomplete")
 async def autocomplete(request: Request, q: str = "", limit: int = 8):
     """
-    Combined autocomplete: local buildings (instant) + Nominatim places.
-    Returns { results: [{type, name, display_name?, lat, lng, building_id?}] }.
-    Buildings shown first; Nominatim backfills when few building matches.
+    Combined autocomplete: local buildings (FTS5) + Google Places in parallel.
+    Falls back to Nominatim if no Google Places key configured.
+    Returns { results: [{type, name, display_name?, secondary_text?, lat, lng, building_id?, place_id?}] }.
+    Buildings shown first; Places backfill remaining slots.
     """
     query = (q or "").strip()
     if not query or len(query) < 2:
         return {"results": []}
+
+    # Parallel: buildings + Google Places (or Overpass POI + Nominatim fallback)
+    buildings_task = asyncio.create_task(asyncio.to_thread(search_buildings_fts, APP_DB, query, min(5, limit)))
+    google_key = getattr(settings, "google_places_api_key", "")
+    if google_key:
+        places_task = asyncio.create_task(_google_places_quick(query, limit=4))
+    else:
+        # Run Overpass (fuzzy POI) + Nominatim (address) in parallel, merge results
+        async def _combined_fallback(q: str, lim: int) -> list[dict]:
+            overpass_results, nominatim_results = await asyncio.gather(
+                _overpass_poi_search(q, limit=lim),
+                _nominatim_quick(q, limit=2),
+            )
+            seen: set[str] = set()
+            merged: list[dict] = []
+            for item in overpass_results + nominatim_results:
+                key = item["name"].lower()
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(item)
+            return merged[:lim]
+        places_task = asyncio.create_task(_combined_fallback(query, 4))
+
+    buildings_raw, places_raw = await asyncio.gather(buildings_task, places_task)
+
     results: list[dict] = []
     seen_names: set[str] = set()
-    buildings = search_buildings(APP_DB, query, limit=min(5, limit))
-    for b in buildings:
+    for b in buildings_raw:
         key = b.name.lower()
         if key not in seen_names:
             seen_names.add(key)
             results.append({"type": "building", "name": b.name, "lat": b.lat, "lng": b.lng, "building_id": b.building_id})
-    # Fetch Nominatim suggestions if fewer than 3 building matches
-    if len(results) < 3:
-        nom = await _nominatim_quick(query, limit=max(1, limit - len(results)))
-        for item in nom:
-            if item["name"].lower() not in seen_names:
-                seen_names.add(item["name"].lower())
-                results.append(item)
+
+    remaining = limit - len(results)
+    for item in places_raw[:remaining]:
+        if item["name"].lower() not in seen_names:
+            seen_names.add(item["name"].lower())
+            results.append(item)
+
     return {"results": results[:limit]}
 
 
@@ -292,7 +404,7 @@ def stops_nearby(request: Request, lat: float = 0.0, lng: float = 0.0, radius_m:
 
 
 @app.get("/stops/{stop_id}/departures", response_model=DeparturesResponse)
-def get_departures(request: Request, stop_id: str, minutes: int = 60):
+async def get_departures(request: Request, stop_id: str, minutes: int = 60):
     if not stop_id or len(stop_id) > STOP_ID_MAX_LEN or not STOP_ID_PATTERN.match(stop_id):
         raise HTTPException(
             status_code=400,
@@ -311,7 +423,7 @@ def get_departures(request: Request, stop_id: str, minutes: int = 60):
             detail="MTD API key not configured. Set MTD_API_KEY in the environment.",
         )
     try:
-        data = client.get_departures_by_stop(stop_id=stop_id, minutes=minutes)
+        data = await client.get_departures_by_stop(stop_id=stop_id, minutes=minutes)
         return DeparturesResponse(**data)
     except RuntimeError as e:
         logger.warning("telemetry departures_route_error stop_id=%s error=%s", stop_id, str(e))
@@ -328,7 +440,7 @@ def get_departures(request: Request, stop_id: str, minutes: int = 60):
 
 
 @app.get("/vehicles")
-def get_vehicles(request: Request, route_id: str = ""):
+async def get_vehicles(request: Request, route_id: str = ""):
     """Return vehicles currently in service. Optional ?route_id= filter. 10s TTL cache."""
     logger.info("telemetry route=vehicles route_id=%s", route_id or "all")
     client: MTDClient | None = getattr(app.state, "mtd_client", None)
@@ -338,7 +450,7 @@ def get_vehicles(request: Request, route_id: str = ""):
             detail="MTD API key not configured. Set MTD_API_KEY in the environment.",
         )
     try:
-        vehicles = client.get_vehicles_in_service(route_id=route_id or None)
+        vehicles = await client.get_vehicles_in_service(route_id=route_id or None)
         return {"vehicles": vehicles}
     except Exception as e:
         logger.warning("telemetry vehicles_error error=%s", str(e))
@@ -454,14 +566,28 @@ def _search_nearby_for_recommendation(lat: float, lng: float, radius_m: float, l
 
 
 def _get_departures_for_recommendation(stop_id: str) -> list[dict]:
+    """Sync wrapper for recommendation engine — runs async client in a new event loop."""
     client: MTDClient | None = getattr(app.state, "mtd_client", None)
     if not client:
         return []
     try:
-        data = client.get_departures_by_stop(stop_id=stop_id, minutes=60)
+        loop = asyncio.new_event_loop()
+        try:
+            data = loop.run_until_complete(client.get_departures_by_stop(stop_id=stop_id, minutes=60))
+        finally:
+            loop.close()
         return data.get("departures") or []
     except Exception:
         return []
+
+
+def _find_exit_stop_for_recommendation(route_id: str, from_stop_id: str, dest_lat: float, dest_lng: float, after_time: str) -> dict | None:
+    """GTFS-based exit stop lookup for recommendation engine."""
+    try:
+        from src.data.gtfs_repo import find_best_exit_stop_for_route
+        return find_best_exit_stop_for_route(GTFS_DB, route_id, from_stop_id, dest_lat, dest_lng, after_time)
+    except Exception:
+        return None
 
 
 @app.post("/recommendation", response_model=RecommendationResponse)
@@ -496,10 +622,12 @@ def post_recommendation(request: Request, body: RecommendationRequest):
             walking_speed_mps=body.walking_speed_mps,
             buffer_minutes=body.buffer_minutes,
             max_options=body.max_options,
+            prefer_bus=body.prefer_bus,
             now=None,
             get_building=_get_building_for_recommendation,
             search_nearby_stops=_search_nearby_for_recommendation,
             get_departures=_get_departures_for_recommendation,
+            find_exit_stop_fn=_find_exit_stop_for_recommendation,
         )
     except ValueError as e:
         if "invalid_arrive_by" in str(e):
@@ -621,6 +749,16 @@ def gtfs_route_stops(request: Request, route_id: str = "", from_stop_id: str = "
 
 # --- AI endpoints ---
 
+@app.get("/gtfs/route-all-stops")
+def gtfs_all_stops_for_route(request: Request, route_id: str = ""):
+    """Return all stops in order for a given route_id (using longest canonical trip)."""
+    from src.data.gtfs_repo import get_all_stops_for_route
+    if not route_id:
+        return {"stops": []}
+    stops = get_all_stops_for_route(GTFS_DB, route_id)
+    return {"stops": stops}
+
+
 from pydantic import BaseModel as _BaseModel
 
 
@@ -696,6 +834,195 @@ def post_eod_report(request: Request, body: EodReportRequest):
     except Exception as e:
         logger.warning("telemetry eod_report_error error=%s", str(e))
         raise HTTPException(status_code=502, detail="Failed to generate AI report.") from e
+
+
+# --- Google Places proxy ---
+
+GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
+GOOGLE_PLACES_DETAILS_BASE = "https://places.googleapis.com/v1/places"
+GOOGLE_PLACES_BIAS_LAT = 40.1020
+GOOGLE_PLACES_BIAS_LNG = -88.2272
+GOOGLE_PLACES_BIAS_RADIUS = 50000.0
+
+# Short TTL autocomplete cache (10s) and long TTL details cache (24h)
+_places_autocomplete_cache: dict[str, tuple[dict, float]] = {}
+_places_details_cache: dict[str, tuple[dict, float]] = {}
+PLACES_AUTOCOMPLETE_TTL = 10
+PLACES_DETAILS_TTL = 86400
+
+
+class PlacesAutocompleteRequest(_BaseModel):
+    q: str = ""
+    session_token: str = ""
+
+
+@app.post("/places/autocomplete")
+async def places_autocomplete(request: Request, body: PlacesAutocompleteRequest):
+    """Proxy to Google Places API (New) autocomplete. Returns { predictions: [] }. Empty key → silent no-op."""
+    import httpx
+
+    api_key = getattr(settings, "google_places_api_key", "")
+    query = (body.q or "").strip()
+    if not api_key or not query or len(query) < 2:
+        return {"predictions": []}
+
+    cache_key = query.lower()
+    now = time.time()
+    if cache_key in _places_autocomplete_cache:
+        result, expires_at = _places_autocomplete_cache[cache_key]
+        if now < expires_at:
+            return result
+
+    try:
+        payload = {
+            "input": query,
+            "locationBias": {
+                "circle": {
+                    "center": {"latitude": GOOGLE_PLACES_BIAS_LAT, "longitude": GOOGLE_PLACES_BIAS_LNG},
+                    "radius": GOOGLE_PLACES_BIAS_RADIUS,
+                }
+            },
+        }
+        if body.session_token:
+            payload["sessionToken"] = body.session_token
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                GOOGLE_PLACES_AUTOCOMPLETE_URL,
+                json=payload,
+                headers={
+                    "X-Goog-Api-Key": api_key,
+                    "X-Goog-FieldMask": "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logger.warning("telemetry places_autocomplete_error q=%s error=%s", query[:50], str(e))
+        return {"predictions": []}
+
+    predictions = []
+    for s in (data.get("suggestions") or []):
+        pp = s.get("placePrediction") or {}
+        place_id = pp.get("placeId") or ""
+        sf = pp.get("structuredFormat") or {}
+        main_text = (sf.get("mainText") or {}).get("text") or (pp.get("text") or {}).get("text") or ""
+        secondary_text = (sf.get("secondaryText") or {}).get("text") or ""
+        description = f"{main_text}, {secondary_text}".strip(", ")
+        if place_id and main_text:
+            predictions.append({
+                "place_id": place_id,
+                "main_text": main_text,
+                "secondary_text": secondary_text,
+                "description": description,
+            })
+
+    result = {"predictions": predictions}
+    _places_autocomplete_cache[cache_key] = (result, now + PLACES_AUTOCOMPLETE_TTL)
+    return result
+
+
+@app.get("/places/details")
+async def places_details(request: Request, place_id: str = ""):
+    """Resolve a Google Places place_id to lat/lng. Cached 24h."""
+    import httpx
+
+    api_key = getattr(settings, "google_places_api_key", "")
+    if not api_key or not place_id:
+        raise HTTPException(status_code=400, detail="place_id required and GOOGLE_PLACES_API_KEY must be set.")
+
+    now = time.time()
+    if place_id in _places_details_cache:
+        result, expires_at = _places_details_cache[place_id]
+        if now < expires_at:
+            return result
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(
+                f"{GOOGLE_PLACES_DETAILS_BASE}/{place_id}",
+                headers={
+                    "X-Goog-Api-Key": api_key,
+                    "X-Goog-FieldMask": "location,displayName",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logger.warning("telemetry places_details_error place_id=%s error=%s", place_id[:50], str(e))
+        raise HTTPException(status_code=502, detail="Failed to fetch place details.") from e
+
+    loc = data.get("location") or {}
+    display = (data.get("displayName") or {}).get("text") or ""
+    result = {
+        "lat": float(loc.get("latitude") or 0),
+        "lng": float(loc.get("longitude") or 0),
+        "display_name": display,
+    }
+    _places_details_cache[place_id] = (result, now + PLACES_DETAILS_TTL)
+    return result
+
+
+async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
+    """Fetch Google Places predictions for autocomplete merge. Returns [] if no key."""
+    import httpx
+
+    api_key = getattr(settings, "google_places_api_key", "")
+    if not api_key or not query.strip():
+        return []
+
+    cache_key = query.lower()
+    now = time.time()
+    if cache_key in _places_autocomplete_cache:
+        result, expires_at = _places_autocomplete_cache[cache_key]
+        if now < expires_at:
+            preds = result.get("predictions", [])[:limit]
+            return [{"type": "google_place", "name": p["main_text"], "secondary_text": p.get("secondary_text", ""),
+                     "lat": 0.0, "lng": 0.0, "place_id": p["place_id"]} for p in preds]
+
+    try:
+        payload = {
+            "input": query,
+            "locationBias": {
+                "circle": {
+                    "center": {"latitude": GOOGLE_PLACES_BIAS_LAT, "longitude": GOOGLE_PLACES_BIAS_LNG},
+                    "radius": GOOGLE_PLACES_BIAS_RADIUS,
+                }
+            },
+        }
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(
+                GOOGLE_PLACES_AUTOCOMPLETE_URL,
+                json=payload,
+                headers={
+                    "X-Goog-Api-Key": api_key,
+                    "X-Goog-FieldMask": "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return []
+
+    predictions = []
+    for s in (data.get("suggestions") or []):
+        pp = s.get("placePrediction") or {}
+        place_id = pp.get("placeId") or ""
+        sf = pp.get("structuredFormat") or {}
+        main_text = (sf.get("mainText") or {}).get("text") or (pp.get("text") or {}).get("text") or ""
+        secondary_text = (sf.get("secondaryText") or {}).get("text") or ""
+        if place_id and main_text:
+            predictions.append({
+                "place_id": place_id,
+                "main_text": main_text,
+                "secondary_text": secondary_text,
+                "description": f"{main_text}, {secondary_text}".strip(", "),
+            })
+
+    cached_result = {"predictions": predictions}
+    _places_autocomplete_cache[cache_key] = (cached_result, now + PLACES_AUTOCOMPLETE_TTL)
+    return [{"type": "google_place", "name": p["main_text"], "secondary_text": p.get("secondary_text", ""),
+             "lat": 0.0, "lng": 0.0, "place_id": p["place_id"]} for p in predictions[:limit]]
 
 
 @app.post("/ai/walk-complete")

@@ -1,4 +1,4 @@
-import { fetchAutocomplete, fetchDepartures, fetchNearbyStops, fetchRecommendation, fetchVehicles } from "@/src/api/client";
+import { fetchAutocomplete, fetchBusRouteStops, fetchDepartures, fetchNearbyStops, fetchRecommendation, fetchVehicles, fetchWalkingRoute } from "@/src/api/client";
 import type { AutocompleteResult } from "@/src/api/client";
 import type { DepartureItem, RecommendationOption, StopInfo, VehicleInfo } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
@@ -7,8 +7,10 @@ import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import React from "react";
 import {
   ActivityIndicator,
+  Animated,
   Keyboard,
   Linking,
   Platform,
@@ -19,8 +21,27 @@ import {
   TextInput,
   View,
 } from "react-native";
-import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { theme } from "@/src/constants/theme";
+import { MapPin, Search, X } from "lucide-react-native";
+
+function MapLiveBadge({ count }: { count: number }) {
+  const opacity = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.4, duration: 900, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ])
+    ).start();
+  }, [opacity]);
+  return (
+    <Animated.View style={[{ backgroundColor: theme.colors.orange, borderRadius: 4, paddingHorizontal: 7, paddingVertical: 3, flexDirection: "row", alignItems: "center", gap: 4 }, { opacity }]}>
+      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: "#fff" }} />
+      <Text style={{ fontFamily: "DMSans_600SemiBold", fontSize: 11, color: "#fff" }}>Live · {count} buses</Text>
+    </Animated.View>
+  );
+}
 
 const MAP_RADIUS_M = 1200;
 const INITIAL_DELTA = 0.008;
@@ -48,9 +69,37 @@ export default function MapScreen() {
   const [selectedPlace, setSelectedPlace] = useState<{ lat: number; lng: number; name: string; building_id?: string } | null>(null);
   const [placeRoutes, setPlaceRoutes] = useState<RecommendationOption[]>([]);
   const [placeRoutesLoading, setPlaceRoutesLoading] = useState(false);
+  const [selectedRouteIdx, setSelectedRouteIdx] = useState(0);
+  type LatLng = { latitude: number; longitude: number };
+  const [walkPolylines, setWalkPolylines] = useState<LatLng[][]>([]);
+  const [busPolylines, setBusPolylines] = useState<LatLng[][]>([]);
 
   const mapRef = useRef<MapView | null>(null);
   const vehiclePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentRegionRef = useRef({
+    latitude: UIUC_FALLBACK.lat,
+    longitude: UIUC_FALLBACK.lng,
+    latitudeDelta: INITIAL_DELTA,
+    longitudeDelta: INITIAL_DELTA,
+  });
+
+  const zoomIn = useCallback(() => {
+    const r = currentRegionRef.current;
+    const next = { ...r, latitudeDelta: r.latitudeDelta / 2, longitudeDelta: r.longitudeDelta / 2 };
+    currentRegionRef.current = next;
+    mapRef.current?.animateToRegion(next, 200);
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    const r = currentRegionRef.current;
+    const next = {
+      ...r,
+      latitudeDelta: Math.min(r.latitudeDelta * 2, 80),
+      longitudeDelta: Math.min(r.longitudeDelta * 2, 80),
+    };
+    currentRegionRef.current = next;
+    mapRef.current?.animateToRegion(next, 200);
+  }, []);
 
   const centerOnMe = useCallback(() => {
     const loc = location ?? UIUC_FALLBACK;
@@ -177,6 +226,106 @@ export default function MapScreen() {
     })();
   }, [selectedPlace, location, apiBaseUrl, apiKey, walkingSpeedMps, bufferMinutes]);
 
+  // Reset route index when fresh routes arrive
+  useEffect(() => {
+    setSelectedRouteIdx(0);
+  }, [placeRoutes]);
+
+  // Fetch walk + bus polylines for the selected route option
+  useEffect(() => {
+    if (!placeRoutes.length || !location || !selectedPlace) {
+      setWalkPolylines([]);
+      setBusPolylines([]);
+      return;
+    }
+    const opt = placeRoutes[selectedRouteIdx];
+    if (!opt) return;
+    let cancelled = false;
+
+    (async () => {
+      const newWalk: { latitude: number; longitude: number }[][] = [];
+      const newBus: { latitude: number; longitude: number }[][] = [];
+      let prevLat = location.lat;
+      let prevLng = location.lng;
+
+      for (const step of opt.steps) {
+        if (step.type === "WALK_TO_STOP" && step.stop_lat != null && step.stop_lng != null) {
+          const [dLat, dLng] = [step.stop_lat, step.stop_lng];
+          try {
+            const res = await fetchWalkingRoute(apiBaseUrl, prevLat, prevLng, dLat, dLng, { apiKey: apiKey ?? undefined });
+            newWalk.push(
+              res.coords.length >= 2
+                ? res.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+                : [{ latitude: prevLat, longitude: prevLng }, { latitude: dLat, longitude: dLng }]
+            );
+          } catch {
+            newWalk.push([{ latitude: prevLat, longitude: prevLng }, { latitude: dLat, longitude: dLng }]);
+          }
+          prevLat = dLat;
+          prevLng = dLng;
+        } else if (step.type === "RIDE" && step.route && step.stop_id && step.alighting_stop_id) {
+          const afterTime = new Date().toTimeString().slice(0, 5);
+          try {
+            const res = await fetchBusRouteStops(apiBaseUrl, step.route, step.stop_id, step.alighting_stop_id, afterTime, { apiKey: apiKey ?? undefined });
+            if (res.shape_points.length >= 2) {
+              newBus.push(res.shape_points.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
+            } else if (step.alighting_stop_lat && step.alighting_stop_lng) {
+              newBus.push([{ latitude: prevLat, longitude: prevLng }, { latitude: step.alighting_stop_lat, longitude: step.alighting_stop_lng }]);
+            }
+          } catch {
+            if (step.alighting_stop_lat && step.alighting_stop_lng) {
+              newBus.push([{ latitude: prevLat, longitude: prevLng }, { latitude: step.alighting_stop_lat, longitude: step.alighting_stop_lng }]);
+            }
+          }
+          if (step.alighting_stop_lat != null) prevLat = step.alighting_stop_lat;
+          if (step.alighting_stop_lng != null) prevLng = step.alighting_stop_lng;
+        } else if (step.type === "WALK_TO_DEST") {
+          const dLat = selectedPlace.lat;
+          const dLng = selectedPlace.lng;
+          try {
+            const res = await fetchWalkingRoute(apiBaseUrl, prevLat, prevLng, dLat, dLng, { apiKey: apiKey ?? undefined });
+            newWalk.push(
+              res.coords.length >= 2
+                ? res.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+                : [{ latitude: prevLat, longitude: prevLng }, { latitude: dLat, longitude: dLng }]
+            );
+          } catch {
+            newWalk.push([{ latitude: prevLat, longitude: prevLng }, { latitude: dLat, longitude: dLng }]);
+          }
+        }
+      }
+
+      // WALK-only with no step breakdown
+      if (opt.type === "WALK" && newWalk.length === 0) {
+        try {
+          const res = await fetchWalkingRoute(apiBaseUrl, location.lat, location.lng, selectedPlace.lat, selectedPlace.lng, { apiKey: apiKey ?? undefined });
+          newWalk.push(
+            res.coords.length >= 2
+              ? res.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+              : [{ latitude: location.lat, longitude: location.lng }, { latitude: selectedPlace.lat, longitude: selectedPlace.lng }]
+          );
+        } catch {
+          newWalk.push([{ latitude: location.lat, longitude: location.lng }, { latitude: selectedPlace.lat, longitude: selectedPlace.lng }]);
+        }
+      }
+
+      if (cancelled) return;
+      setWalkPolylines(newWalk);
+      setBusPolylines(newBus);
+
+      // Fit map to show the full route
+      const all = [...newWalk.flat(), ...newBus.flat()];
+      if (all.length >= 2 && mapRef.current) {
+        mapRef.current.fitToCoordinates(all, {
+          edgePadding: { top: 100, right: 40, bottom: 320, left: 40 },
+          animated: true,
+        });
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [placeRoutes, selectedRouteIdx, location, selectedPlace, apiBaseUrl, apiKey]);
+
   const onSelectSuggestion = useCallback((result: AutocompleteResult) => {
     Keyboard.dismiss();
     setMapSearch(result.name);
@@ -196,6 +345,9 @@ export default function MapScreen() {
     setSuggestions([]);
     setSelectedPlace(null);
     setPlaceRoutes([]);
+    setWalkPolylines([]);
+    setBusPolylines([]);
+    setSelectedRouteIdx(0);
   }, []);
 
   const onStartNavigation = useCallback((opt: RecommendationOption) => {
@@ -276,7 +428,7 @@ export default function MapScreen() {
   if (status === "loading") {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#13294b" />
+        <ActivityIndicator size="large" color={theme.colors.navy} />
         <Text style={styles.centeredText}>Getting location and nearby stops…</Text>
       </View>
     );
@@ -333,6 +485,7 @@ export default function MapScreen() {
         showsMyLocationButton
         provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
         onPress={() => { Keyboard.dismiss(); setSuggestions([]); }}
+        onRegionChangeComplete={(r) => { currentRegionRef.current = r; }}
       >
         {stops.map((stop) => (
           <Marker
@@ -341,14 +494,14 @@ export default function MapScreen() {
             title={stop.stop_name}
             description={`${formatDistance(stop.distance_m)} away`}
             onPress={() => onMarkerPress(stop)}
-            pinColor={selectedStop?.stop_id === stop.stop_id ? "#13294b" : "#c41e3a"}
+            pinColor={selectedStop?.stop_id === stop.stop_id ? theme.colors.navy : theme.colors.error}
           />
         ))}
         {selectedPlace && (
           <Marker
             coordinate={{ latitude: selectedPlace.lat, longitude: selectedPlace.lng }}
             title={selectedPlace.name}
-            pinColor="#2e7d32"
+            pinColor={theme.colors.success}
           />
         )}
         {vehicles.map((v) => (
@@ -357,7 +510,24 @@ export default function MapScreen() {
             coordinate={{ latitude: v.lat, longitude: v.lng }}
             title={`Bus ${v.route_id}`}
             description={v.headsign || undefined}
-            pinColor="#e35205"
+            pinColor={theme.colors.orange}
+          />
+        ))}
+        {walkPolylines.map((coords, i) => (
+          <Polyline
+            key={`walk-${i}`}
+            coordinates={coords}
+            strokeColor="#2563EB"
+            strokeWidth={3}
+            lineDashPattern={[10, 6]}
+          />
+        ))}
+        {busPolylines.map((coords, i) => (
+          <Polyline
+            key={`bus-${i}`}
+            coordinates={coords}
+            strokeColor="#2563EB"
+            strokeWidth={4}
           />
         ))}
       </MapView>
@@ -365,19 +535,19 @@ export default function MapScreen() {
       {/* Search bar */}
       <View style={styles.searchContainer}>
         <View style={styles.searchRow}>
+          <Search size={16} color={theme.colors.textMuted} style={{ marginLeft: 12, marginRight: 4 }} />
           <TextInput
             style={styles.searchInput}
             placeholder="Search restaurants, buildings, places..."
-            placeholderTextColor="#999"
+            placeholderTextColor={theme.colors.textMuted}
             value={mapSearch}
             onChangeText={setMapSearch}
             returnKeyType="search"
-            clearButtonMode="while-editing"
             autoCorrect={false}
           />
           {mapSearch.length > 0 && (
             <Pressable style={styles.clearBtn} onPress={clearSearch}>
-              <Text style={styles.clearBtnText}>✕</Text>
+              <X size={14} color={theme.colors.textMuted} />
             </Pressable>
           )}
         </View>
@@ -405,13 +575,23 @@ export default function MapScreen() {
       )}
       {vehicles.length > 0 && (
         <View style={styles.vehicleLegend}>
-          <View style={styles.vehicleDot} />
-          <Text style={styles.vehicleLegendText}>Live buses ({vehicles.length})</Text>
+          <MapLiveBadge count={vehicles.length} />
         </View>
       )}
-      <Pressable style={styles.centerBtn} onPress={centerOnMe}>
-        <Text style={styles.centerBtnText}>📍 Center on me</Text>
+      <Pressable style={styles.centerBtn} onPress={centerOnMe} accessibilityLabel="Center map on my location">
+        <MapPin size={20} color="#fff" />
       </Pressable>
+
+      {/* Zoom controls */}
+      <View style={styles.zoomControls}>
+        <Pressable style={styles.zoomBtn} onPress={zoomIn} accessibilityLabel="Zoom in">
+          <Text style={styles.zoomBtnText}>+</Text>
+        </Pressable>
+        <View style={styles.zoomDivider} />
+        <Pressable style={styles.zoomBtn} onPress={zoomOut} accessibilityLabel="Zoom out">
+          <Text style={styles.zoomBtnText}>−</Text>
+        </Pressable>
+      </View>
 
       {/* Place route panel */}
       {selectedPlace && (
@@ -425,11 +605,15 @@ export default function MapScreen() {
             )}
           </View>
           {placeRoutesLoading ? (
-            <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 12 }} />
+            <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginVertical: 12 }} />
           ) : placeRoutes.length > 0 ? (
             <ScrollView style={styles.routeList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
               {placeRoutes.map((opt, i) => (
-                <View key={i} style={styles.routeRow}>
+                <Pressable
+                  key={i}
+                  style={[styles.routeRow, selectedRouteIdx === i && styles.routeRowSelected]}
+                  onPress={() => setSelectedRouteIdx(i)}
+                >
                   <View style={styles.routeInfo}>
                     <Text style={styles.routeLabel}>
                       {opt.type === "WALK" ? "Walk" : i === 0 ? "Best option" : "Alternative"}
@@ -445,7 +629,7 @@ export default function MapScreen() {
                   <Pressable style={styles.startBtn} onPress={() => onStartNavigation(opt)}>
                     <Text style={styles.startBtnText}>Go</Text>
                   </Pressable>
-                </View>
+                </Pressable>
               ))}
             </ScrollView>
           ) : (
@@ -468,14 +652,16 @@ export default function MapScreen() {
             <Text style={styles.tripBtnText}>View departures →</Text>
           </Pressable>
           {departuresLoading ? (
-            <ActivityIndicator size="small" color="#13294b" style={styles.depLoader} />
+            <ActivityIndicator size="small" color={theme.colors.navy} style={styles.depLoader} />
           ) : departures.length > 0 ? (
             <ScrollView style={styles.depList} nestedScrollEnabled>
               {departures.slice(0, 8).map((d, i) => (
-                <Text key={i} style={styles.depLine}>
-                  {d.route} → {d.headsign || "—"} · {d.expected_mins} min
-                  {d.is_realtime ? " 🟢" : ""}
-                </Text>
+                <View key={i} style={styles.depRow}>
+                  <View style={styles.depBadge}><Text style={styles.depBadgeText}>{d.route}</Text></View>
+                  <Text style={styles.depHeadsign} numberOfLines={1}>{d.headsign || "—"}</Text>
+                  <Text style={styles.depMins}>{d.expected_mins} min</Text>
+                  {d.is_realtime && <View style={styles.depLiveDot} />}
+                </View>
               ))}
             </ScrollView>
           ) : (
@@ -490,14 +676,14 @@ export default function MapScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1, width: "100%", height: "100%" },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24, backgroundColor: "#fff" },
-  centeredText: { marginTop: 12, fontSize: 16, color: "#666" },
-  errorText: { fontSize: 18, fontWeight: "600", color: "#c41e3a" },
-  hint: { fontSize: 14, color: "#666", marginTop: 8, textAlign: "center" },
-  retryBtn: { marginTop: 16, paddingVertical: 12, paddingHorizontal: 24, backgroundColor: theme.colors.primary, borderRadius: 8 },
-  retryBtnSecondary: { backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.primary, marginTop: 8 },
-  retryBtnText: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  retryBtnSecondaryText: { color: theme.colors.primary },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24, backgroundColor: theme.colors.surface },
+  centeredText: { marginTop: 12, fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary },
+  errorText: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.error },
+  hint: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 8, textAlign: "center" },
+  retryBtn: { marginTop: 16, paddingVertical: 12, paddingHorizontal: 24, backgroundColor: theme.colors.navy, borderRadius: theme.radius.md },
+  retryBtnSecondary: { backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.navy, marginTop: 8 },
+  retryBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_600SemiBold" },
+  retryBtnSecondaryText: { color: theme.colors.navy, fontFamily: "DMSans_600SemiBold" },
   searchContainer: {
     position: "absolute",
     top: 16,
@@ -508,8 +694,8 @@ const styles = StyleSheet.create({
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#fff",
-    borderRadius: 10,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
@@ -518,20 +704,21 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    height: 44,
-    paddingHorizontal: 14,
+    height: 48,
+    paddingHorizontal: 8,
     fontSize: 15,
-    color: "#222",
-    borderRadius: 10,
+    fontFamily: "DMSans_400Regular",
+    color: theme.colors.text,
   },
   clearBtn: {
     paddingHorizontal: 12,
     paddingVertical: 10,
+    justifyContent: "center",
+    alignItems: "center",
   },
-  clearBtnText: { fontSize: 14, color: "#999" },
   suggestionList: {
-    backgroundColor: "#fff",
-    borderRadius: 10,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
     marginTop: 4,
     maxHeight: 220,
     shadowColor: "#000",
@@ -544,10 +731,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 11,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#eee",
+    borderBottomColor: theme.colors.border,
   },
-  suggestionName: { fontSize: 15, fontWeight: "600", color: "#222" },
-  suggestionSub: { fontSize: 12, color: "#888", marginTop: 2 },
+  suggestionName: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
+  suggestionSub: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 2 },
   uiucBanner: {
     position: "absolute",
     top: 72,
@@ -561,8 +748,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  uiucBannerText: { fontSize: 13, color: theme.colors.textSecondary },
-  uiucBannerLink: { fontSize: 13, color: theme.colors.primary, fontWeight: "600" },
+  uiucBannerText: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary },
+  uiucBannerLink: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
   vehicleLegend: {
     position: "absolute",
     top: 72,
@@ -575,26 +762,55 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
   },
-  vehicleDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#e35205" },
-  vehicleLegendText: { fontSize: 12, color: "#333" },
-  fallbackTitle: { fontSize: 20, fontWeight: "700", color: "#13294b", marginBottom: 8 },
-  fallbackText: { fontSize: 16, color: "#333", textAlign: "center" },
-  fallbackHint: { fontSize: 14, color: "#666", marginTop: 12, textAlign: "center" },
+  fallbackTitle: { fontSize: 20, fontFamily: "DMSans_700Bold", color: theme.colors.navy, marginBottom: 8 },
+  fallbackText: { fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.text, textAlign: "center" },
+  fallbackHint: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 12, textAlign: "center" },
   centerBtn: {
     position: "absolute",
     top: 16,
     right: 16,
-    backgroundColor: theme.colors.primary,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.navy,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
     elevation: 4,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
   },
-  centerBtnText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  zoomControls: {
+    position: "absolute",
+    top: 76,
+    right: 16,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  zoomBtn: {
+    width: 48,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  zoomBtnText: {
+    fontSize: 22,
+    fontFamily: "DMSans_400Regular",
+    color: theme.colors.navy,
+    lineHeight: 26,
+  },
+  zoomDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: theme.colors.border,
+    marginHorizontal: 8,
+  },
   detailCard: {
     position: "absolute",
     bottom: 0,
@@ -612,37 +828,49 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   detailHeader: { marginBottom: 10 },
-  detailTitle: { fontSize: 18, fontWeight: "700", color: theme.colors.primary },
-  detailDistance: { fontSize: 14, color: theme.colors.textSecondary, marginTop: 4 },
+  detailTitle: { fontSize: 18, fontFamily: "DMSans_700Bold", color: theme.colors.navy },
+  detailDistance: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
   routeList: { maxHeight: 200 },
   routeRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingVertical: 10,
+    paddingHorizontal: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#eee",
+    borderBottomColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+  },
+  routeRowSelected: {
+    backgroundColor: "#EEF3FF",
+    borderLeftWidth: 3,
+    borderLeftColor: "#2563EB",
   },
   routeInfo: { flex: 1, marginRight: 12 },
-  routeLabel: { fontSize: 15, fontWeight: "600", color: theme.colors.primary },
-  routeMeta: { fontSize: 13, color: theme.colors.textSecondary, marginTop: 2 },
+  routeLabel: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
+  routeMeta: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 2 },
   startBtn: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.navy,
     paddingVertical: 8,
     paddingHorizontal: 18,
     borderRadius: 8,
   },
-  startBtnText: { color: "#fff", fontSize: 15, fontWeight: "700" },
+  startBtnText: { color: "#fff", fontSize: 15, fontFamily: "DMSans_700Bold" },
   tripBtn: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.navy,
     padding: 12,
     borderRadius: 8,
     alignItems: "center",
     marginBottom: 12,
   },
-  tripBtnText: { color: "#fff", fontSize: 16, fontWeight: "600" },
+  tripBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_600SemiBold" },
   depLoader: { marginVertical: 8 },
   depList: { maxHeight: 120 },
-  depLine: { fontSize: 14, color: "#333", marginTop: 4 },
-  depEmpty: { fontSize: 14, color: "#666", fontStyle: "italic", marginTop: 8 },
+  depRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 5, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.border },
+  depBadge: { backgroundColor: theme.colors.navy, borderRadius: 3, paddingHorizontal: 6, paddingVertical: 2, minWidth: 32, alignItems: "center" },
+  depBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 11, color: "#fff" },
+  depHeadsign: { flex: 1, fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.text },
+  depMins: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.textSecondary },
+  depLiveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.orange },
+  depEmpty: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, fontStyle: "italic", marginTop: 8 },
 });

@@ -1,4 +1,5 @@
 import { fetchBuildings, fetchClasses, fetchHealth } from "@/src/api/client";
+import { theme } from "@/src/constants/theme";
 import { WALKING_MODES } from "@/src/constants/walkingMode";
 import type { WalkingModeId } from "@/src/constants/walkingMode";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
@@ -10,7 +11,7 @@ import {
   scheduleClassReminders,
   sendTestNotification,
 } from "@/src/notifications/classReminders";
-import { MAX_BUFFER, MIN_BUFFER } from "@/src/storage/recommendationSettings";
+import { MAX_BUFFER, MAX_WEIGHT_KG, MIN_BUFFER, MIN_WEIGHT_KG } from "@/src/storage/recommendationSettings";
 import Slider from "@react-native-community/slider";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
@@ -20,6 +21,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -36,8 +38,12 @@ export default function SettingsScreen() {
   const {
     walkingModeId,
     bufferMinutes,
+    weightKg,
+    rainMode,
     setWalkingModeId,
     setBufferMinutes,
+    setWeightKg,
+    setRainMode,
   } = useRecommendationSettings();
   const [input, setInput] = useState(apiBaseUrl);
   const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? "");
@@ -45,6 +51,7 @@ export default function SettingsScreen() {
   const [testingConnection, setTestingConnection] = useState(false);
   const [notificationsToggling, setNotificationsToggling] = useState(false);
   const [bufferSlider, setBufferSlider] = useState(bufferMinutes);
+  const [weightSlider, setWeightSlider] = useState(weightKg);
 
   // Keep input in sync when stored URL loads or changes
   useEffect(() => {
@@ -57,6 +64,10 @@ export default function SettingsScreen() {
   useEffect(() => {
     setBufferSlider(bufferMinutes);
   }, [bufferMinutes]);
+
+  useEffect(() => {
+    setWeightSlider(weightKg);
+  }, [weightKg]);
 
   const onClassNotificationsToggle = useCallback(
     async (value: boolean) => {
@@ -154,8 +165,11 @@ export default function SettingsScreen() {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      style={styles.container}
+      style={{ flex: 1, backgroundColor: theme.colors.surfaceAlt }}
     >
+    <ScrollView contentContainerStyle={styles.container}>
+      <Text style={styles.sectionHeader}>Connection</Text>
+      <View style={styles.sectionCard}>
       <Text style={styles.label}>API base URL</Text>
       <Text style={styles.hint}>
         Use localhost for simulator; use your computer’s IP for a physical device (e.g. http://192.168.1.100:8000).
@@ -194,7 +208,7 @@ export default function SettingsScreen() {
           style={[styles.buttonSecondary, (saving || testingConnection) && styles.buttonDisabled]}
         >
           {testingConnection ? (
-            <ActivityIndicator color="#13294b" size="small" />
+            <ActivityIndicator color={theme.colors.navy} size="small" />
           ) : (
             <Text style={styles.buttonSecondaryText}>Test connection</Text>
           )}
@@ -213,7 +227,10 @@ export default function SettingsScreen() {
           )}
         </TouchableOpacity>
       </View>
+      </View>
 
+      <Text style={styles.sectionHeader}>Walking preferences</Text>
+      <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
         <Text style={styles.label}>Walking mode</Text>
         <Text style={styles.hint}>
@@ -255,9 +272,9 @@ export default function SettingsScreen() {
           <Slider
             accessibilityLabel="Buffer minutes before arrival"
             accessibilityValue={{ min: MIN_BUFFER, max: MAX_BUFFER, now: Math.round(bufferSlider) }}
-            maximumTrackTintColor="#ccc"
+            maximumTrackTintColor={theme.colors.border}
             maximumValue={MAX_BUFFER}
-            minimumTrackTintColor="#13294b"
+            minimumTrackTintColor={theme.colors.navy}
             minimumValue={MIN_BUFFER}
             onSlidingComplete={(v) => setBufferMinutes(v)}
             onValueChange={setBufferSlider}
@@ -268,6 +285,32 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+      <View style={[styles.toggleRow, { borderTopWidth: 1, borderTopColor: theme.colors.border, marginTop: 16, paddingTop: 16 }]}>
+        <Text style={styles.label}>Body weight (kg)</Text>
+        <Text style={styles.hint}>
+          Used to calculate calories burned during walks (40–150 kg).
+        </Text>
+        <View style={styles.sliderRow}>
+          <Text style={styles.sliderValue}>{Math.round(weightSlider)} kg</Text>
+          <Slider
+            accessibilityLabel="Body weight in kilograms"
+            accessibilityValue={{ min: MIN_WEIGHT_KG, max: MAX_WEIGHT_KG, now: Math.round(weightSlider) }}
+            maximumTrackTintColor={theme.colors.border}
+            maximumValue={MAX_WEIGHT_KG}
+            minimumTrackTintColor={theme.colors.navy}
+            minimumValue={MIN_WEIGHT_KG}
+            onSlidingComplete={(v) => setWeightKg(v)}
+            onValueChange={setWeightSlider}
+            step={1}
+            style={styles.slider}
+            value={weightSlider}
+          />
+        </View>
+      </View>
+      </View>
+
+      <Text style={styles.sectionHeader}>Notifications</Text>
+      <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
         <Text style={styles.label}>Class notifications</Text>
         <Text style={styles.hint}>
@@ -284,7 +327,7 @@ export default function SettingsScreen() {
             disabled={notificationsToggling}
             onValueChange={onClassNotificationsToggle}
             value={classNotificationsEnabled}
-            trackColor={{ false: "#ccc", true: "#13294b" }}
+            trackColor={{ false: theme.colors.border, true: theme.colors.navy }}
             thumbColor="#fff"
           />
         </View>
@@ -303,6 +346,31 @@ export default function SettingsScreen() {
         </Pressable>
       </View>
 
+      <View style={[styles.sectionCard, { marginTop: 8 }]}>
+      <View style={styles.toggleRow}>
+        <Text style={styles.label}>Rain mode</Text>
+        <Text style={styles.hint}>
+          Adds 5 min buffer and prioritises bus routes over walking when raining.
+        </Text>
+        <View style={styles.switchRow}>
+          <Text style={styles.toggleLabel}>{rainMode ? "On — bus preferred" : "Off"}</Text>
+          <Switch
+            accessibilityLabel="Rain mode on or off"
+            accessibilityRole="switch"
+            accessibilityState={{ checked: rainMode }}
+            onValueChange={setRainMode}
+            value={rainMode}
+            trackColor={{ false: theme.colors.border, true: theme.colors.navy }}
+            thumbColor="#fff"
+          />
+        </View>
+      </View>
+
+      </View>
+      </View>
+
+      <Text style={styles.sectionHeader}>Debug</Text>
+      <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
         <Text style={styles.label}>Report issue</Text>
         <Text style={styles.hint}>Copy recent logs to paste when reporting a bug (no external service).</Text>
@@ -315,68 +383,74 @@ export default function SettingsScreen() {
           <Text style={styles.linkButtonText}>Copy logs & report</Text>
         </Pressable>
       </View>
+      </View>
+    </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
-    padding: 24,
-    backgroundColor: "#fff",
+    padding: 16,
+    paddingBottom: 40,
+    backgroundColor: theme.colors.surfaceAlt,
   },
+  sectionHeader: { fontSize: 11, fontFamily: "DMSans_600SemiBold", letterSpacing: 0.8, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginTop: 20, marginBottom: 8, marginLeft: 4 },
+  sectionCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, padding: 16, marginBottom: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
   label: {
     fontSize: 16,
-    fontWeight: "600",
-    color: "#13294b",
+    fontFamily: "DMSans_600SemiBold",
+    color: theme.colors.navy,
     marginBottom: 8,
   },
   hint: {
     fontSize: 14,
-    color: "#666",
+    fontFamily: "DMSans_400Regular",
+    color: theme.colors.textSecondary,
     marginBottom: 12,
   },
   input: {
     borderWidth: 1,
-    borderColor: "#ccc",
-    borderRadius: 8,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
     padding: 12,
     fontSize: 16,
+    fontFamily: "DMSans_400Regular",
     marginBottom: 16,
   },
   buttonRow: { flexDirection: "row", gap: 12, marginTop: 8 },
   buttonSecondary: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: "#13294b",
+    borderColor: theme.colors.navy,
     paddingVertical: 14,
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
     alignItems: "center",
   },
-  buttonSecondaryText: { color: "#13294b", fontSize: 16, fontWeight: "600" },
+  buttonSecondaryText: { color: theme.colors.navy, fontSize: 16, fontFamily: "DMSans_600SemiBold" },
   button: {
     flex: 1,
-    backgroundColor: "#13294b",
+    backgroundColor: theme.colors.navy,
     padding: 14,
-    borderRadius: 8,
+    borderRadius: theme.radius.md,
     alignItems: "center",
   },
   buttonDisabled: { opacity: 0.7 },
-  buttonText: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  toggleRow: { marginTop: 24 },
+  buttonText: { color: theme.colors.surface, fontSize: 16, fontFamily: "DMSans_600SemiBold" },
+  toggleRow: { marginTop: 0 },
   walkingRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   walkingBtn: {
     paddingVertical: 10,
     paddingHorizontal: 14,
-    borderRadius: 8,
-    backgroundColor: "#eee",
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
   },
-  walkingBtnOn: { backgroundColor: "#13294b" },
-  walkingBtnText: { fontSize: 14, color: "#333", fontWeight: "500" },
-  walkingBtnTextOn: { color: "#fff" },
+  walkingBtnOn: { backgroundColor: theme.colors.orange },
+  walkingBtnText: { fontSize: 14, fontFamily: "DMSans_500Medium", color: theme.colors.text },
+  walkingBtnTextOn: { color: theme.colors.surface },
   sliderRow: { marginTop: 8 },
-  sliderValue: { fontSize: 16, color: "#13294b", fontWeight: "600", marginBottom: 4 },
+  sliderValue: { fontSize: 20, fontFamily: "DMSans_700Bold", color: theme.colors.orange, marginBottom: 4 },
   slider: { width: "100%", height: 40 },
   switchRow: {
     flexDirection: "row",
@@ -384,22 +458,22 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginTop: 8,
   },
-  toggleLabel: { fontSize: 16, color: "#333" },
+  toggleLabel: { fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.text },
   testNotifBtn: {
     marginTop: 12,
     padding: 12,
-    borderRadius: 8,
-    backgroundColor: "#E3F2FD",
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
     alignItems: "center",
   },
-  testNotifBtnText: { fontSize: 15, color: "#0D47A1", fontWeight: "600" },
+  testNotifBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
   linkButton: {
     marginTop: 8,
     padding: 14,
-    borderRadius: 8,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: "#13294b",
+    borderColor: theme.colors.navy,
     alignItems: "center",
   },
-  linkButtonText: { fontSize: 16, color: "#13294b", fontWeight: "600" },
+  linkButtonText: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
 });

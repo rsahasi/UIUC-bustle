@@ -13,6 +13,7 @@ class RecommendationRequest(BaseModel):
     destination_lat: float | None = None
     destination_lng: float | None = None
     destination_name: str | None = None
+    prefer_bus: bool = False  # Rain mode: deprioritise walk, bus options listed first
 
     @model_validator(mode="after")
     def check_coordinates(self):

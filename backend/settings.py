@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     claude_api_key: str = ""  # Anthropic API key for AI features (get at console.anthropic.com)
     gtfs_db_path: str = "data/gtfs.db"  # Path to GTFS SQLite database (built by scripts/load_gtfs.py)
 
+    # Google Places API (New) — set GOOGLE_PLACES_API_KEY in .env for place search
+    google_places_api_key: str = ""
+
 
 def get_settings() -> Settings:
     return Settings()

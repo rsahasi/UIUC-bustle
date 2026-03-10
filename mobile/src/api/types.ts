@@ -108,6 +108,8 @@ export interface RecommendationRequest {
   destination_lat?: number;
   destination_lng?: number;
   destination_name?: string;
+  /** Rain mode: bus options sorted first, walk deprioritised. */
+  prefer_bus?: boolean;
 }
 
 export interface RecommendationResponse {

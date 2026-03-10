@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Simulated walk: Siebel Center → Wright & Green bus stop → (board ILLINI bus) → PAR/FAR stop
+  Load in iOS Simulator: Features > Location > GPX File
+  Speed: ~1.4 m/s (normal walk pace), waypoints every 3 seconds
+-->
+<gpx version="1.1" creator="UIUC-Bus-Sim" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Siebel to Illini Union (ILLINI bus sim)</name>
+    <trkseg>
+
+      <!-- Phase 1: Walk south from Siebel Center on Wright St -->
+      <trkpt lat="40.11380" lon="-88.22490"><time>2026-03-09T14:00:00Z</time></trkpt>
+      <trkpt lat="40.11362" lon="-88.22495"><time>2026-03-09T14:00:03Z</time></trkpt>
+      <trkpt lat="40.11344" lon="-88.22500"><time>2026-03-09T14:00:06Z</time></trkpt>
+      <trkpt lat="40.11326" lon="-88.22505"><time>2026-03-09T14:00:09Z</time></trkpt>
+      <trkpt lat="40.11308" lon="-88.22510"><time>2026-03-09T14:00:12Z</time></trkpt>
+      <trkpt lat="40.11290" lon="-88.22515"><time>2026-03-09T14:00:15Z</time></trkpt>
+      <trkpt lat="40.11272" lon="-88.22520"><time>2026-03-09T14:00:18Z</time></trkpt>
+      <trkpt lat="40.11254" lon="-88.22525"><time>2026-03-09T14:00:21Z</time></trkpt>
+      <trkpt lat="40.11236" lon="-88.22530"><time>2026-03-09T14:00:24Z</time></trkpt>
+      <trkpt lat="40.11218" lon="-88.22535"><time>2026-03-09T14:00:27Z</time></trkpt>
+
+      <!-- Approaching Green Street / crossing intersection -->
+      <trkpt lat="40.11200" lon="-88.22540"><time>2026-03-09T14:00:30Z</time></trkpt>
+      <trkpt lat="40.11182" lon="-88.22545"><time>2026-03-09T14:00:33Z</time></trkpt>
+      <trkpt lat="40.11164" lon="-88.22550"><time>2026-03-09T14:00:36Z</time></trkpt>
+      <trkpt lat="40.11146" lon="-88.22555"><time>2026-03-09T14:00:39Z</time></trkpt>
+      <trkpt lat="40.11128" lon="-88.22560"><time>2026-03-09T14:00:42Z</time></trkpt>
+
+      <!-- Crossing Green St — bus stop area Wright & Green -->
+      <trkpt lat="40.11110" lon="-88.22565"><time>2026-03-09T14:00:45Z</time></trkpt>
+      <trkpt lat="40.11095" lon="-88.22568"><time>2026-03-09T14:00:48Z</time></trkpt>
+
+      <!-- At the bus stop — linger for 4 seconds (arrival threshold 30m) -->
+      <trkpt lat="40.11090" lon="-88.22570"><time>2026-03-09T14:00:51Z</time></trkpt>
+      <trkpt lat="40.11090" lon="-88.22570"><time>2026-03-09T14:00:54Z</time></trkpt>
+      <trkpt lat="40.11090" lon="-88.22570"><time>2026-03-09T14:00:57Z</time></trkpt>
+      <trkpt lat="40.11090" lon="-88.22570"><time>2026-03-09T14:01:00Z</time></trkpt>
+
+      <!-- Phase 2: Bus route — ILLINI heading south (simulates bus movement) -->
+      <!-- In reality the bus moves; here we move the user's GPS point to simulate being on the bus -->
+      <trkpt lat="40.11040" lon="-88.22580"><time>2026-03-09T14:01:05Z</time></trkpt>
+      <trkpt lat="40.10980" lon="-88.22590"><time>2026-03-09T14:01:10Z</time></trkpt>
+      <trkpt lat="40.10920" lon="-88.22600"><time>2026-03-09T14:01:15Z</time></trkpt>
+      <trkpt lat="40.10860" lon="-88.22605"><time>2026-03-09T14:01:20Z</time></trkpt>
+      <trkpt lat="40.10800" lon="-88.22610"><time>2026-03-09T14:01:25Z</time></trkpt>
+      <trkpt lat="40.10740" lon="-88.22612"><time>2026-03-09T14:01:30Z</time></trkpt>
+      <trkpt lat="40.10680" lon="-88.22614"><time>2026-03-09T14:01:35Z</time></trkpt>
+      <trkpt lat="40.10620" lon="-88.22615"><time>2026-03-09T14:01:40Z</time></trkpt>
+      <trkpt lat="40.10560" lon="-88.22615"><time>2026-03-09T14:01:45Z</time></trkpt>
+      <trkpt lat="40.10500" lon="-88.22614"><time>2026-03-09T14:01:50Z</time></trkpt>
+      <trkpt lat="40.10440" lon="-88.22612"><time>2026-03-09T14:01:55Z</time></trkpt>
+      <trkpt lat="40.10380" lon="-88.22610"><time>2026-03-09T14:02:00Z</time></trkpt>
+
+      <!-- Approaching PAR (destination alighting stop ~40.1028, -88.2190) — ILLINI bus turns east -->
+      <trkpt lat="40.10320" lon="-88.22580"><time>2026-03-09T14:02:05Z</time></trkpt>
+      <trkpt lat="40.10260" lon="-88.22540"><time>2026-03-09T14:02:10Z</time></trkpt>
+      <trkpt lat="40.10200" lon="-88.22500"><time>2026-03-09T14:02:15Z</time></trkpt>
+      <trkpt lat="40.10150" lon="-88.22440"><time>2026-03-09T14:02:20Z</time></trkpt>
+      <trkpt lat="40.10110" lon="-88.22380"><time>2026-03-09T14:02:25Z</time></trkpt>
+      <trkpt lat="40.10070" lon="-88.22300"><time>2026-03-09T14:02:30Z</time></trkpt>
+      <trkpt lat="40.10040" lon="-88.22220"><time>2026-03-09T14:02:35Z</time></trkpt>
+
+      <!-- Arriving at PAR stop -->
+      <trkpt lat="40.10020" lon="-88.21950"><time>2026-03-09T14:02:40Z</time></trkpt>
+      <trkpt lat="40.10000" lon="-88.21930"><time>2026-03-09T14:02:45Z</time></trkpt>
+      <trkpt lat="40.09990" lon="-88.21920"><time>2026-03-09T14:02:48Z</time></trkpt>
+      <trkpt lat="40.09990" lon="-88.21920"><time>2026-03-09T14:02:51Z</time></trkpt>
+      <trkpt lat="40.09990" lon="-88.21920"><time>2026-03-09T14:02:54Z</time></trkpt>
+
+    </trkseg>
+  </trk>
+</gpx>

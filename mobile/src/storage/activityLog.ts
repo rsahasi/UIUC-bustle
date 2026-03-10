@@ -52,3 +52,23 @@ export function dateStringForOffset(offsetDays: number): string {
   d.setDate(d.getDate() - offsetDays);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+
+/**
+ * Returns the number of consecutive days (ending today) where total steps >= minSteps.
+ * A day with no activity at all counts as 0 steps and breaks the streak.
+ */
+export function calcStreak(log: ActivityEntry[], minSteps = 500): number {
+  let streak = 0;
+  for (let offset = 0; ; offset++) {
+    const dateStr = dateStringForOffset(offset);
+    const daySteps = log.filter((e) => e.date === dateStr).reduce((s, e) => s + e.stepCount, 0);
+    if (daySteps >= minSteps) {
+      streak++;
+    } else {
+      break;
+    }
+  }
+  return streak;
+}
+
+export const WEEKLY_STEP_GOAL = 50_000;
