@@ -442,8 +442,10 @@ export default function WalkNavScreen() {
           {navPhase === "walking" && walkingRouteCoords.length > 1 && (
             <Polyline
               coordinates={walkingRouteCoords}
-              strokeColor={theme.colors.primary}
-              strokeWidth={3}
+              strokeColor="rgba(29, 111, 240, 1)"
+              strokeWidth={2}
+              lineDashPattern={[6, 4]}
+              zIndex={10}
             />
           )}
           {navPhase === "walking" && walkingRouteCoords.length <= 1 && userLocation && (
@@ -452,8 +454,10 @@ export default function WalkNavScreen() {
                 { latitude: userLocation.lat, longitude: userLocation.lng },
                 { latitude: destLat, longitude: destLng },
               ]}
-              strokeColor={theme.colors.primary}
-              strokeWidth={3}
+              strokeColor="rgba(29, 111, 240, 1)"
+              strokeWidth={2}
+              lineDashPattern={[6, 4]}
+              zIndex={10}
             />
           )}
 
@@ -461,8 +465,9 @@ export default function WalkNavScreen() {
           {navPhase === "bus" && busShapeCoords.length > 1 && (
             <Polyline
               coordinates={busShapeCoords}
-              strokeColor={theme.colors.secondary}
+              strokeColor="rgba(29, 111, 240, 1)"
               strokeWidth={4}
+              zIndex={10}
             />
           )}
 

@@ -524,8 +524,8 @@ export default function MapScreen() {
             key={`walk-${selectedRouteIdx}-${i}`}
             coordinates={coords}
             strokeColor="rgba(29, 111, 240, 1)"
-            strokeWidth={3}
-            lineDashPattern={[14, 8]}
+            strokeWidth={2}
+            lineDashPattern={[6, 4]}
             zIndex={10}
           />
         ))}
