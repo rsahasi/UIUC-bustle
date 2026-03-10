@@ -10,7 +10,7 @@ import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { Pedometer } from "expo-sensors";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Bus, Flame, Footprints, MapPin, Timer, X } from "lucide-react-native";
+import { Bus, Flame, Footprints, Timer, X } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -21,7 +21,7 @@ import {
   Text,
   View,
 } from "react-native";
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
+import MapView, { Callout, Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { theme } from "@/src/constants/theme";
 import { getEntranceCoords } from "@/src/utils/buildingEntrance";
 
@@ -100,6 +100,7 @@ export default function WalkNavScreen() {
   const [walkingRouteCoords, setWalkingRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
   const [busStops, setBusStops] = useState<BusStop[]>([]);
   const [busShapeCoords, setBusShapeCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [walkFromBusCoords, setWalkFromBusCoords] = useState<{ latitude: number; longitude: number }[]>([]);
   const [alightingStopName, setAlightingStopName] = useState<string>("");
 
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -247,8 +248,28 @@ export default function WalkNavScreen() {
           setBusShapeCoords(walk.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
         }
       }
+
+      // Dashed walk line from alighting stop to final destination
+      if (hasFinalDest && alightingLat !== 0 && alightingLng !== 0) {
+        try {
+          const walkLeg = await fetchWalkingRoute(
+            apiBaseUrl, alightingLat, alightingLng, finalDestLat, finalDestLng,
+            { apiKey: apiKey ?? undefined }
+          );
+          setWalkFromBusCoords(
+            walkLeg.coords.length > 1
+              ? walkLeg.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+              : [{ latitude: alightingLat, longitude: alightingLng }, { latitude: finalDestLat, longitude: finalDestLng }]
+          );
+        } catch {
+          setWalkFromBusCoords([
+            { latitude: alightingLat, longitude: alightingLng },
+            { latitude: finalDestLat, longitude: finalDestLng },
+          ]);
+        }
+      }
     } catch {}
-  }, [apiBaseUrl, apiKey, routeId, boardingStopId, alightingStopId, isBusMode, destLat, destLng, alightingLat, alightingLng]);
+  }, [apiBaseUrl, apiKey, routeId, boardingStopId, alightingStopId, isBusMode, destLat, destLng, alightingLat, alightingLng, hasFinalDest, finalDestLat, finalDestLng]);
 
   // Eagerly fetch bus shape at mount so it's visible during the walking phase
   useEffect(() => {
@@ -467,12 +488,32 @@ export default function WalkNavScreen() {
           {hasFinalDest && (
             <Marker
               coordinate={{ latitude: finalDestLat, longitude: finalDestLng }}
-              title={finalDestName}
               anchor={{ x: 0.5, y: 1 }}
               tracksViewChanges={false}
             >
-              <MapPin size={38} color={theme.colors.navy} fill={theme.colors.navy} />
+              <View style={styles.pinWrapper}>
+                <View style={styles.pinBulb}>
+                  <View style={styles.pinHole} />
+                </View>
+                <View style={styles.pinTip} />
+              </View>
+              <Callout>
+                <View style={styles.callout}>
+                  <Text style={styles.calloutText}>{finalDestName}</Text>
+                </View>
+              </Callout>
             </Marker>
+          )}
+
+          {/* Dashed walk from alighting stop to final destination */}
+          {walkFromBusCoords.length > 1 && (
+            <Polyline
+              coordinates={walkFromBusCoords}
+              strokeColor="rgba(29, 111, 240, 1)"
+              strokeWidth={2}
+              lineDashPattern={[6, 4]}
+              zIndex={10}
+            />
           )}
 
           {/* Walking phase: fetched OSRM route or straight-line fallback */}
@@ -814,6 +855,49 @@ const styles = StyleSheet.create({
   entranceNotice: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", marginTop: 2, textAlign: "center" },
   paceWarning: { fontSize: 12, fontFamily: "DMSans_600SemiBold", color: theme.colors.error, backgroundColor: "rgba(220,38,38,0.15)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, marginTop: 4, textAlign: "center" },
   paceAhead: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.6)", marginTop: 2, textAlign: "center" },
+  pinWrapper: { alignItems: "center" },
+  pinBulb: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: theme.colors.navy,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  pinHole: {
+    width: 11,
+    height: 11,
+    borderRadius: 5.5,
+    backgroundColor: "#fff",
+  },
+  pinTip: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 12,
+    borderStyle: "solid",
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderTopColor: theme.colors.navy,
+    marginTop: -1,
+  },
+  callout: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minWidth: 120,
+    maxWidth: 220,
+  },
+  calloutText: {
+    fontSize: 13,
+    fontFamily: "DMSans_600SemiBold",
+    color: theme.colors.navy,
+    textAlign: "center",
+  },
   missedBusBanner: { position: "absolute", top: 0, left: 0, right: 0, backgroundColor: theme.colors.error, padding: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", zIndex: 20 },
   missedBusText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff", flex: 1 },
   missedBusDismiss: { paddingHorizontal: 10, paddingVertical: 4 },
