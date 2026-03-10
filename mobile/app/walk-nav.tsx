@@ -490,6 +490,7 @@ export default function WalkNavScreen() {
               coordinate={{ latitude: finalDestLat, longitude: finalDestLng }}
               anchor={{ x: 0.5, y: 1 }}
               tracksViewChanges={false}
+              title={finalDestName}
             >
               <View style={styles.pinWrapper}>
                 <View style={styles.pinBulb}>
@@ -497,7 +498,7 @@ export default function WalkNavScreen() {
                 </View>
                 <View style={styles.pinTip} />
               </View>
-              <Callout>
+              <Callout tooltip={false}>
                 <View style={styles.callout}>
                   <Text style={styles.calloutText}>{finalDestName}</Text>
                 </View>
@@ -857,29 +858,29 @@ const styles = StyleSheet.create({
   paceAhead: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.6)", marginTop: 2, textAlign: "center" },
   pinWrapper: { alignItems: "center" },
   pinBulb: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     backgroundColor: theme.colors.navy,
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
     shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 5,
+    shadowRadius: 2,
+    elevation: 4,
   },
   pinHole: {
-    width: 11,
-    height: 11,
-    borderRadius: 5.5,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     backgroundColor: "#fff",
   },
   pinTip: {
     width: 0,
     height: 0,
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderTopWidth: 12,
+    borderLeftWidth: 5,
+    borderRightWidth: 5,
+    borderTopWidth: 8,
     borderStyle: "solid",
     borderLeftColor: "transparent",
     borderRightColor: "transparent",
