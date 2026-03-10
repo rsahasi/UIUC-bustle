@@ -263,22 +263,28 @@ export default function MapScreen() {
           }
           prevLat = dLat;
           prevLng = dLng;
-        } else if (step.type === "RIDE" && step.route && step.stop_id && step.alighting_stop_id) {
-          const afterTime = new Date().toTimeString().slice(0, 5);
-          try {
-            const res = await fetchBusRouteStops(apiBaseUrl, step.route, step.stop_id, step.alighting_stop_id, afterTime, { apiKey: apiKey ?? undefined });
-            if (res.shape_points.length >= 2) {
-              newBus.push(res.shape_points.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
-            } else if (step.alighting_stop_lat && step.alighting_stop_lng) {
-              newBus.push([{ latitude: prevLat, longitude: prevLng }, { latitude: step.alighting_stop_lat, longitude: step.alighting_stop_lng }]);
+        } else if (step.type === "RIDE" && step.route && step.stop_id) {
+          // Alighting coords — fall back to destination if missing
+          const aLat = step.alighting_stop_lat ?? selectedPlace.lat;
+          const aLng = step.alighting_stop_lng ?? selectedPlace.lng;
+          if (step.alighting_stop_id) {
+            const afterTime = new Date().toTimeString().slice(0, 5);
+            try {
+              const res = await fetchBusRouteStops(apiBaseUrl, step.route, step.stop_id, step.alighting_stop_id, afterTime, { apiKey: apiKey ?? undefined });
+              newBus.push(
+                res.shape_points.length >= 2
+                  ? res.shape_points.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+                  : [{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }]
+              );
+            } catch {
+              newBus.push([{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }]);
             }
-          } catch {
-            if (step.alighting_stop_lat && step.alighting_stop_lng) {
-              newBus.push([{ latitude: prevLat, longitude: prevLng }, { latitude: step.alighting_stop_lat, longitude: step.alighting_stop_lng }]);
-            }
+          } else {
+            // No GTFS stop id — straight line is the best we can do
+            newBus.push([{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }]);
           }
-          if (step.alighting_stop_lat != null) prevLat = step.alighting_stop_lat;
-          if (step.alighting_stop_lng != null) prevLng = step.alighting_stop_lng;
+          prevLat = aLat;
+          prevLng = aLng;
         } else if (step.type === "WALK_TO_DEST") {
           const dLat = selectedPlace.lat;
           const dLng = selectedPlace.lng;
@@ -515,19 +521,21 @@ export default function MapScreen() {
         ))}
         {walkPolylines.map((coords, i) => (
           <Polyline
-            key={`walk-${i}`}
+            key={`walk-${selectedRouteIdx}-${i}`}
             coordinates={coords}
-            strokeColor="#2563EB"
+            strokeColor="rgba(29, 111, 240, 1)"
             strokeWidth={3}
-            lineDashPattern={[10, 6]}
+            lineDashPattern={[14, 8]}
+            zIndex={10}
           />
         ))}
         {busPolylines.map((coords, i) => (
           <Polyline
-            key={`bus-${i}`}
+            key={`bus-${selectedRouteIdx}-${i}`}
             coordinates={coords}
-            strokeColor="#2563EB"
-            strokeWidth={4}
+            strokeColor="rgba(29, 111, 240, 1)"
+            strokeWidth={5}
+            zIndex={11}
           />
         ))}
       </MapView>
