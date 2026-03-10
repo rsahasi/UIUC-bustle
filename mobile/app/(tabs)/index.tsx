@@ -562,6 +562,7 @@ export default function HomeScreen() {
       // Walk to the bus stop using the internal walk-nav map (no app switching)
       const step = opt.steps.find((s) => s.type === "WALK_TO_STOP");
       const rideStep = opt.steps.find((s) => s.type === "RIDE");
+      const destStep = opt.steps.find((s) => s.type === "WALK_TO_DEST");
       const routeId = rideStep?.route ?? "";
       const alightingStopId = rideStep?.alighting_stop_id ?? "";
       const alightingLat = rideStep?.alighting_stop_lat ?? null;
@@ -582,6 +583,9 @@ export default function HomeScreen() {
             alighting_lng: alightingLng != null ? String(alightingLng) : "",
             bus_dep_epoch_ms: String(busDepEpochMs),
             arrive_by_class_time: nextUp?.start_time_local ?? "",
+            final_lat: destStep?.building_lat != null ? String(destStep.building_lat) : "",
+            final_lng: destStep?.building_lng != null ? String(destStep.building_lng) : "",
+            final_name: nextUp?.title ?? "",
           },
         });
       }

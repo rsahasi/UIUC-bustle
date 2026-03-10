@@ -394,6 +394,9 @@ export default function MapScreen() {
           alighting_stop_id: rideStep?.alighting_stop_id ?? "",
           alighting_lat: String(rideStep?.alighting_stop_lat ?? ""),
           alighting_lng: String(rideStep?.alighting_stop_lng ?? ""),
+          final_lat: String(selectedPlace.lat),
+          final_lng: String(selectedPlace.lng),
+          final_name: selectedPlace.name,
         },
       });
     }

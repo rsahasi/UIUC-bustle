@@ -70,6 +70,9 @@ export default function WalkNavScreen() {
     building_id: string;
     arrive_by_class_time: string;
     bus_dep_epoch_ms: string;
+    final_lat: string;
+    final_lng: string;
+    final_name: string;
   }>();
 
   const buildingId = params.building_id ?? "";
@@ -77,6 +80,10 @@ export default function WalkNavScreen() {
   const destLat = entranceOverride ? entranceOverride.lat : parseFloat(params.dest_lat ?? "0");
   const destLng = entranceOverride ? entranceOverride.lng : parseFloat(params.dest_lng ?? "0");
   const destName = params.dest_name ?? "Destination";
+  const finalDestLat = parseFloat(params.final_lat ?? "0");
+  const finalDestLng = parseFloat(params.final_lng ?? "0");
+  const finalDestName = params.final_name ?? destName;
+  const hasFinalDest = finalDestLat !== 0 && finalDestLng !== 0;
   const modeId = (params.walking_mode_id ?? "walk") as WalkingModeId;
   const routeId = params.route_id ?? "";
   const boardingStopId = params.stop_id ?? "";
@@ -124,6 +131,10 @@ export default function WalkNavScreen() {
   const navPhaseRef = useRef<NavPhase>("walking");
   // Track current target for arrival detection
   const currentTargetRef = useRef<{ lat: number; lng: number }>({ lat: destLat, lng: destLng });
+
+  const [zoomDelta, setZoomDelta] = useState(0.005);
+  const zoomIn = () => setZoomDelta((d) => Math.max(d / 2, 0.0003));
+  const zoomOut = () => setZoomDelta((d) => Math.min(d * 2, 0.5));
 
   const mapRef = useRef<MapView | null>(null);
   const walkingRouteCoordsRef = useRef<{ latitude: number; longitude: number }[]>([]);
@@ -427,8 +438,8 @@ export default function WalkNavScreen() {
           region={{
             latitude: mapCenter.lat,
             longitude: mapCenter.lng,
-            latitudeDelta: 0.005,
-            longitudeDelta: 0.005,
+            latitudeDelta: zoomDelta,
+            longitudeDelta: zoomDelta,
           }}
         >
           {/* User location — blue dot using snapped coords so it shows on UIUC map */}
@@ -442,7 +453,7 @@ export default function WalkNavScreen() {
             </Marker>
           )}
 
-          {/* Destination marker (boarding stop in walking phase, alighting stop in bus phase) */}
+          {/* Intermediate target marker (boarding stop or alighting stop) */}
           <Marker
             coordinate={navPhase === "bus"
               ? { latitude: alightingLat, longitude: alightingLng }
@@ -451,6 +462,21 @@ export default function WalkNavScreen() {
             title={navPhase === "bus" ? (alightingStopName || "Alighting stop") : destName}
             pinColor={theme.colors.secondary}
           />
+
+          {/* Final destination — always visible */}
+          {hasFinalDest && (
+            <Marker
+              coordinate={{ latitude: finalDestLat, longitude: finalDestLng }}
+              title={finalDestName}
+              anchor={{ x: 0.5, y: 1 }}
+              tracksViewChanges={false}
+            >
+              <View style={styles.finalDestPin}>
+                <View style={styles.finalDestPinHead} />
+                <View style={styles.finalDestPinTail} />
+              </View>
+            </Marker>
+          )}
 
           {/* Walking phase: fetched OSRM route or straight-line fallback */}
           {navPhase === "walking" && walkingRouteCoords.length > 1 && (
@@ -512,6 +538,17 @@ export default function WalkNavScreen() {
           ))}
         </MapView>
       )}
+
+      {/* Zoom controls */}
+      <View style={styles.zoomControls}>
+        <Pressable style={styles.zoomBtn} onPress={zoomIn} accessibilityLabel="Zoom in">
+          <Text style={styles.zoomBtnText}>+</Text>
+        </Pressable>
+        <View style={styles.zoomDivider} />
+        <Pressable style={styles.zoomBtn} onPress={zoomOut} accessibilityLabel="Zoom out">
+          <Text style={styles.zoomBtnText}>−</Text>
+        </Pressable>
+      </View>
 
       {/* Board Bus banner (bus mode, walking phase) */}
       {isBusMode && navPhase === "walking" && (
@@ -784,4 +821,41 @@ const styles = StyleSheet.create({
   missedBusText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff", flex: 1 },
   missedBusDismiss: { paddingHorizontal: 10, paddingVertical: 4 },
   missedBusDismissText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff" },
+  zoomControls: {
+    position: "absolute",
+    top: 104,
+    right: 16,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+    zIndex: 10,
+  },
+  zoomBtn: { width: 44, height: 42, alignItems: "center", justifyContent: "center" },
+  zoomBtnText: { fontSize: 22, fontFamily: "DMSans_400Regular", color: theme.colors.navy, lineHeight: 26 },
+  zoomDivider: { height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.border, marginHorizontal: 8 },
+  finalDestPin: { alignItems: "center" },
+  finalDestPinHead: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "rgba(29, 111, 240, 1)",
+    borderWidth: 2.5,
+    borderColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  finalDestPinTail: {
+    width: 2.5,
+    height: 8,
+    backgroundColor: "rgba(29, 111, 240, 1)",
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
+  },
 });
