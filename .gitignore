@@ -28,3 +28,4 @@ mobile/.cache/
 
 # Claude internal
 .claude/
+.worktrees/
