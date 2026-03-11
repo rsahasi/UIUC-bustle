@@ -1,4 +1,5 @@
 import { fetchBuildings, fetchClasses, fetchHealth } from "@/src/api/client";
+import { resetAllPatterns } from "@/src/utils/patternEngine";
 import { theme } from "@/src/constants/theme";
 import { WALKING_MODES } from "@/src/constants/walkingMode";
 import type { WalkingModeId } from "@/src/constants/walkingMode";
@@ -369,6 +370,61 @@ export default function SettingsScreen() {
       </View>
       </View>
 
+      <Text style={styles.sectionHeader}>Privacy & data</Text>
+      <View style={styles.sectionCard}>
+      <View style={styles.toggleRow}>
+        <Text style={styles.label}>Commute learning</Text>
+        <Text style={styles.hint}>
+          The app quietly learns your walk times, stop choices, and departure habits to make suggestions more accurate. All data stays on your device and is never uploaded.
+        </Text>
+        <Pressable
+          accessibilityLabel="Reset learned patterns"
+          accessibilityRole="button"
+          onPress={() =>
+            Alert.alert(
+              "Reset patterns?",
+              "This will delete all learned walk times, stop preferences, and departure habits. Suggestions will return to defaults.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Reset",
+                  style: "destructive",
+                  onPress: async () => {
+                    await resetAllPatterns();
+                    Alert.alert("Patterns reset", "All learned data has been cleared.");
+                  },
+                },
+              ]
+            )
+          }
+          style={[styles.linkButton, { borderColor: theme.colors.error }]}
+        >
+          <Text style={[styles.linkButtonText, { color: theme.colors.error }]}>Reset my patterns</Text>
+        </Pressable>
+      </View>
+      </View>
+
+      <Text style={styles.sectionHeader}>Home screen widget</Text>
+      <View style={styles.sectionCard}>
+      <View style={styles.toggleRow}>
+        <Text style={styles.label}>Add widget</Text>
+        <Text style={styles.hint}>
+          The UIUC Bus widget shows your next class and departure time on your home screen or lock screen. To add it:
+        </Text>
+        <View style={styles.widgetSteps}>
+          <Text style={styles.widgetStep}>1. Long-press your iPhone home screen until icons jiggle</Text>
+          <Text style={styles.widgetStep}>2. Tap the + button in the top-left corner</Text>
+          <Text style={styles.widgetStep}>3. Search for "UIUC Bus" and choose a size (small, medium, or large)</Text>
+        </View>
+        <Text style={styles.hint} numberOfLines={0}>
+          The widget refreshes every 15 minutes in the background. Tap the widget to open the app.
+        </Text>
+        <Text style={[styles.hint, { color: theme.colors.textMuted, fontSize: 12, marginTop: 4 }]}>
+          Note: Widget requires a production build via EAS Build (not Expo Go).
+        </Text>
+      </View>
+      </View>
+
       <Text style={styles.sectionHeader}>Debug</Text>
       <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
@@ -476,4 +532,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   linkButtonText: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
+  widgetSteps: { marginBottom: 12 },
+  widgetStep: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.text, marginBottom: 6, paddingLeft: 4 },
 });

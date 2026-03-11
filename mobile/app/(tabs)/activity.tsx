@@ -3,6 +3,8 @@ import { formatDistance } from "@/src/utils/distance";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { getPendingAutoWalk, clearPendingAutoWalk } from "@/src/utils/autoWalkDetect";
 import { type ActivityEntry, addActivityEntry, calcStreak, dateStringForOffset, getActivityForDate, getActivityLog, todayDateString, WEEKLY_STEP_GOAL } from "@/src/storage/activityLog";
+import { computeAllInsights, getDismissedInsights, dismissInsight, type PatternInsights } from "@/src/utils/patternEngine";
+import PatternInsightCards from "@/src/components/PatternInsightCards";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -47,6 +49,8 @@ export default function ActivityScreen() {
   const [reportText, setReportText] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
   const [pendingWalk, setPendingWalk] = useState<any>(null);
+  const [patternInsights, setPatternInsights] = useState<PatternInsights | null>(null);
+  const [dismissedInsightKeys, setDismissedInsightKeys] = useState<string[]>([]);
 
   const loadData = useCallback(async () => {
     const today = todayDateString();
@@ -95,6 +99,13 @@ export default function ActivityScreen() {
 
     const pending = await getPendingAutoWalk();
     setPendingWalk(pending);
+
+    const [insights, dismissed] = await Promise.all([
+      computeAllInsights(),
+      getDismissedInsights(),
+    ]);
+    setPatternInsights(insights);
+    setDismissedInsightKeys(dismissed);
   }, []);
 
   useEffect(() => {
@@ -151,6 +162,11 @@ export default function ActivityScreen() {
     await clearPendingAutoWalk();
     setPendingWalk(null);
   }, []);
+
+  const handleDismissInsight = useCallback(async (key: string) => {
+    await dismissInsight(key);
+    loadData();
+  }, [loadData]);
 
   const todaySteps = todayEntries.reduce((s, e) => s + e.stepCount, 0);
   const todayCalories = todayEntries.reduce((s, e) => s + e.caloriesBurned, 0);
@@ -314,6 +330,15 @@ export default function ActivityScreen() {
             </Text>
           </View>
         ))
+      )}
+
+      {/* Pattern insights */}
+      {patternInsights !== null && (
+        <PatternInsightCards
+          insights={patternInsights}
+          dismissedKeys={dismissedInsightKeys}
+          onDismiss={handleDismissInsight}
+        />
       )}
 
       {/* AI Report button */}

@@ -2,7 +2,9 @@ import { NotificationRedirect } from "@/src/components/NotificationRedirect";
 import "@/src/tasks/notificationRefresh"; // registers defineTask at module level
 import { registerNotificationRefreshTask } from "@/src/tasks/notificationRefresh";
 import { AUTO_WALK_TASK_NAME } from '@/src/utils/autoWalkDetect';
+import { refreshWidgetData } from '@/src/tasks/widgetRefresh';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState } from 'react-native';
 import {
   DMSans_400Regular,
   DMSans_500Medium,
@@ -62,6 +64,12 @@ export default function RootLayout() {
 
   useEffect(() => {
     registerNotificationRefreshTask();
+    // Write widget data on mount and every time app comes to foreground
+    refreshWidgetData();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refreshWidgetData();
+    });
+    return () => sub.remove();
   }, []);
 
   useEffect(() => {

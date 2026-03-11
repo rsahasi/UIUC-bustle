@@ -36,7 +36,7 @@ const DAY_LABELS: Record<string, string> = {
 
 function getLeaveByTime(startTime: string, departInMins: number): string {
   const [h, m] = startTime.split(':').map(Number);
-  const totalMins = h * 60 + m - departInMins;
+  const totalMins = h * 60 + m - Math.round(departInMins);
   const lh = Math.floor(((totalMins % 1440) + 1440) % 1440 / 60);
   const lm = ((totalMins % 1440) + 1440) % 1440 % 60;
   const period = lh >= 12 ? 'PM' : 'AM';
@@ -49,7 +49,7 @@ function getTransitStatusColor(startTime: string, departInMins: number): string 
   const nowMins = now.getHours() * 60 + now.getMinutes();
   const [h, m] = startTime.split(':').map(Number);
   const classMins = h * 60 + m;
-  const leaveByMins = classMins - departInMins;
+  const leaveByMins = classMins - Math.round(departInMins);
   const minsUntilLeave = leaveByMins - nowMins;
   if (minsUntilLeave > 15) return theme.colors.success;
   if (minsUntilLeave > 5) return theme.colors.warning;

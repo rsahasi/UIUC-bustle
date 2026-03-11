@@ -9,6 +9,7 @@ import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { getNextClassToday } from "@/src/utils/nextClass";
 import { arriveByIsoToday } from "@/src/utils/arriveBy";
+import { getWeatherForLocation, getWalkMultiplier, WeatherData } from "@/src/utils/weatherEngine";
 
 export interface LeaveByOption {
   routeId: string;
@@ -32,6 +33,7 @@ export interface LeaveByState {
   isLoading: boolean;
   lastUpdated: Date | null;
   noViableBus: boolean; // all buses make user late
+  weather: WeatherData | null;
 }
 
 const REFRESH_INTERVAL_MS = 30_000;
@@ -124,12 +126,14 @@ export function useLeaveBy(): LeaveByState {
     isLoading: true,
     lastUpdated: null,
     noViableBus: false,
+    weather: null,
   });
 
   const locationRef = useRef<{ lat: number; lng: number }>(UIUC_FALLBACK);
   const classesRef = useRef<ScheduleClass[]>([]);
+  const weatherRef = useRef<WeatherData | null>(null);
 
-  // Load location on mount
+  // Load location and weather on mount
   useEffect(() => {
     (async () => {
       try {
@@ -141,6 +145,9 @@ export function useLeaveBy(): LeaveByState {
       } catch {
         // fall through to UIUC_FALLBACK
       }
+      const { lat, lng } = locationRef.current;
+      weatherRef.current = await getWeatherForLocation(lat, lng);
+      setState((prev) => ({ ...prev, weather: weatherRef.current }));
     })();
   }, []);
 
@@ -205,6 +212,17 @@ export function useLeaveBy(): LeaveByState {
       const hasCustomDest =
         nextClass.destination_lat != null && nextClass.destination_lng != null;
 
+      // Apply weather multiplier: divide speed so backend computes longer walk time
+      const weatherMult = weatherRef.current ? getWalkMultiplier(weatherRef.current) : 1.0;
+      const effectiveWalkingSpeedMps = walkingSpeedMps / weatherMult;
+
+      // Auto rain mode: force prefer_bus if currently raining or stormy
+      const weatherCondition = weatherRef.current?.condition;
+      const autoRainMode =
+        weatherCondition === "RAIN" ||
+        weatherCondition === "HEAVY_RAIN" ||
+        weatherCondition === "STORM";
+
       const rec = await fetchRecommendation(
         apiBaseUrl,
         {
@@ -218,10 +236,10 @@ export function useLeaveBy(): LeaveByState {
               }
             : { destination_building_id: nextClass.building_id }),
           arrive_by_iso: arriveByIsoToday(nextClass.start_time_local),
-          walking_speed_mps: walkingSpeedMps,
+          walking_speed_mps: effectiveWalkingSpeedMps,
           buffer_minutes: bufferMinutes,
           max_options: 4,
-          prefer_bus: rainMode,
+          prefer_bus: rainMode || autoRainMode,
         },
         { apiKey: apiKey ?? undefined }
       );
@@ -251,6 +269,7 @@ export function useLeaveBy(): LeaveByState {
         isLoading: false,
         lastUpdated: now,
         noViableBus,
+        weather: weatherRef.current,
       });
     } catch {
       setState((prev) => ({

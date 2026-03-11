@@ -1,4 +1,5 @@
 import { fetchBuildings, fetchRecommendation } from "@/src/api/client";
+import { refreshWidgetData } from "@/src/tasks/widgetRefresh";
 import { cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
 import { scheduleLeaveNowAlert, cancelAllLeaveNowAlerts } from "@/src/notifications/leaveNow";
 import { getStoredApiKey } from "@/src/storage/apiKey";
@@ -94,6 +95,9 @@ TaskManager.defineTask(NOTIFICATION_REFRESH_TASK, async () => {
     await cancelAllClassReminders();
     await cancelAllLeaveNowAlerts();
     await scheduleClassReminders(classes as Parameters<typeof scheduleClassReminders>[0], buildingMap, walkingSpeedMps, bufferMinutes);
+
+    // Also refresh widget data in background
+    await refreshWidgetData();
 
     return BackgroundFetch.BackgroundFetchResult.NewData;
   } catch {

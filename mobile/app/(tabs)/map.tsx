@@ -270,38 +270,45 @@ export default function MapScreen() {
           prevLat = dLat;
           prevLng = dLng;
         } else if (step.type === "RIDE" && step.route && step.stop_id) {
-          // Alighting coords — fall back to destination if missing
-          const aLat = step.alighting_stop_lat ?? selectedPlace.lat;
-          const aLng = step.alighting_stop_lng ?? selectedPlace.lng;
+          // Alighting coords — if missing and WALK_TO_DEST follows, skip bus line (walk handles last mile)
+          const hasWalkToDest = opt.steps.some(s => s.type === "WALK_TO_DEST");
+          const aLatRaw = step.alighting_stop_lat ?? (hasWalkToDest ? null : selectedPlace.lat);
+          const aLngRaw = step.alighting_stop_lng ?? (hasWalkToDest ? null : selectedPlace.lng);
 
-          const roadFallback = async () => {
-            try {
-              const w = await fetchWalkingRoute(apiBaseUrl, prevLat, prevLng, aLat, aLng, { apiKey: apiKey ?? undefined });
-              return w.coords.length >= 2
-                ? w.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
-                : [{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }];
-            } catch {
-              return [{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }];
-            }
-          };
+          if (aLatRaw != null && aLngRaw != null) {
+            const aLat = aLatRaw;
+            const aLng = aLngRaw;
 
-          if (step.alighting_stop_id) {
-            const afterTime = new Date().toTimeString().slice(0, 5);
-            try {
-              const res = await fetchBusRouteStops(apiBaseUrl, step.route, step.stop_id, step.alighting_stop_id, afterTime, { apiKey: apiKey ?? undefined });
-              newBus.push(
-                res.shape_points.length >= 2
-                  ? res.shape_points.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
-                  : await roadFallback()
-              );
-            } catch {
+            const roadFallback = async () => {
+              try {
+                const w = await fetchWalkingRoute(apiBaseUrl, prevLat, prevLng, aLat, aLng, { apiKey: apiKey ?? undefined });
+                return w.coords.length >= 2
+                  ? w.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+                  : [{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }];
+              } catch {
+                return [{ latitude: prevLat, longitude: prevLng }, { latitude: aLat, longitude: aLng }];
+              }
+            };
+
+            if (step.alighting_stop_id) {
+              const afterTime = new Date().toTimeString().slice(0, 5);
+              try {
+                const res = await fetchBusRouteStops(apiBaseUrl, step.route, step.stop_id, step.alighting_stop_id, afterTime, { apiKey: apiKey ?? undefined });
+                newBus.push(
+                  res.shape_points.length >= 2
+                    ? res.shape_points.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+                    : await roadFallback()
+                );
+              } catch {
+                newBus.push(await roadFallback());
+              }
+            } else {
               newBus.push(await roadFallback());
             }
-          } else {
-            newBus.push(await roadFallback());
+            prevLat = aLat;
+            prevLng = aLng;
           }
-          prevLat = aLat;
-          prevLng = aLng;
+          // else: no alighting coords + WALK_TO_DEST follows → skip bus line, prevLat/Lng unchanged
         } else if (step.type === "WALK_TO_DEST") {
           const dLat = selectedPlace.lat;
           const dLng = selectedPlace.lng;
