@@ -287,14 +287,14 @@ export default function SettingsScreen() {
       </View>
 
       <View style={[styles.toggleRow, { borderTopWidth: 1, borderTopColor: theme.colors.border, marginTop: 16, paddingTop: 16 }]}>
-        <Text style={styles.label}>Body weight (kg)</Text>
+        <Text style={styles.label}>Body weight (lbs)</Text>
         <Text style={styles.hint}>
-          Used to calculate calories burned during walks (40–150 kg).
+          Used to calculate calories burned during walks (88–330 lbs).
         </Text>
         <View style={styles.sliderRow}>
-          <Text style={styles.sliderValue}>{Math.round(weightSlider)} kg</Text>
+          <Text style={styles.sliderValue}>{Math.round(weightSlider * 2.20462)} lbs</Text>
           <Slider
-            accessibilityLabel="Body weight in kilograms"
+            accessibilityLabel="Body weight in pounds"
             accessibilityValue={{ min: MIN_WEIGHT_KG, max: MAX_WEIGHT_KG, now: Math.round(weightSlider) }}
             maximumTrackTintColor={theme.colors.border}
             maximumValue={MAX_WEIGHT_KG}
