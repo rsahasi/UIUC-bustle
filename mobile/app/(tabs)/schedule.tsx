@@ -1,3 +1,4 @@
+import * as Haptics from 'expo-haptics';
 import {
   createClass,
   deleteClass,
@@ -44,6 +45,13 @@ function getLeaveByTime(startTime: string, departInMins: number): string {
   return `${displayH}:${lm.toString().padStart(2, '0')} ${period}`;
 }
 
+function to12h(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const displayH = h % 12 || 12;
+  return `${displayH}:${m.toString().padStart(2, '0')} ${period}`;
+}
+
 function getTransitStatusColor(startTime: string, departInMins: number): string {
   const now = new Date();
   const nowMins = now.getHours() * 60 + now.getMinutes();
@@ -77,6 +85,7 @@ export default function ScheduleScreen() {
   const [locationLng, setLocationLng] = useState<number | null>(null);
   const [locationSuggestions, setLocationSuggestions] = useState<AutocompleteResult[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
   const [disabledNotifIds, setDisabledNotifIds] = useState<string[]>([]);
 
   const locationDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -142,6 +151,23 @@ export default function ScheduleScreen() {
       Alert.alert("Error", "Time must be HH:MM (e.g. 09:30).");
       return;
     }
+    {
+      const [sh, sm] = time.trim().split(":").map(Number);
+      const startMins = sh * 60 + sm;
+      if (startMins < 7 * 60 || startMins > 22 * 60) {
+        const proceed = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            "Unusual time",
+            `${time.trim()} is outside the typical 07:00–22:00 range. Add anyway?`,
+            [
+              { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+              { text: "Add anyway", onPress: () => resolve(true) },
+            ]
+          );
+        });
+        if (!proceed) return;
+      }
+    }
     const endTrimmed = endTime.trim();
     if (endTrimmed && !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(endTrimmed)) {
       Alert.alert("Error", "End time must be HH:MM (e.g. 10:30) or left blank.");
@@ -206,6 +232,9 @@ export default function ScheduleScreen() {
       setLocationLng(null);
       setLocationError(null);
       await load();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setSuccessToast("Class added ✓");
+      setTimeout(() => setSuccessToast(null), 2500);
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Failed to add class");
     } finally {
@@ -294,10 +323,17 @@ export default function ScheduleScreen() {
     return buildings.find((b) => b.building_id === c.building_id)?.name ?? c.building_id;
   }
 
-  const filteredClasses =
+  const DAY_ORDER: Record<string, number> = { MON: 0, TUE: 1, WED: 2, THU: 3, FRI: 4, SAT: 5, SUN: 6 };
+  const filteredClasses = (
     viewMode === "week" && selectedWeekDay
       ? classes.filter((c) => c.days_of_week?.includes(selectedWeekDay))
-      : classes;
+      : classes
+  ).slice().sort((a, b) => {
+    const aDay = Math.min(...(a.days_of_week ?? []).map((d) => DAY_ORDER[d] ?? 99));
+    const bDay = Math.min(...(b.days_of_week ?? []).map((d) => DAY_ORDER[d] ?? 99));
+    if (aDay !== bDay) return aDay - bDay;
+    return (a.start_time_local ?? "").localeCompare(b.start_time_local ?? "");
+  });
 
   if (loading && !refreshing) {
     return (
@@ -314,6 +350,11 @@ export default function ScheduleScreen() {
         <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={theme.colors.navy} />
       }
     >
+      {successToast && (
+        <View style={styles.successToast}>
+          <Text style={styles.successToastText}>{successToast}</Text>
+        </View>
+      )}
       {error && <Text style={styles.error}>{error}</Text>}
 
       <View style={styles.formCard}><View style={styles.form}>
@@ -321,7 +362,8 @@ export default function ScheduleScreen() {
         <TextInput
           style={styles.input}
           value={title}
-          onChangeText={setTitle}
+          onChangeText={(text) => setTitle(text.slice(0, 60))}
+          maxLength={60}
           placeholder="e.g. CS 101"
         />
         <Text style={styles.label}>Days</Text>
@@ -466,8 +508,8 @@ export default function ScheduleScreen() {
               </View>
             </View>
             <Text style={styles.classMeta}>
-              {c.days_of_week.join(", ")} · {c.start_time_local}
-              {c.end_time_local ? `–${c.end_time_local}` : ""} · {classLocationLabel(c)}
+              {c.days_of_week.join(", ")} · {to12h(c.start_time_local)}
+              {c.end_time_local ? `–${to12h(c.end_time_local)}` : ""} · {classLocationLabel(c)}
             </Text>
             {disabledNotifIds.includes(c.class_id) && (
               <Text style={styles.notifMutedLabel}>Notifications muted</Text>
@@ -601,4 +643,6 @@ const styles = StyleSheet.create({
   transitStatusDot: { width: 8, height: 8, borderRadius: 4 },
   planWeekBtn: { marginTop: 20, padding: 14, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.orange, alignItems: 'center' },
   planWeekBtnText: { fontSize: 15, fontFamily: 'DMSans_600SemiBold', color: theme.colors.orange },
+  successToast: { backgroundColor: theme.colors.success, borderRadius: theme.radius.md, padding: 12, marginBottom: 12, alignItems: 'center' },
+  successToastText: { color: '#fff', fontSize: 14, fontFamily: 'DMSans_600SemiBold' },
 });

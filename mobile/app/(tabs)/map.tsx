@@ -74,6 +74,19 @@ export default function MapScreen() {
   const [walkPolylines, setWalkPolylines] = useState<LatLng[][]>([]);
   const [busPolylines, setBusPolylines] = useState<LatLng[][]>([]);
 
+  const [showEmptyState, setShowEmptyState] = useState(true);
+  const emptyStateOpacity = useRef(new Animated.Value(1)).current;
+
+  const fadeOutEmptyState = useCallback(() => {
+    setShowEmptyState(false);
+    Animated.timing(emptyStateOpacity, { toValue: 0, duration: 300, useNativeDriver: true }).start();
+  }, [emptyStateOpacity]);
+
+  const fadeInEmptyState = useCallback(() => {
+    setShowEmptyState(true);
+    Animated.timing(emptyStateOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+  }, [emptyStateOpacity]);
+
   const mapRef = useRef<MapView | null>(null);
   const vehiclePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentRegionRef = useRef({
@@ -362,6 +375,7 @@ export default function MapScreen() {
     setSuggestions([]);
     setSelectedStop(null);
     setSelectedPlace({ lat: result.lat, lng: result.lng, name: result.display_name ?? result.name, building_id: result.building_id });
+    fadeOutEmptyState();
     mapRef.current?.animateToRegion({
       latitude: result.lat,
       longitude: result.lng,
@@ -378,7 +392,8 @@ export default function MapScreen() {
     setWalkPolylines([]);
     setBusPolylines([]);
     setSelectedRouteIdx(0);
-  }, []);
+    fadeInEmptyState();
+  }, [fadeInEmptyState]);
 
   const onStartNavigation = useCallback((opt: RecommendationOption) => {
     if (!selectedPlace) return;
@@ -579,7 +594,7 @@ export default function MapScreen() {
             placeholder="Search restaurants, buildings, places..."
             placeholderTextColor={theme.colors.textMuted}
             value={mapSearch}
-            onChangeText={setMapSearch}
+            onChangeText={(text) => { setMapSearch(text); if (text.length > 0) fadeOutEmptyState(); else fadeInEmptyState(); }}
             returnKeyType="search"
             autoCorrect={false}
           />

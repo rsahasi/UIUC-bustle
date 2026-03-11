@@ -14,12 +14,14 @@ import {
 } from "@/src/notifications/classReminders";
 import { MAX_BUFFER, MAX_WEIGHT_KG, MIN_BUFFER, MIN_WEIGHT_KG } from "@/src/storage/recommendationSettings";
 import Slider from "@react-native-community/slider";
+import Constants from "expo-constants";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -269,7 +271,11 @@ export default function SettingsScreen() {
           Extra time before arrival (0–15 min). More buffer = earlier suggested departure.
         </Text>
         <View style={styles.sliderRow}>
-          <Text style={styles.sliderValue}>{Math.round(bufferSlider)} min</Text>
+          <View style={styles.sliderLabelRow}>
+            <Text style={styles.sliderMinMax}>0 min</Text>
+            <Text style={styles.sliderValue}>{Math.round(bufferSlider)} min</Text>
+            <Text style={styles.sliderMinMax}>15 min</Text>
+          </View>
           <Slider
             accessibilityLabel="Buffer minutes before arrival"
             accessibilityValue={{ min: MIN_BUFFER, max: MAX_BUFFER, now: Math.round(bufferSlider) }}
@@ -291,8 +297,15 @@ export default function SettingsScreen() {
         <Text style={styles.hint}>
           Used to calculate calories burned during walks (88–330 lbs).
         </Text>
+        <Text style={[styles.hint, { fontSize: 12, color: theme.colors.textMuted, marginTop: -8 }]}>
+          Stored on-device only. Never transmitted to any server.
+        </Text>
         <View style={styles.sliderRow}>
-          <Text style={styles.sliderValue}>{Math.round(weightSlider * 2.20462)} lbs</Text>
+          <View style={styles.sliderLabelRow}>
+            <Text style={styles.sliderMinMax}>{Math.round(MIN_WEIGHT_KG * 2.20462)} lbs</Text>
+            <Text style={styles.sliderValue}>{Math.round(weightSlider * 2.20462)} lbs</Text>
+            <Text style={styles.sliderMinMax}>{Math.round(MAX_WEIGHT_KG * 2.20462)} lbs</Text>
+          </View>
           <Slider
             accessibilityLabel="Body weight in pounds"
             accessibilityValue={{ min: MIN_WEIGHT_KG, max: MAX_WEIGHT_KG, now: Math.round(weightSlider) }}
@@ -440,6 +453,21 @@ export default function SettingsScreen() {
         </Pressable>
       </View>
       </View>
+      <Text style={styles.sectionHeader}>About</Text>
+      <View style={styles.sectionCard}>
+        <View style={styles.aboutRow}>
+          <Text style={styles.aboutLabel}>App version</Text>
+          <Text style={styles.aboutValue}>{Constants.expoConfig?.version ?? '—'}</Text>
+        </View>
+        <View style={[styles.aboutRow, { borderTopWidth: 1, borderTopColor: theme.colors.border, marginTop: 12, paddingTop: 12 }]}>
+          <Pressable
+            accessibilityRole="link"
+            onPress={() => Linking.openURL('mailto:support@uiucbus.app?subject=UIUC%20Bus%20App%20Feedback')}
+          >
+            <Text style={styles.aboutLink}>Send feedback</Text>
+          </Pressable>
+        </View>
+      </View>
     </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -534,4 +562,10 @@ const styles = StyleSheet.create({
   linkButtonText: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
   widgetSteps: { marginBottom: 12 },
   widgetStep: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.text, marginBottom: 6, paddingLeft: 4 },
+  sliderLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  sliderMinMax: { fontSize: 11, fontFamily: 'DMSans_400Regular', color: theme.colors.textMuted },
+  aboutRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  aboutLabel: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.text },
+  aboutValue: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.textSecondary },
+  aboutLink: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: theme.colors.navy },
 });

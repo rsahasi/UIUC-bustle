@@ -14,7 +14,7 @@ import { setClassSummary, setClassRouteData } from "@/src/storage/classSummaryCa
 import type { ClassRouteData } from "@/src/storage/classSummaryCache";
 import { buildRouteSummary, formatOptionLabel } from "@/src/utils/routeFormatting";
 import { markClassAsWalkedToday } from "@/src/storage/walkedClassToday";
-import { addRecentSearch, getRecentSearches, type RecentSearch } from "@/src/storage/recentSearches";
+import { addRecentSearch, clearRecentSearches, getRecentSearches, type RecentSearch } from "@/src/storage/recentSearches";
 import { log } from "@/src/telemetry/logBuffer";
 import { arriveByIsoToday } from "@/src/utils/arriveBy";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
@@ -175,6 +175,7 @@ export default function HomeScreen() {
   const [searchDestPinned, setSearchDestPinned] = useState(false);
   const [leaveNowBanner, setLeaveNowBanner] = useState<{ option: RecommendationOption; classTitle: string } | null>(null);
   const [routeSort, setRouteSort] = useState<'earliest' | 'fastest' | 'least-walk'>('earliest');
+  const [departuresFetchedAt, setDeparturesFetchedAt] = useState<number | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const recommendationsY = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -287,6 +288,7 @@ export default function HomeScreen() {
       })
     );
     setDeparturesByStop(depMap);
+    setDeparturesFetchedAt(Date.now());
   }, [apiBaseUrl, apiKey]);
 
   const load = useCallback(
@@ -348,6 +350,7 @@ export default function HomeScreen() {
         );
         if (signal?.aborted) return;
         setDeparturesByStop(depMap);
+        setDeparturesFetchedAt(Date.now());
 
         let recommendationsList: RecommendationOption[] = [];
         const nextClass = getNextClassToday(classes);
@@ -677,6 +680,7 @@ export default function HomeScreen() {
   const onSearchDestination = useCallback(async () => {
     const q = searchQuery.trim();
     if (!q || !location) return;
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSearchError(null);
     setSearchResults([]);
     setSearchDestinationName(null);
@@ -830,52 +834,50 @@ export default function HomeScreen() {
         key={key}
         style={[
           styles.optionCard,
-          { borderLeftColor: accentColor },
+          { borderLeftColor: statusColors[status] },
           isHighlighted && styles.optionCardHighlight,
         ]}
       >
-        {/* Top row: type badge + status pill + departure countdown */}
-        <View style={styles.cardTopRow}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-            <View style={[styles.cardTypeBadge, isWalk ? styles.cardTypeBadgeWalk : styles.cardTypeBadgeBus]}>
-              <Text style={styles.cardTypeBadgeText}>{label}</Text>
-            </View>
-            {classStartTime && (
-              <View style={[styles.optionStatusPill, { backgroundColor: statusColors[status] }]}>
-                <Text style={styles.optionStatusText}>{statusLabels[status]}</Text>
+        {/* Main row: info left | countdown right */}
+        <View style={styles.cardMainRow}>
+          {/* Left column: badge + flow + total */}
+          <View style={styles.cardLeftCol}>
+            <View style={styles.cardBadgeRow}>
+              <View style={[styles.cardTypeBadge, isWalk ? styles.cardTypeBadgeWalk : styles.cardTypeBadgeBus]}>
+                <Text style={styles.cardTypeBadgeText}>{label}</Text>
               </View>
+              {classStartTime && (
+                <View style={[styles.optionStatusPill, { backgroundColor: statusColors[status] }]}>
+                  <Text style={styles.optionStatusText}>{statusLabels[status]}</Text>
+                </View>
+              )}
+            </View>
+            {stepFlow.length > 0 && (
+              <Text style={styles.stepFlowText} numberOfLines={2}>{stepFlow}</Text>
+            )}
+            <Text style={styles.cardTotalTime}>
+              {isWalk ? "Walk only" : `${opt.eta_minutes} min total`}
+            </Text>
+          </View>
+
+          {/* Right column: hero countdown */}
+          <View style={styles.cardCountdownCol}>
+            <Text style={departNow ? styles.cardDepartNow : styles.cardDepartTime}>
+              {isWalk ? opt.eta_minutes : departNow ? "Now" : departMins}
+            </Text>
+            {!departNow && (
+              <Text style={styles.cardDepartUnit}>{isWalk ? "min walk" : "min"}</Text>
             )}
           </View>
-          <Text style={departNow ? styles.cardDepartNow : styles.cardDepartTime}>
-            {isWalk
-              ? `${opt.eta_minutes} min`
-              : departNow
-              ? "Now"
-              : `${departMins} min`}
-          </Text>
         </View>
 
-        {/* Step flow */}
-        {stepFlow.length > 0 && (
-          <Text style={styles.stepFlowText} numberOfLines={1}>{stepFlow}</Text>
-        )}
-
-        {/* AI explanation if present */}
-        {!isWalk && (
-          <Text style={styles.mtdFree}>$0 — MTD is free</Text>
-        )}
-
-        {opt.ai_explanation && (
-          <Text style={styles.aiExplanation} numberOfLines={2}>Claude: {opt.ai_explanation}</Text>
-        )}
-
-        {/* Bottom row: total time + share + inline start button */}
+        {/* Footer row: MTD free + AI hint + actions */}
         <View style={styles.cardBottomRow}>
-          <Text style={styles.cardTotalTime}>
-            {isWalk
-              ? "Walk only"
-              : `${opt.eta_minutes} min total`}
-          </Text>
+          {!isWalk && <Text style={styles.mtdFree}>MTD · Free</Text>}
+          {opt.ai_explanation && (
+            <Text style={styles.aiExplanation} numberOfLines={1}>{opt.ai_explanation}</Text>
+          )}
+          <View style={{ flex: 1 }} />
           <View style={styles.cardActions}>
             <Pressable
               accessibilityLabel="Share ETA"
@@ -935,7 +937,12 @@ export default function HomeScreen() {
       )}
 
       {/* Greeting */}
-      <Text style={styles.greeting}>{getGreeting()}</Text>
+      <View style={styles.greetingBlock}>
+        <Text style={styles.greeting}>{getGreeting()}</Text>
+        <Text style={styles.greetingDate}>
+          {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+        </Text>
+      </View>
 
       {/* Search card */}
       <View style={styles.searchCard}>
@@ -1064,7 +1071,15 @@ export default function HomeScreen() {
         {searchError && <Text style={styles.searchError}>{searchError}</Text>}
         {recentSearches.length > 0 && !searchResults.length && !autocompleteSuggestions.length && (
           <View style={styles.recentSearches}>
-            <Text style={styles.recentLabel}>Recent:</Text>
+            <View style={styles.recentHeader}>
+              <Text style={styles.recentLabel}>Recent:</Text>
+              <Pressable onPress={async () => {
+                await clearRecentSearches();
+                setRecentSearches([]);
+              }}>
+                <Text style={styles.recentClearBtn}>Clear</Text>
+              </Pressable>
+            </View>
             {recentSearches.map((r, i) => (
               <Pressable
                 key={i}
@@ -1389,15 +1404,17 @@ export default function HomeScreen() {
         stops.map((stop) => (
           <View key={stop.stop_id} style={styles.card}>
             <View style={styles.stopCardHeader}>
-              <Text style={styles.stopName}>{stop.stop_name}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.stopName}>{stop.stop_name}</Text>
+                <Text style={styles.distance}>{formatDistance(stop.distance_m)} away</Text>
+              </View>
               <Pressable
                 style={styles.favoriteStopBtn}
                 onPress={() => addFavoriteStop({ stop_id: stop.stop_id, stop_name: stop.stop_name })}
               >
-                <Star size={16} color={theme.colors.textMuted} />
+                <Star size={16} color="rgba(255,255,255,0.5)" />
               </Pressable>
             </View>
-            <Text style={styles.distance}>{formatDistance(stop.distance_m)} away</Text>
             <View style={styles.departures}>
               {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
                 <Text style={styles.depText}>No departures</Text>
@@ -1414,7 +1431,11 @@ export default function HomeScreen() {
                     </Pressable>
                     <Text style={styles.depHeadsign} numberOfLines={1}>{d.headsign || "—"}</Text>
                     <Text style={styles.depCountdown}>{d.expected_mins} min</Text>
-                    {d.is_realtime && <LiveBadge />}
+                    {d.is_realtime && (
+                      departuresFetchedAt != null && Date.now() - departuresFetchedAt > 2 * 60 * 1000
+                        ? <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>
+                        : <LiveBadge />
+                    )}
                   </View>
                 ))
               )}
@@ -1435,33 +1456,36 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceAlt,
   },
   centeredText: { marginTop: 12, fontFamily: "DMSans_400Regular", fontSize: 15, color: theme.colors.textSecondary },
-  scrollContent: { paddingBottom: 32, backgroundColor: theme.colors.surfaceAlt },
-  greeting: { fontSize: 22, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg, paddingBottom: theme.spacing.sm, backgroundColor: theme.colors.surface },
+  scrollContent: { paddingBottom: 40, backgroundColor: "#F0F2F5" },
+  greetingBlock: { backgroundColor: theme.colors.surface, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
+  greeting: { fontSize: 26, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy, letterSpacing: -0.3 },
+  greetingDate: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 3 },
 
   // Search card
   searchCard: {
     backgroundColor: theme.colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
-    padding: theme.spacing.lg,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: 14,
+    paddingBottom: 14,
     marginBottom: 0,
   },
-  searchLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 11, letterSpacing: 0.8, color: theme.colors.textMuted, marginBottom: 8, textTransform: "uppercase" as const },
+  searchLabel: { fontFamily: "DMSans_700Bold", fontSize: 10, letterSpacing: 1.2, color: theme.colors.textMuted, marginBottom: 10, textTransform: "uppercase" as const },
   searchInputWrapper: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.lg,
+    backgroundColor: "#F0F2F5",
+    borderRadius: 14,
     height: 52,
     paddingHorizontal: 14,
     marginBottom: 10,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    elevation: 2,
+    borderWidth: 1.5,
+    borderColor: "#E4E8EF",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
   },
   searchInput: {
     flex: 1,
@@ -1482,15 +1506,19 @@ const styles = StyleSheet.create({
   // Next up card
   nextUpLabelRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 },
   nextUpCard: {
-    backgroundColor: "#FFF8F6",
-    borderLeftWidth: 3,
+    backgroundColor: theme.colors.surface,
+    borderRadius: 14,
+    marginHorizontal: 16,
+    marginTop: 14,
+    marginBottom: 4,
+    padding: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.07,
+    shadowRadius: 8,
+    elevation: 2,
+    borderLeftWidth: 4,
     borderLeftColor: theme.colors.orange,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    paddingVertical: theme.spacing.md,
-    paddingRight: theme.spacing.lg,
-    paddingLeft: theme.spacing.lg - 3,
-    marginBottom: 0,
   },
   nextUpLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 10, letterSpacing: 1, textTransform: "uppercase" as const, color: theme.colors.orange },
   nextUpText: { fontFamily: "DMSans_700Bold", fontSize: 17, color: theme.colors.navy },
@@ -1514,52 +1542,59 @@ const styles = StyleSheet.create({
 
   // Recommendations section
   recommendationsSection: { marginBottom: 0 },
-  sectionTitle: { fontFamily: "DMSans_700Bold", fontSize: 17, color: theme.colors.navy, marginBottom: 4, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg },
-  sectionSubtitle: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, paddingHorizontal: theme.spacing.lg, marginBottom: 10 },
+  sectionTitle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 20, color: theme.colors.navy, marginBottom: 2, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg },
+  sectionSubtitle: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, paddingHorizontal: theme.spacing.lg, marginBottom: 6 },
 
-  // Option card — redesigned
+  // Option card — transit board redesign
   optionCard: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
-    marginHorizontal: theme.spacing.lg,
-    marginBottom: theme.spacing.sm,
-    marginTop: 2,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderLeftWidth: 3,
-    padding: theme.spacing.md,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    marginTop: 0,
+    borderLeftWidth: 5,
+    borderLeftColor: theme.colors.orange,
+    padding: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
   },
-  optionCardHighlight: { borderColor: theme.colors.orange },
+  optionCardHighlight: { shadowOpacity: 0.14 },
 
-  // Card top row: badge + departure time
-  cardTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 },
-  cardTypeBadge: {
-    borderRadius: theme.radius.xs,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  cardTypeBadgeWalk: { backgroundColor: theme.colors.navy },
+  // Card main row layout: info left | countdown right
+  cardMainRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: 12 },
+  cardLeftCol: { flex: 1, marginRight: 12 },
+  cardCountdownCol: { alignItems: "flex-end", justifyContent: "flex-start", minWidth: 64 },
+  cardBadgeRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
+
+  cardTypeBadge: { borderRadius: 4, paddingHorizontal: 8, paddingVertical: 3 },
+  cardTypeBadgeWalk: { backgroundColor: theme.colors.navyLight },
   cardTypeBadgeBus: { backgroundColor: theme.colors.navy },
-  cardTypeBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 11, color: "#fff", letterSpacing: 0.5 },
-  cardDepartTime: { fontFamily: "DMSans_700Bold", fontSize: 22, color: theme.colors.orange },
-  cardDepartNow: { fontFamily: "DMSans_700Bold", fontSize: 22, color: theme.colors.success },
+  cardTypeBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 10, color: "#fff", letterSpacing: 0.8 },
+
+  // Hero countdown
+  cardDepartTime: { fontFamily: "DMSans_700Bold", fontSize: 44, color: theme.colors.orange, lineHeight: 48, letterSpacing: -1 },
+  cardDepartNow: { fontFamily: "DMSans_700Bold", fontSize: 28, color: theme.colors.success, lineHeight: 32 },
+  cardDepartUnit: { fontFamily: "DMSans_500Medium", fontSize: 11, color: theme.colors.textMuted, textAlign: "right" as const, marginTop: 1 },
 
   // Step flow
-  stepFlowText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, marginBottom: 8 },
+  stepFlowText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary, marginBottom: 6, lineHeight: 19 },
 
   // AI explanation
-  aiExplanation: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.orange, fontStyle: "italic", marginBottom: 6 },
+  aiExplanation: { fontFamily: "DMSans_400Regular", fontSize: 11, color: theme.colors.orange, fontStyle: "italic", flex: 1, marginRight: 8 },
 
-  // Card bottom row: total time + inline start button
-  cardBottomRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 2 },
-  cardTotalTime: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary },
+  // Card footer row
+  cardBottomRow: { flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderTopColor: "#F0F2F5", paddingTop: 10 },
+  cardTotalTime: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textMuted },
   startBtnInline: {
     backgroundColor: theme.colors.orange,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 6,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 20,
   },
-  startBtnInlineText: { fontFamily: "DMSans_600SemiBold", fontSize: 14, color: "#fff" },
+  startBtnInlineText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff" },
 
   // MTD hint
   mtdHint: {
@@ -1572,44 +1607,46 @@ const styles = StyleSheet.create({
   },
   mtdHintText: { fontSize: 13, color: theme.colors.textSecondary },
 
-  // Stops section
-  stopsSectionTitle: { fontFamily: "DMSans_600SemiBold", fontSize: 11, letterSpacing: 0.8, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginBottom: 0, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg, paddingBottom: theme.spacing.sm },
+  // Stops section — departure board aesthetic
+  stopsSectionTitle: { fontFamily: "DMSans_700Bold", fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginBottom: 0, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 10 },
   card: {
-    backgroundColor: theme.colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    borderLeftWidth: 4,
-    borderLeftColor: theme.colors.orange,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.md,
-    marginBottom: 0,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  stopCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  stopName: { fontFamily: "DMSans_600SemiBold", fontSize: 15, color: theme.colors.navy, flex: 1 },
+  stopCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", backgroundColor: theme.colors.navy, paddingHorizontal: 14, paddingTop: 11, paddingBottom: 9 },
+  stopName: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff", flex: 1 },
   favoriteStopBtn: { paddingVertical: 4, paddingHorizontal: 6 },
-  favoriteStopBtnText: { fontFamily: "DMSans_500Medium", fontSize: 16, color: theme.colors.textMuted },
-  distance: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textMuted, marginTop: 1, marginBottom: 6 },
-  departures: { gap: 4 },
-  depRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 3 },
+  favoriteStopBtnText: { fontFamily: "DMSans_500Medium", fontSize: 16, color: "rgba(255,255,255,0.6)" },
+  distance: { fontFamily: "DMSans_400Regular", fontSize: 11, color: "rgba(255,255,255,0.55)", marginTop: 0 },
+  departures: { paddingHorizontal: 14, paddingVertical: 4 },
+  depRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: "#F3F4F6" },
   depRouteBadge: {
     backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.xs,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    minWidth: 32,
+    borderRadius: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    minWidth: 38,
     alignItems: "center",
   },
-  depRouteBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 11, color: "#fff" },
+  depRouteBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 12, color: "#fff" },
   depHeadsign: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.text, flex: 1 },
-  depCountdown: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.textSecondary },
-  depText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted },
+  depCountdown: { fontFamily: "DMSans_700Bold", fontSize: 15, color: theme.colors.navy },
+  depText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, padding: 14 },
   liveBadge: {
     backgroundColor: theme.colors.orange,
-    borderRadius: theme.radius.xs,
+    borderRadius: 3,
     paddingHorizontal: 5,
-    paddingVertical: 1,
+    paddingVertical: 2,
   },
-  liveBadgeText: { fontFamily: "DMSans_600SemiBold", fontSize: 10, color: "#fff" },
+  liveBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 9, color: "#fff", letterSpacing: 0.5 },
   empty: { fontFamily: "DMSans_400Regular", fontSize: 15, color: theme.colors.textSecondary, textAlign: "center", marginTop: 24, padding: theme.spacing.lg },
 
   // Error / permission screens
@@ -1687,16 +1724,27 @@ const styles = StyleSheet.create({
   leaveNowDismissText: { fontFamily: "DMSans_600SemiBold", fontSize: 15, color: "rgba(255,255,255,0.75)" },
 
   // Leave By smart card
-  leaveByCard: { backgroundColor: theme.colors.surface, borderLeftWidth: 4, borderLeftColor: theme.colors.navy, borderBottomWidth: 1, borderBottomColor: theme.colors.border, paddingHorizontal: theme.spacing.lg, paddingVertical: theme.spacing.md },
-  leaveByHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
-  leaveByTitle: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, flex: 1 },
-  leaveByTime: { fontSize: 13, fontFamily: "DMSans_500Medium", color: theme.colors.textSecondary },
-  leaveByRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 },
+  leaveByCard: {
+    backgroundColor: theme.colors.navy,
+    borderRadius: 14,
+    marginHorizontal: 16,
+    marginVertical: 10,
+    padding: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  leaveByHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  leaveByTitle: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: "#fff", flex: 1 },
+  leaveByTime: { fontSize: 13, fontFamily: "DMSans_500Medium", color: "rgba(255,255,255,0.65)" },
+  leaveByRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 5 },
   leaveByStatusPill: { borderRadius: 3, paddingHorizontal: 6, paddingVertical: 2 },
   leaveByStatusText: { fontSize: 10, fontFamily: "DMSans_700Bold", color: "#fff" },
-  leaveByRouteText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
-  leaveBySummary: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, flex: 1 },
-  leaveByWalkFallback: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.orange, marginTop: 4 },
+  leaveByRouteText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff" },
+  leaveBySummary: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", flex: 1 },
+  leaveByWalkFallback: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.orange, marginTop: 6 },
 
   // Autocomplete
   suggestionsList: {
@@ -1789,10 +1837,10 @@ const styles = StyleSheet.create({
   suggestionSaveBtnText: { fontFamily: "DMSans_500Medium", fontSize: 18, color: theme.colors.orange },
 
   // F2: Sort pills
-  sortRow: { flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' },
-  sortPill: { paddingVertical: 5, paddingHorizontal: 10, borderRadius: 4, borderWidth: 1, borderColor: theme.colors.navy },
-  sortPillActive: { backgroundColor: theme.colors.orange, borderColor: theme.colors.orange },
-  sortPillText: { fontSize: 12, fontFamily: "DMSans_500Medium", color: theme.colors.navy },
+  sortRow: { flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap', marginTop: 8 },
+  sortPill: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
+  sortPillActive: { backgroundColor: theme.colors.navy, borderColor: theme.colors.navy },
+  sortPillText: { fontSize: 12, fontFamily: "DMSans_500Medium", color: theme.colors.textSecondary },
   sortPillTextActive: { color: '#fff' },
 
   // F2: Status pill on option cards
@@ -1813,9 +1861,21 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.sm,
     marginBottom: theme.spacing.sm,
     backgroundColor: theme.colors.error,
-    borderRadius: theme.radius.sm,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
+    borderRadius: 20,
+    paddingVertical: 7,
+    paddingHorizontal: 16,
+    shadowColor: theme.colors.error,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
   },
-  runningLatePillText: { fontFamily: "DMSans_700Bold", fontSize: 13, color: '#fff' },
+  runningLatePillText: { fontFamily: "DMSans_700Bold", fontSize: 13, color: '#fff', letterSpacing: 0.3 },
+
+  // Stale departure badge
+  staleBadge: { backgroundColor: '#F5A623', borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1 },
+  staleBadgeText: { fontFamily: 'DMSans_600SemiBold', fontSize: 10, color: '#fff' },
+
+  // Recent searches header row
+  recentHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  recentClearBtn: { fontSize: 12, fontFamily: 'DMSans_400Regular', color: theme.colors.textMuted },
 });

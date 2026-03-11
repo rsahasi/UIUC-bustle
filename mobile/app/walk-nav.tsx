@@ -77,21 +77,21 @@ export default function WalkNavScreen() {
 
   const buildingId = params.building_id ?? "";
   const entranceOverride = buildingId ? getEntranceCoords(buildingId) : null;
-  const destLat = entranceOverride ? entranceOverride.lat : parseFloat(params.dest_lat ?? "0");
-  const destLng = entranceOverride ? entranceOverride.lng : parseFloat(params.dest_lng ?? "0");
+  const destLat = entranceOverride ? entranceOverride.lat : parseFloat(params.dest_lat ?? "");
+  const destLng = entranceOverride ? entranceOverride.lng : parseFloat(params.dest_lng ?? "");
   const destName = params.dest_name ?? "Destination";
-  const finalDestLat = parseFloat(params.final_lat ?? "0");
-  const finalDestLng = parseFloat(params.final_lng ?? "0");
+  const finalDestLat = parseFloat(params.final_lat ?? "");
+  const finalDestLng = parseFloat(params.final_lng ?? "");
   const finalDestName = params.final_name ?? destName;
-  const hasFinalDest = finalDestLat !== 0 && finalDestLng !== 0;
+  const hasFinalDest = !isNaN(finalDestLat) && !isNaN(finalDestLng);
   const modeId = (params.walking_mode_id ?? "walk") as WalkingModeId;
   const routeId = params.route_id ?? "";
   const boardingStopId = params.stop_id ?? "";
   const alightingStopId = params.alighting_stop_id ?? "";
-  const alightingLat = parseFloat(params.alighting_lat ?? "0");
-  const alightingLng = parseFloat(params.alighting_lng ?? "0");
+  const alightingLat = parseFloat(params.alighting_lat ?? "");
+  const alightingLng = parseFloat(params.alighting_lng ?? "");
   // Bus mode: we have a route and an alighting stop
-  const isBusMode = routeId.length > 0 && alightingStopId.length > 0 && alightingLat !== 0;
+  const isBusMode = routeId.length > 0 && alightingStopId.length > 0 && !isNaN(alightingLat) && !isNaN(alightingLng);
 
   const modeLabel = WALKING_MODES.find((m) => m.id === modeId)?.label ?? "Walk";
   const speedMps = getMpsForMode(modeId);
@@ -445,13 +445,16 @@ export default function WalkNavScreen() {
   let minsUntilClass: number | null = null;
   if (classStartTime && etaMinutes != null) {
     const now = new Date();
-    const [h, m] = classStartTime.split(':').map(Number);
+    const parts = classStartTime.split(':').map(Number);
+    const h = parts[0], m = parts[1];
+    if (!isNaN(h) && !isNaN(m)) {
     const classMs = new Date().setHours(h, m, 0, 0);
     minsUntilClass = (classMs - now.getTime()) / 60000;
     const marginMins = minsUntilClass - etaMinutes;
     if (marginMins < -1) paceStatus = 'behind';
     else if (marginMins > 3) paceStatus = 'ahead';
     else paceStatus = 'on-track';
+    } // end isNaN guard
   }
 
   // Snap map center to UIUC if GPS is far away (simulator default = San Francisco)

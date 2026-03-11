@@ -1,13 +1,16 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Haptics from 'expo-haptics';
 import { fetchEodReport } from "@/src/api/client";
 import { formatDistance } from "@/src/utils/distance";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { getPendingAutoWalk, clearPendingAutoWalk } from "@/src/utils/autoWalkDetect";
-import { type ActivityEntry, addActivityEntry, calcStreak, dateStringForOffset, getActivityForDate, getActivityLog, todayDateString, WEEKLY_STEP_GOAL } from "@/src/storage/activityLog";
+import { type ActivityEntry, addActivityEntry, calcStreak, dateStringForOffset, getActivityForDate, getActivityLog, todayDateString, WEEKLY_STEP_GOAL, getWeeklyStepGoal, setWeeklyStepGoal } from "@/src/storage/activityLog";
 import { computeAllInsights, getDismissedInsights, dismissInsight, type PatternInsights } from "@/src/utils/patternEngine";
 import PatternInsightCards from "@/src/components/PatternInsightCards";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -34,6 +37,8 @@ function shortDayLabel(dateStr: string): string {
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()] ?? dateStr.slice(-2);
 }
 
+const AI_DISCLOSURE_KEY = '@uiuc_bus_ai_report_consented';
+
 export default function ActivityScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const [todayEntries, setTodayEntries] = useState<ActivityEntry[]>([]);
@@ -51,6 +56,8 @@ export default function ActivityScreen() {
   const [pendingWalk, setPendingWalk] = useState<any>(null);
   const [patternInsights, setPatternInsights] = useState<PatternInsights | null>(null);
   const [dismissedInsightKeys, setDismissedInsightKeys] = useState<string[]>([]);
+  const [showAiDisclosure, setShowAiDisclosure] = useState(false);
+  const [weeklyGoal, setWeeklyGoalState] = useState(WEEKLY_STEP_GOAL);
 
   const loadData = useCallback(async () => {
     const today = todayDateString();
@@ -97,6 +104,9 @@ export default function ActivityScreen() {
     setLoading(false);
     setRefreshing(false);
 
+    const goal = await getWeeklyStepGoal();
+    setWeeklyGoalState(goal);
+
     const pending = await getPendingAutoWalk();
     setPendingWalk(pending);
 
@@ -117,7 +127,8 @@ export default function ActivityScreen() {
     loadData();
   }, [loadData]);
 
-  const onGetReport = useCallback(async () => {
+  const doGetReport = useCallback(async () => {
+    setShowAiDisclosure(false);
     setReportLoading(true);
     setReportText(null);
     setReportError(null);
@@ -133,12 +144,22 @@ export default function ActivityScreen() {
         { apiKey: apiKey ?? undefined }
       );
       setReportText(data.report ?? "No report generated.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       setReportError(e instanceof Error ? e.message : "Failed to get report.");
     } finally {
       setReportLoading(false);
     }
   }, [apiBaseUrl, apiKey, todayEntries]);
+
+  const onGetReport = useCallback(async () => {
+    const consented = await AsyncStorage.getItem(AI_DISCLOSURE_KEY);
+    if (!consented) {
+      setShowAiDisclosure(true);
+    } else {
+      doGetReport();
+    }
+  }, [doGetReport]);
 
   const onConfirmAutoWalk = useCallback(async () => {
     if (!pendingWalk) return;
@@ -149,7 +170,7 @@ export default function ActivityScreen() {
       distanceM: pendingWalk.distanceM,
       durationSeconds: durationS,
       stepCount: pendingWalk.stepCount,
-      caloriesBurned: pendingWalk.distanceM / 1000 * 0.5 * 70, // rough estimate
+      caloriesBurned: Math.round((durationS / 3600) * 3.5 * 70 * 10) / 10, // MET(3.5) × 70kg × hours
       from: 'Auto-detected',
       to: 'Auto-detected',
     });
@@ -233,35 +254,57 @@ export default function ActivityScreen() {
       <View style={styles.streakRow}>
         <View style={styles.streakCard}>
           <Text style={styles.streakCount}>{streak}</Text>
-          <Text style={styles.streakLabel}>{streak === 1 ? "day streak" : "day streak"}</Text>
+          <Text style={styles.streakLabel}>{streak === 1 ? "day streak" : "days streak"}</Text>
           <Text style={styles.streakHint}>{streak === 0 ? 'Walk today to start' : streak < 7 ? `${7 - streak} days to a week streak!` : 'Week streak!'}</Text>
         </View>
         <View style={styles.weeklyCard}>
           <View style={styles.weeklyHeader}>
             <Text style={styles.weeklyLabel}>Weekly goal</Text>
-            <Text style={styles.weeklyFraction}>
-              {weeklySteps.toLocaleString()} / {WEEKLY_STEP_GOAL.toLocaleString()}
-            </Text>
+            <Pressable onPress={() => {
+              Alert.prompt(
+                'Weekly step goal',
+                'Enter your weekly step goal',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Save',
+                    onPress: async (val) => {
+                      const n = parseInt(val ?? '', 10);
+                      if (!isNaN(n) && n >= 1000) {
+                        await setWeeklyStepGoal(n);
+                        setWeeklyGoalState(n);
+                      }
+                    },
+                  },
+                ],
+                'plain-text',
+                String(weeklyGoal)
+              );
+            }}>
+              <Text style={styles.weeklyFraction}>
+                {weeklySteps.toLocaleString()} / {weeklyGoal.toLocaleString()} ✎
+              </Text>
+            </Pressable>
           </View>
           <View style={styles.weeklyBarBg}>
             <View
               style={[
                 styles.weeklyBarFill,
-                { width: `${Math.min(100, (weeklySteps / WEEKLY_STEP_GOAL) * 100)}%` },
+                { width: `${Math.min(100, (weeklySteps / weeklyGoal) * 100)}%` },
               ]}
             />
           </View>
           <Text style={styles.weeklyPct}>
-            {Math.round((weeklySteps / WEEKLY_STEP_GOAL) * 100)}% complete
+            {Math.round((weeklySteps / weeklyGoal) * 100)}% complete
           </Text>
         </View>
       </View>
 
       {/* Personalized goal suggestion */}
-      {weeklySteps > WEEKLY_STEP_GOAL * 1.1 && (
+      {weeklySteps > weeklyGoal * 1.1 && (
         <View style={styles.goalSuggestion}>
           <Text style={styles.goalSuggestionText}>
-            You're consistently exceeding your goal — consider raising it to {Math.round(weeklySteps * 1.1 / 1000) * 1000} steps/week
+            You're consistently exceeding your goal — consider raising it to {Math.ceil(weeklySteps * 1.1 / 1000) * 1000} steps/week
           </Text>
         </View>
       )}
@@ -339,6 +382,30 @@ export default function ActivityScreen() {
           dismissedKeys={dismissedInsightKeys}
           onDismiss={handleDismissInsight}
         />
+      )}
+
+      {/* AI disclosure card */}
+      {showAiDisclosure && (
+        <View style={styles.disclosureCard}>
+          <Text style={styles.disclosureTitle}>Before we continue</Text>
+          <Text style={styles.disclosureBody}>
+            To generate your report, your step count, distance, and walk history for today will be sent to an AI service. No personal identifiers are included.
+          </Text>
+          <View style={styles.disclosureRow}>
+            <Pressable style={styles.disclosureDeny} onPress={() => setShowAiDisclosure(false)}>
+              <Text style={styles.disclosureDenyText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={styles.disclosureAllow}
+              onPress={async () => {
+                await AsyncStorage.setItem(AI_DISCLOSURE_KEY, '1');
+                doGetReport();
+              }}
+            >
+              <Text style={styles.disclosureAllowText}>Allow & Generate</Text>
+            </Pressable>
+          </View>
+        </View>
       )}
 
       {/* AI Report button */}
@@ -509,4 +576,14 @@ const styles = StyleSheet.create({
   // Goal suggestion
   goalSuggestion: { backgroundColor: '#F0FFF4', borderRadius: theme.radius.md, padding: 12, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: theme.colors.success },
   goalSuggestionText: { fontSize: 13, fontFamily: 'DMSans_400Regular', color: theme.colors.success },
+
+  // AI disclosure card
+  disclosureCard: { backgroundColor: theme.colors.surfaceAlt, borderRadius: theme.radius.md, padding: 16, marginTop: 16, marginBottom: 8, borderWidth: 1, borderColor: theme.colors.border },
+  disclosureTitle: { fontSize: 15, fontFamily: 'DMSans_700Bold', color: theme.colors.navy, marginBottom: 8 },
+  disclosureBody: { fontSize: 13, fontFamily: 'DMSans_400Regular', color: theme.colors.textSecondary, lineHeight: 20, marginBottom: 12 },
+  disclosureRow: { flexDirection: 'row', gap: 10 },
+  disclosureDeny: { flex: 1, padding: 12, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.border, alignItems: 'center' },
+  disclosureDenyText: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: theme.colors.textSecondary },
+  disclosureAllow: { flex: 2, padding: 12, borderRadius: theme.radius.md, backgroundColor: theme.colors.navy, alignItems: 'center' },
+  disclosureAllowText: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: '#fff' },
 });

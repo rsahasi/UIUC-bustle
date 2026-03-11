@@ -72,3 +72,20 @@ export function calcStreak(log: ActivityEntry[], minSteps = 500): number {
 }
 
 export const WEEKLY_STEP_GOAL = 50_000;
+
+const WEEKLY_GOAL_KEY = '@uiuc_bus_weekly_step_goal';
+
+export async function getWeeklyStepGoal(): Promise<number> {
+  try {
+    const raw = await AsyncStorage.getItem(WEEKLY_GOAL_KEY);
+    if (!raw) return WEEKLY_STEP_GOAL;
+    const n = parseInt(raw, 10);
+    return isNaN(n) ? WEEKLY_STEP_GOAL : n;
+  } catch {
+    return WEEKLY_STEP_GOAL;
+  }
+}
+
+export async function setWeeklyStepGoal(goal: number): Promise<void> {
+  await AsyncStorage.setItem(WEEKLY_GOAL_KEY, String(Math.max(1000, goal)));
+}
