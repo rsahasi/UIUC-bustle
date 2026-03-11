@@ -428,6 +428,17 @@ export default function WalkNavScreen() {
   const etaSeconds = distanceM != null && speedMps > 0 ? Math.round(distanceM / speedMps) : null;
   const etaMinutes = etaSeconds != null ? Math.ceil(etaSeconds / 60) : null;
 
+  const minsUntilBus = busDepEpochMs != null
+    ? Math.round((busDepEpochMs - Date.now()) / 60000)
+    : null;
+  const busCountdownLabel = minsUntilBus == null
+    ? ""
+    : minsUntilBus > 0
+      ? ` · in ${minsUntilBus} min`
+      : minsUntilBus === 0
+        ? " · departing now"
+        : " · departed";
+
   // Pace warning calculation
   const classStartTime = params.arrive_by_class_time as string | undefined;
   let paceStatus: 'on-track' | 'behind' | 'ahead' | null = null;
@@ -593,13 +604,7 @@ export default function WalkNavScreen() {
       {isBusMode && navPhase === "walking" && (
         <View style={styles.boardBusBanner}>
           <Text style={styles.boardBusText}>
-            Walk to stop · Board Bus {routeId}
-            {busDepEpochMs != null && (() => {
-              const minsUntil = Math.round((busDepEpochMs - Date.now()) / 60000);
-              if (minsUntil > 0) return ` · in ${minsUntil} min`;
-              if (minsUntil === 0) return " · departing now";
-              return " · departed";
-            })()}
+            Walk to stop · Board Bus {routeId}{busCountdownLabel}
           </Text>
         </View>
       )}
