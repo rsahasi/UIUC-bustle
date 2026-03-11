@@ -592,7 +592,15 @@ export default function WalkNavScreen() {
       {/* Board Bus banner (bus mode, walking phase) */}
       {isBusMode && navPhase === "walking" && (
         <View style={styles.boardBusBanner}>
-          <Text style={styles.boardBusText}>Walk to stop · Board Bus {routeId}</Text>
+          <Text style={styles.boardBusText}>
+            Walk to stop · Board Bus {routeId}
+            {busDepEpochMs != null && (() => {
+              const minsUntil = Math.round((busDepEpochMs - Date.now()) / 60000);
+              if (minsUntil > 0) return ` · in ${minsUntil} min`;
+              if (minsUntil === 0) return " · departing now";
+              return " · departed";
+            })()}
+          </Text>
         </View>
       )}
 
