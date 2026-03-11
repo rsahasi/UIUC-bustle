@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { theme } from '@/src/constants/theme';
 import { Clock, MapPin, Navigation } from 'lucide-react-native';
+import { formatDistance } from '@/src/utils/distance';
 
 interface CatchableBus {
   stopId: string;
@@ -211,9 +212,7 @@ export default function RunningLateScreen() {
           <View style={styles.stopRow}>
             <MapPin size={13} color={theme.colors.textMuted} />
             <Text style={styles.stopName} numberOfLines={1}>
-              {bus.stopName} · {bus.distanceM < 1000
-                ? `${Math.round(bus.distanceM)}m`
-                : `${(bus.distanceM / 1000).toFixed(1)}km`} away
+              {bus.stopName} · {formatDistance(bus.distanceM)} away
             </Text>
           </View>
 

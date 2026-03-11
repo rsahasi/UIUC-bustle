@@ -193,7 +193,7 @@ export default function ActivityScreen() {
         <View style={styles.autoWalkPrompt}>
           <Text style={styles.autoWalkPromptTitle}>Looks like you walked</Text>
           <Text style={styles.autoWalkPromptBody}>
-            {Math.round(pendingWalk.distanceM / 1000 * 10) / 10} km · ~{Math.round((pendingWalk.endEpochMs - pendingWalk.startEpochMs) / 60000)} min
+            {formatDistance(pendingWalk.distanceM)} · ~{Math.round((pendingWalk.endEpochMs - pendingWalk.startEpochMs) / 60000)} min
           </Text>
           <View style={styles.autoWalkPromptRow}>
             <Pressable style={styles.autoWalkConfirm} onPress={onConfirmAutoWalk}>
@@ -219,8 +219,8 @@ export default function ActivityScreen() {
             <Text style={styles.statLabel}>kcal</Text>
           </View>
           <View style={styles.statCell}>
-            <Text style={styles.statValue}>{(todayDistanceM / 1000).toFixed(2)}</Text>
-            <Text style={styles.statLabel}>km</Text>
+            <Text style={styles.statValue}>{(todayDistanceM / 1609.344).toFixed(2)}</Text>
+            <Text style={styles.statLabel}>mi</Text>
           </View>
           <View style={styles.statCell}>
             <Text style={styles.statValue}>{Math.floor(todayDurationSeconds / 60)}</Text>
@@ -294,12 +294,12 @@ export default function ActivityScreen() {
               <Text style={styles.commuteStatLabel}>walks</Text>
             </View>
             <View style={styles.commuteStat}>
-              <Text style={styles.commuteStatValue}>{(weeklyDistanceM / 1000).toFixed(1)}</Text>
-              <Text style={styles.commuteStatLabel}>km total</Text>
+              <Text style={styles.commuteStatValue}>{(weeklyDistanceM / 1609.344).toFixed(1)}</Text>
+              <Text style={styles.commuteStatLabel}>mi total</Text>
             </View>
             <View style={styles.commuteStat}>
-              <Text style={styles.commuteStatValue}>{Math.round(weeklyDistanceM / Math.max(weeklyWalks, 1) / 1000 * 10) / 10}</Text>
-              <Text style={styles.commuteStatLabel}>km avg</Text>
+              <Text style={styles.commuteStatValue}>{(weeklyDistanceM / Math.max(weeklyWalks, 1) / 1609.344).toFixed(1)}</Text>
+              <Text style={styles.commuteStatLabel}>mi avg</Text>
             </View>
           </View>
           {topDestination && (
