@@ -136,6 +136,8 @@ export default function WalkNavScreen() {
   // Track current target for arrival detection
   const currentTargetRef = useRef<{ lat: number; lng: number }>({ lat: destLat, lng: destLng });
 
+  const [shareErrorToast, setShareErrorToast] = useState<string | null>(null);
+
   const [zoomDelta, setZoomDelta] = useState(0.005);
   const zoomIn = () => setZoomDelta((d) => Math.max(d / 2, 0.0003));
   const zoomOut = () => setZoomDelta((d) => Math.min(d * 2, 0.5));
@@ -156,6 +158,8 @@ export default function WalkNavScreen() {
       const msg = `Heading to ${body.destination}${routeId ? ` · Bus ${routeId}` : ""}. ${result.url}`;
       await Share.share({ message: msg, url: result.url });
     } catch {
+      setShareErrorToast("Couldn't reach share server — sharing directly");
+      setTimeout(() => setShareErrorToast(null), 2500);
       const msg = `Heading to ${body.destination}${routeId ? ` · Bus ${routeId}` : ""}`;
       await Share.share({ message: msg });
     }
@@ -742,6 +746,12 @@ export default function WalkNavScreen() {
         )}
       </View>
 
+      {shareErrorToast && (
+        <View style={styles.shareErrorToast}>
+          <Text style={styles.shareErrorToastText}>{shareErrorToast}</Text>
+        </View>
+      )}
+
       {locationError && (
         <View style={styles.errorBanner}>
           <Text style={styles.errorBannerText}>{locationError}</Text>
@@ -988,4 +998,17 @@ const styles = StyleSheet.create({
   zoomBtn: { width: 44, height: 42, alignItems: "center", justifyContent: "center" },
   zoomBtnText: { fontSize: 22, fontFamily: "DMSans_400Regular", color: theme.colors.navy, lineHeight: 26 },
   zoomDivider: { height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.border, marginHorizontal: 8 },
+  shareErrorToast: {
+    position: "absolute",
+    bottom: 200,
+    left: 24,
+    right: 24,
+    backgroundColor: "rgba(0,0,0,0.75)",
+    borderRadius: theme.radius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    zIndex: 30,
+  },
+  shareErrorToastText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_400Regular" },
 });
