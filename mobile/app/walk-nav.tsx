@@ -174,6 +174,14 @@ export default function WalkNavScreen() {
     navPhaseRef.current = navPhase;
   }, [navPhase]);
 
+  // Send on_bus PATCH when navPhase transitions to "bus" — separated from the
+  // "waiting" PATCH (fired in the location callback) to avoid a request ordering race.
+  useEffect(() => {
+    if (navPhase === "bus" && shareTokenRef.current) {
+      patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "on_bus" }, { apiKey: apiKey ?? undefined });
+    }
+  }, [navPhase, apiBaseUrl, apiKey]);
+
   // Keep walkingRouteCoordsRef in sync
   useEffect(() => {
     walkingRouteCoordsRef.current = walkingRouteCoords;
@@ -384,9 +392,7 @@ export default function WalkNavScreen() {
                 patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "waiting" }, { apiKey: apiKey ?? undefined });
               }
               setNavPhase("bus");
-              if (shareTokenRef.current) {
-                patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "on_bus" }, { apiKey: apiKey ?? undefined });
-              }
+              // on_bus PATCH is sent by a separate useEffect watching navPhase === "bus"
               currentTargetRef.current = { lat: alightingLat, lng: alightingLng };
               setDistanceM(null);
               fetchBusData();
@@ -408,6 +414,7 @@ export default function WalkNavScreen() {
   // Show completion modal on arrival + fetch encouragement
   useEffect(() => {
     if (arrived) {
+      if (!arrived || showCompletion) return; // already handled
       if (timerRef.current) clearInterval(timerRef.current);
       if (shareTokenRef.current) {
         patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "arrived" }, { apiKey: apiKey ?? undefined });
@@ -436,7 +443,7 @@ export default function WalkNavScreen() {
         } catch {}
       })();
     }
-  }, [arrived, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
+  }, [arrived, showCompletion, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
 
   const finishWalk = useCallback(async () => {
     await addActivityEntry({
