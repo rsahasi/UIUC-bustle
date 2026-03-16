@@ -1,10 +1,10 @@
-import { fetchAutocomplete, fetchBuildings, fetchClasses, fetchDepartures, fetchNearbyStops, fetchPlaceDetails, fetchPlacesAutocomplete, fetchRecommendation } from "@/src/api/client";
+import { createShareTrip, fetchAutocomplete, fetchBuildings, fetchClasses, fetchDepartures, fetchNearbyStops, fetchPlaceDetails, fetchPlacesAutocomplete, fetchRecommendation } from "@/src/api/client";
 import type { AutocompleteResult, Building } from "@/src/api/client";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { useLeaveBy } from "@/src/hooks/useLeaveBy";
-import type { DepartureItem, RecommendationOption, RecommendationStep, StopInfo } from "@/src/api/types";
+import type { DepartureItem, RecommendationOption, RecommendationStep, ShareTripRequest, StopInfo } from "@/src/api/types";
 import { cancelClassReminder, cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
 import { scheduleLeaveNowAlert, cancelLeaveNowAlert, cancelAllLeaveNowAlerts, buildLeaveNowBody } from "@/src/notifications/leaveNow";
 import { addFavoriteStop, addFavoritePlace, getAfterLastClassPlaceId, getFavoritePlaces, type SavedPlace } from "@/src/storage/favorites";
@@ -176,6 +176,7 @@ export default function HomeScreen() {
   const [leaveNowBanner, setLeaveNowBanner] = useState<{ option: RecommendationOption; classTitle: string } | null>(null);
   const [routeSort, setRouteSort] = useState<'earliest' | 'fastest' | 'least-walk'>('earliest');
   const [departuresFetchedAt, setDeparturesFetchedAt] = useState<number | null>(null);
+  const [shareToken, setShareToken] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const recommendationsY = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -798,6 +799,28 @@ export default function HomeScreen() {
     return `Taking ${route} to ${dest} — ${departStr}, arriving in ~${opt.eta_minutes} min`;
   };
 
+  const handleShare = useCallback(async (opt: RecommendationOption, destName: string) => {
+    const rideStep = opt.steps.find((s) => s.type === "RIDE");
+    const etaEpoch = Math.floor(Date.now() / 1000) + opt.eta_minutes * 60;
+    const body: ShareTripRequest = {
+      destination: destName.split(",")[0],
+      route_id: rideStep?.route ?? null,
+      route_name: rideStep?.headsign ?? null,
+      stop_name: rideStep?.stop_name ?? null,
+      phase: "walking",
+      eta_epoch: etaEpoch,
+    };
+    const message = buildShareMessage(opt, destName);
+    try {
+      const result = await createShareTrip(apiBaseUrl, body, { apiKey: apiKey ?? undefined });
+      setShareToken(result.token);
+      await Share.share({ message: `${message}\n${result.url}`, url: result.url });
+    } catch {
+      // Fallback to message-only share
+      await Share.share({ message });
+    }
+  }, [apiBaseUrl, apiKey, buildShareMessage]);
+
   /** Render a single option card — shared between search results, after-class recs, and class recommendations. */
   const renderOptionCard = (
     opt: RecommendationOption,
@@ -880,10 +903,10 @@ export default function HomeScreen() {
           <View style={{ flex: 1 }} />
           <View style={styles.cardActions}>
             <Pressable
-              accessibilityLabel="Share ETA"
+              accessibilityLabel="Share trip with live ETA"
               accessibilityRole="button"
               style={styles.shareBtn}
-              onPress={() => Share.share({ message: buildShareMessage(opt, destName) })}
+              onPress={() => handleShare(opt, destName)}
             >
               <Text style={styles.shareBtnText}>Share</Text>
             </Pressable>
