@@ -60,6 +60,34 @@ def _validate_lat_lng(lat: float, lng: float) -> None:
         raise HTTPException(status_code=400, detail=f"lng must be between {LNG_MIN} and {LNG_MAX}")
 
 
+# Geo-fence: reject coordinates more than ~150 km from UIUC campus centre.
+# Prevents wasted Nominatim/OSRM quota and protects against out-of-region abuse.
+_UIUC_LAT, _UIUC_LNG = 40.1020, -88.2272
+_GEO_FENCE_DEG = 1.35  # ~150 km at this latitude
+
+
+def _validate_uiuc_region(lat: float, lng: float) -> None:
+    if abs(lat - _UIUC_LAT) > _GEO_FENCE_DEG or abs(lng - _UIUC_LNG) > _GEO_FENCE_DEG:
+        raise HTTPException(status_code=400, detail="Coordinates are outside the supported region.")
+
+
+# Bounded cache helper — evict oldest entry when cap is reached.
+_CACHE_MAX = 1000
+
+
+def _cache_put(cache: dict, key: str, value: object) -> None:
+    if len(cache) >= _CACHE_MAX:
+        try:
+            del cache[next(iter(cache))]
+        except StopIteration:
+            pass
+    cache[key] = value
+
+
+# Allowed characters for Google Place IDs (alphanumeric + hyphen + underscore).
+_PLACE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{10,250}$")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_app_db(APP_DB)
@@ -96,9 +124,9 @@ app.add_middleware(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,  # credentials=True + wildcard origin is a CORS misconfiguration
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 
@@ -391,6 +419,7 @@ async def geocode(request: Request, q: str = ""):
 @app.get("/stops/nearby", response_model=NearbyStopsResponse)
 def stops_nearby(request: Request, lat: float = 0.0, lng: float = 0.0, radius_m: int = 800):
     _validate_lat_lng(lat, lng)
+    _validate_uiuc_region(lat, lng)
     if not (RADIUS_M_MIN <= radius_m <= RADIUS_M_MAX):
         raise HTTPException(
             status_code=400,
@@ -593,6 +622,8 @@ def _find_exit_stop_for_recommendation(route_id: str, from_stop_id: str, dest_la
 @app.post("/recommendation", response_model=RecommendationResponse)
 def post_recommendation(request: Request, body: RecommendationRequest):
     """Return 2–3 options (WALK + BUS) from user location to destination (building or custom lat/lng)."""
+    _validate_lat_lng(body.lat, body.lng)
+    _validate_uiuc_region(body.lat, body.lng)
     if body.destination_lat is not None and body.destination_lng is not None:
         dest_lat, dest_lng = body.destination_lat, body.destination_lng
         dest_name = body.destination_name or "Destination"
@@ -714,7 +745,7 @@ async def directions_walk(request: Request, orig_lat: float, orig_lng: float, de
         logger.warning("telemetry osrm_error error=%s", str(e))
         result = fallback
 
-    _walk_directions_cache[cache_key] = (result, now + WALK_DIRECTIONS_CACHE_TTL)
+    _cache_put(_walk_directions_cache, cache_key, (result, now + WALK_DIRECTIONS_CACHE_TTL))
     return result
 
 
@@ -783,6 +814,7 @@ class WalkCompleteRequest(_BaseModel):
 
 
 @app.post("/ai/after-class-plan")
+@limiter.limit("10/minute")
 def post_after_class_plan(request: Request, body: AfterClassPlanRequest):
     """Return a chained trip plan for after the last class. Phase 2: heuristic; Phase 3: Claude."""
     from src.ai.planner import heuristic_after_class_plan
@@ -807,6 +839,7 @@ def post_after_class_plan(request: Request, body: AfterClassPlanRequest):
 
 
 @app.post("/ai/eod-report")
+@limiter.limit("10/minute")
 def post_eod_report(request: Request, body: EodReportRequest):
     """Return an AI end-of-day activity report. Requires CLAUDE_API_KEY."""
     claude_key = getattr(settings, "claude_api_key", "")
@@ -865,6 +898,8 @@ async def places_autocomplete(request: Request, body: PlacesAutocompleteRequest)
     query = (body.q or "").strip()
     if not api_key or not query or len(query) < 2:
         return {"predictions": []}
+    if len(query) > 200:
+        raise HTTPException(status_code=400, detail="Query too long (max 200 characters).")
 
     cache_key = query.lower()
     now = time.time()
@@ -918,7 +953,7 @@ async def places_autocomplete(request: Request, body: PlacesAutocompleteRequest)
             })
 
     result = {"predictions": predictions}
-    _places_autocomplete_cache[cache_key] = (result, now + PLACES_AUTOCOMPLETE_TTL)
+    _cache_put(_places_autocomplete_cache, cache_key, (result, now + PLACES_AUTOCOMPLETE_TTL))
     return result
 
 
@@ -930,6 +965,8 @@ async def places_details(request: Request, place_id: str = ""):
     api_key = getattr(settings, "google_places_api_key", "")
     if not api_key or not place_id:
         raise HTTPException(status_code=400, detail="place_id required and GOOGLE_PLACES_API_KEY must be set.")
+    if not _PLACE_ID_RE.match(place_id):
+        raise HTTPException(status_code=400, detail="Invalid place_id format.")
 
     now = time.time()
     if place_id in _places_details_cache:
@@ -959,7 +996,7 @@ async def places_details(request: Request, place_id: str = ""):
         "lng": float(loc.get("longitude") or 0),
         "display_name": display,
     }
-    _places_details_cache[place_id] = (result, now + PLACES_DETAILS_TTL)
+    _cache_put(_places_details_cache, place_id, (result, now + PLACES_DETAILS_TTL))
     return result
 
 
@@ -1026,6 +1063,7 @@ async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
 
 
 @app.post("/ai/walk-complete")
+@limiter.limit("10/minute")
 def post_walk_complete(request: Request, body: WalkCompleteRequest):
     """Return a short encouragement message after completing a walk."""
     claude_key = getattr(settings, "claude_api_key", "")

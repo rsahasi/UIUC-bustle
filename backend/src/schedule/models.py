@@ -36,6 +36,8 @@ class CreateClassRequest(BaseModel):
         v = (v or "").strip()
         if not v:
             raise ValueError("Title must not be empty.")
+        if len(v) > 120:
+            raise ValueError("Title must be 120 characters or fewer.")
         return v
 
     @field_validator("days_of_week")
