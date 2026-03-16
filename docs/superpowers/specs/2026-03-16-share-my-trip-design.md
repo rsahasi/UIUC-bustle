@@ -62,13 +62,15 @@ CREATE TABLE IF NOT EXISTS shared_trips (
   "eta_epoch": 1710000000
 }
 ```
-Returns: `{ "token": "x7k2m9qp", "url": "http://<host>:8000/t/x7k2m9qp" }`
+Returns: `{ "token": "x7k2m9qp", "url": "http://<PUBLIC_BASE_URL>/t/x7k2m9qp" }`
+
+The URL base is read from the `PUBLIC_BASE_URL` env var (e.g. `http://192.168.1.5:8000`). Falls back to reconstructing from the request's `Host` header if the env var is unset. This ensures the URL is usable when shared from a phone on the same LAN.
 
 **PATCH `/share/trips/{token}` request body (all fields optional):**
 ```json
 { "phase": "on_bus", "eta_epoch": 1710000180 }
 ```
-Returns 404 if token not found or already expired.
+Returns 404 if token not found or already expired. No authentication required — acknowledged as acceptable for a personal trip-sharing feature where tokens are unguessable.
 
 **GET `/share/trips/{token}/status` response:**
 ```json
@@ -82,17 +84,19 @@ Returns 404 if token not found or already expired.
   "expired": false
 }
 ```
-If `expires_at < now` or phase is `"arrived"`: returns `{ "expired": true }`.
+If `expires_at <= now` or phase is `"arrived"`: returns `{ "expired": true }`.
+Lazy cleanup: on any read where `expires_at < now - 86400` (24h past expiry), DELETE the row.
 
 **GET `/t/{token}`:** Returns `HTMLResponse` with a self-contained share page.
 
 ### Token Generation
-8-character alphanumeric token using `secrets.token_urlsafe(6)[:8]`. Collision probability negligible at this scale.
+8-character token using `secrets.token_urlsafe(6)[:8]`. On `UNIQUE constraint failed` INSERT error, retry once with a new token. If second attempt also fails, return HTTP 500.
 
 ### Expiry
 - Hard cap: `expires_at = created_at + 7200` (2 hours)
 - Soft expiry: when phase is patched to `"arrived"`, backend sets `expires_at = now`
 - Status endpoint returns `expired: true` if `expires_at <= now`
+- Lazy cleanup: rows where `expires_at < now - 86400` are deleted on read (no background job needed)
 
 ---
 
@@ -101,29 +105,30 @@ If `expires_at < now` or phase is `"arrived"`: returns `{ "expired": true }`.
 ### Share Trigger 1 — Home Route Card
 
 - A share icon button (lucide `Share2`) appears on the active recommendation card
-- On tap: calls `POST /share/trips` with destination, route, stop, and ETA derived from the selected `RecommendationOption`
+- On tap: calls `POST /share/trips` with destination, route, stop, and ETA
+  - `eta_epoch` computed as: `Math.floor(Date.now() / 1000) + option.eta_minutes * 60`
+  - `route_id`, `route_name`, `stop_name` sourced from the RIDE step of the selected `RecommendationOption` (first step where `type === "ride"`)
 - On success: calls React Native `Share.share({ message: "...", url: "..." })` with the short URL
-- Share message format: *"[Name] is heading to [Destination]. Bus [Route] [Headsign] from [Stop]. ETA [Time]."*
-  - Name defaults to "Someone" (no auth/profile in scope)
-- Stores the returned token in component state for subsequent PATCH calls
+- Share message format: *"Someone is heading to [Destination]. Bus [Route] [Headsign] from [Stop]. ETA [Time]."*
+- **Home-triggered shares are static** — no subsequent PATCH calls. The share record is created once with the initial snapshot and remains at that phase. If the user also starts walk-nav, the walk-nav trigger creates a separate token.
 
 ### Share Trigger 2 — Walk-Nav Screen
 
 - Share icon in HUD top-right corner
-- Same `POST /share/trips` flow on first tap
-- As `navPhase` transitions, silently calls `PATCH /share/trips/{token}`:
-  - Nav start → `"walking"`
-  - Within 50m of boarding stop (isBusMode) → `"waiting"`
-  - Bus phase begins → `"on_bus"`
-  - Completion modal shown → `"arrived"`
+- `POST /share/trips` called on first tap; token stored in a `useRef` on the walk-nav screen
+- As observable state transitions, silently calls `PATCH /share/trips/{token}`:
+  - Nav start / share button tapped → `"walking"` (set at POST time, no PATCH needed)
+  - `navPhase` changes to `"bus"` → PATCH `"on_bus"`
+  - Completion modal shown (arrival detected) → PATCH `"arrived"`
+- The `"waiting"` phase is sent when the user arrives within `ARRIVAL_THRESHOLD_M` (30m) of the boarding stop while still in walking phase — this is the same proximity check that currently triggers the arrival-at-stop detection in walk-nav. No new geofencing logic is required.
 - Token stored in a `useRef` on the walk-nav screen
 
 ### Phase Mapping
 
 | App state | Phase sent |
 |-----------|-----------|
-| Walking to stop | `walking` |
-| Within 50m of boarding stop | `waiting` |
+| Share created (walk-nav start) | `walking` (set at POST, no PATCH) |
+| Within 30m of boarding stop (walk phase) | `waiting` |
 | `navPhase === "bus"` | `on_bus` |
 | Arrival modal shown | `arrived` |
 
@@ -169,10 +174,12 @@ Served as a self-contained `HTMLResponse` (inline CSS + JS, no external dependen
 ### JS Behavior
 
 1. On load: fetch `/share/trips/{token}/status`
-2. If `expired: true`: render expired state, stop
-3. Otherwise: render live state, start `setInterval` polling every 15s
-4. ETA displayed as: clock time (formatted from `eta_epoch`) + "X min away" (computed as `Math.max(0, eta_epoch - Date.now()/1000) / 60`)
-5. On `arrived` or `expired` response: clear interval, show final state
+2. If `expired: true`: render expired state, stop all timers
+3. Otherwise: render live state, start two timers:
+   - **Poll timer:** `setInterval` every 15s — fetches fresh status from backend, updates phase pill and `eta_epoch`
+   - **Countdown timer:** `setInterval` every 1s — recomputes "X min away" from the last known `eta_epoch` and `Date.now()`. This keeps the countdown ticking between polls without waiting 15s for each decrement.
+4. ETA displayed as: clock time (formatted from `eta_epoch`) + "X min away" (`Math.max(0, Math.floor((eta_epoch - Date.now()/1000) / 60))`)
+5. On `arrived` or `expired` response from poll: clear both intervals, show final state
 
 ---
 
@@ -181,13 +188,19 @@ Served as a self-contained `HTMLResponse` (inline CSS + JS, no external dependen
 ### Files to delete
 - `mobile/app/import-schedule.tsx`
 
-### Code to remove
+### Code to remove from mobile
 - Import Schedule button/link in `mobile/app/(tabs)/schedule.tsx`
 - `parseSchedule` function in `mobile/src/api/client.ts`
-- `ParseScheduleRequest`, `ParseScheduleResponse`, `ParsedClass` types in `mobile/src/api/types.ts` (if only used by import)
+- `ParsedClass`, `ParseScheduleRequest`, `ParseScheduleResponse`, `ParsedScheduleResponse` types in `mobile/src/api/types.ts` — all are only used by `import-schedule.tsx` and can be deleted entirely
+- All re-exports of these types from `mobile/src/api/client.ts`
+
+### Code to remove from backend
 - `POST /ai/parse-schedule` endpoint in `backend/main.py`
 - `parse_schedule()` method in `backend/src/ai/claude_client.py`
-- Associated Pydantic models in `backend/src/schedule/models.py` if only used by parse
+- `ParseScheduleRequest`, `ParseScheduleResponse`, `ParsedClass` Pydantic models in `backend/src/schedule/models.py` — confirmed safe to delete, no other code imports these three models
+
+### Files to delete from backend
+- `backend/tests/test_claude_parse_schedule.py` — tests the removed `parse_schedule()` method; delete to avoid orphaned failing tests
 
 ### Preserve
 - Manual class creation form (`CreateClassRequest`, `POST /schedule/classes`) — unchanged
@@ -197,22 +210,38 @@ Served as a self-contained `HTMLResponse` (inline CSS + JS, no external dependen
 
 ## Out of Scope
 
-- User profiles / named sharing ("Veer is heading to…" — name hardcoded as "Someone" for now)
+- User profiles / named sharing (name hardcoded as "Someone")
 - Live location on map (explicitly excluded, privacy-first)
 - Push notifications to recipient
 - Share history / tracking
+- PATCH endpoint authentication (tokens are unguessable 8-char random strings; acceptable for this use case)
+
+---
+
+## Environment Variables
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `PUBLIC_BASE_URL` | Base URL embedded in share links (e.g. `http://192.168.1.5:8000`) | Derived from request `Host` header |
 
 ---
 
 ## Testing Checklist
 
-- [ ] `POST /share/trips` returns valid token and URL
-- [ ] `PATCH /share/trips/{token}` updates phase correctly
-- [ ] Status endpoint returns `expired: true` after 2 hours
-- [ ] Status endpoint returns `expired: true` after `arrived` patch
+- [ ] `POST /share/trips` returns valid token and URL containing `PUBLIC_BASE_URL`
+- [ ] Token collision: second INSERT with same token succeeds (retry logic)
+- [ ] `PATCH /share/trips/{token}` updates phase and eta correctly
+- [ ] Status endpoint returns `expired: true` after 2-hour hard cap
+- [ ] Status endpoint returns `expired: true` after `arrived` PATCH
+- [ ] Lazy cleanup: row deleted when read after 24h past expiry
 - [ ] Share page renders correctly for each phase
-- [ ] Share page stops polling on expired state
+- [ ] Share page countdown ticks every 1s between polls
+- [ ] Share page stops all timers on expired state
 - [ ] Share button appears on Home route card and triggers native share sheet
-- [ ] Walk-nav PATCH calls fire on phase transitions
-- [ ] Import schedule screen is fully removed with no dead links
+- [ ] Home share is static — no PATCH calls fired after creation
+- [ ] Walk-nav PATCH fires on `navPhase → "bus"` and on arrival modal
+- [ ] Walk-nav "waiting" PATCH fires within 30m of boarding stop
+- [ ] Import schedule screen fully removed with no dead navigation links
+- [ ] `parseSchedule` and all associated types removed from client.ts and types.ts
+- [ ] Backend parse-schedule endpoint and models removed
 - [ ] Manual class creation still works after import removal
