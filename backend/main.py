@@ -1102,4 +1102,6 @@ def get_share_trip_status(request: Request, token: str):
 @limiter.exempt
 def share_trip_page(request: Request, token: str):
     """Serve the recipient share page."""
+    if not re.fullmatch(r'[A-Za-z0-9_\-]{6,16}', token):
+        return HTMLResponse("<h1>Invalid link</h1>", status_code=400)
     return HTMLResponse(content=build_share_page(token))

@@ -143,7 +143,7 @@ export default function WalkNavScreen() {
   const zoomOut = () => setZoomDelta((d) => Math.min(d * 2, 0.5));
 
   const handleWalkNavShare = useCallback(async () => {
-    const etaEpoch = Math.floor(Date.now() / 1000) + (distanceM !== null ? Math.floor(distanceM / speedMps) : 0);
+    const etaEpoch = distanceM !== null ? Math.floor(Date.now() / 1000) + Math.floor(distanceM / speedMps) : undefined;
     const body: ShareTripRequest = {
       destination: hasFinalDest ? finalDestName : destName,
       route_id: routeId || null,
@@ -414,7 +414,7 @@ export default function WalkNavScreen() {
   // Show completion modal on arrival + fetch encouragement
   useEffect(() => {
     if (arrived) {
-      if (!arrived || showCompletion) return; // already handled
+      if (showCompletion) return; // already handled
       if (timerRef.current) clearInterval(timerRef.current);
       if (shareTokenRef.current) {
         patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "arrived" }, { apiKey: apiKey ?? undefined });
