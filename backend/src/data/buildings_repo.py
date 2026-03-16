@@ -111,6 +111,21 @@ def init_app_db(db_path: str | Path) -> None:
         ):
             if col not in cols:
                 conn.execute(f"ALTER TABLE schedule_classes ADD COLUMN {col} {typ}")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shared_trips (
+                id           TEXT PRIMARY KEY,
+                destination  TEXT NOT NULL,
+                route_id     TEXT,
+                route_name   TEXT,
+                stop_name    TEXT,
+                phase        TEXT NOT NULL DEFAULT 'walking',
+                eta_epoch    INTEGER,
+                created_at   INTEGER NOT NULL,
+                expires_at   INTEGER NOT NULL
+            )
+            """
+        )
         conn.commit()
 
 

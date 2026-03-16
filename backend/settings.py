@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # Google Places API (New) — set GOOGLE_PLACES_API_KEY in .env for place search
     google_places_api_key: str = ""
 
+    # Share trips: base URL for share links (e.g. http://192.168.1.5:8000).
+    # Falls back to request Host header if unset.
+    public_base_url: str = ""
+
 
 def get_settings() -> Settings:
     return Settings()

@@ -163,3 +163,13 @@ def test_create_class_repo_building_not_found(app_db):
             start_time_local="09:00",
             building_id="nonexistent",
         )
+
+
+def test_shared_trips_table_created(tmp_path):
+    """shared_trips table must be created by init_app_db."""
+    import sqlite3
+    db = tmp_path / "app.db"
+    init_app_db(db)
+    with sqlite3.connect(db) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "shared_trips" in tables
