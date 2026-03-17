@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -19,6 +19,7 @@ from src.data.buildings_repo import (
     create_class, delete_class, list_classes, BuildingRecord, ClassRecord
 )
 from src.data.stops_repo import search_nearby
+from src.auth.jwt import get_current_user
 from src.middleware import OptionalAPIKeyMiddleware, RequestLoggingMiddleware, get_valid_api_keys
 from src.monitoring import get_metrics
 from src.mtd.client import MTDClient
@@ -563,12 +564,13 @@ async def search_buildings_endpoint(request: Request, q: str = "", limit: int = 
 
 
 @app.post("/schedule/classes", response_model=ClassResponse, status_code=201)
-async def post_schedule_class(request: Request, body: CreateClassRequest):
-    """Create a class for the default user. Use building_id or destination_lat/lng/name (from address search)."""
+async def post_schedule_class(request: Request, body: CreateClassRequest, user_id: str = Depends(get_current_user)):
+    """Create a class for the authenticated user."""
     try:
         pool = get_pool()
     except RuntimeError:
         raise HTTPException(status_code=503, detail="Database unavailable")
+    await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
     try:
         rec = await create_class(
             pool,
@@ -580,6 +582,7 @@ async def post_schedule_class(request: Request, body: CreateClassRequest):
             destination_lng=body.destination_lng,
             destination_name=body.destination_name,
             end_time_local=body.end_time_local,
+            user_id=user_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -597,25 +600,27 @@ async def post_schedule_class(request: Request, body: CreateClassRequest):
 
 
 @app.delete("/schedule/classes/{class_id}", status_code=204)
-async def delete_schedule_class(request: Request, class_id: str):
-    """Delete a class for the default user."""
+async def delete_schedule_class(request: Request, class_id: str, user_id: str = Depends(get_current_user)):
+    """Delete a class belonging to the authenticated user."""
     try:
         pool = get_pool()
     except RuntimeError:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    deleted = await delete_class(pool, class_id, user_id="default")
+    await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    deleted = await delete_class(pool, class_id, user_id=user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Class not found.")
 
 
 @app.get("/schedule/classes", response_model=ClassesListResponse)
-async def get_schedule_classes(request: Request):
-    """List classes for the default user."""
+async def get_schedule_classes(request: Request, user_id: str = Depends(get_current_user)):
+    """List classes for the authenticated user."""
     try:
         pool = get_pool()
     except RuntimeError:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    classes = await list_classes(pool, user_id="default")
+    await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    classes = await list_classes(pool, user_id=user_id)
     return ClassesListResponse(
         classes=[
             ClassResponse(
