@@ -8,6 +8,8 @@ Usage:
 
 Campus bbox: lat 40.095–40.120, lon -88.248–-88.215 (covers main UIUC campus).
 Expected yield: 80–150 buildings.
+
+TODO: update for PostgreSQL — init_db/init_app_db removed in asyncpg migration
 """
 import argparse
 import csv
@@ -109,9 +111,6 @@ def write_csv(buildings: list[dict], csv_path: Path) -> None:
 
 
 def seed_db(buildings: list[dict], db_path: Path) -> int:
-    from src.data.buildings_repo import init_app_db
-
-    init_app_db(db_path)
     count = 0
     with sqlite3.connect(db_path) as conn:
         for b in buildings:

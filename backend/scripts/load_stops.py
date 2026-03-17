@@ -10,6 +10,8 @@ To use official GTFS data later:
   2. Unzip and use stops.txt (columns: stop_id, stop_name, stop_lat, stop_lon).
   3. Either rename columns in CSV to lat/lng or change this script to map stop_lat/stop_lon -> lat/lng.
   4. Run: python scripts/load_stops.py --csv path/to/stops.txt
+
+TODO: update for PostgreSQL — init_db/init_app_db removed in asyncpg migration
 """
 import argparse
 import csv
@@ -19,8 +21,6 @@ from pathlib import Path
 # Add backend root to path
 backend = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(backend))
-
-from src.data.stops_repo import init_db
 
 
 def main() -> int:
@@ -49,7 +49,6 @@ def main() -> int:
         return 1
 
     args.db.parent.mkdir(parents=True, exist_ok=True)
-    init_db(args.db)
 
     lat_col = "stop_lat" if args.gtfs else "lat"
     lng_col = "stop_lon" if args.gtfs else "lng"
