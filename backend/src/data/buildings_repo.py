@@ -97,7 +97,7 @@ async def create_class(
     days_of_week: list[str],
     start_time_local: str,
     building_id: Optional[str] = None,
-    user_id: str = "default",
+    user_id: str,
     class_id: Optional[str] = None,
     destination_lat: Optional[float] = None,
     destination_lng: Optional[float] = None,
@@ -142,7 +142,7 @@ async def create_class(
 
 
 async def delete_class(
-    pool: asyncpg.Pool, class_id: str, user_id: str = "default"
+    pool: asyncpg.Pool, class_id: str, user_id: str
 ) -> bool:
     result = await pool.execute(
         "DELETE FROM schedule_classes WHERE class_id = $1 AND user_id = $2",
@@ -153,7 +153,7 @@ async def delete_class(
 
 
 async def list_classes(
-    pool: asyncpg.Pool, user_id: str = "default"
+    pool: asyncpg.Pool, user_id: str
 ) -> list[ClassRecord]:
     rows = await pool.fetch(
         "SELECT * FROM schedule_classes WHERE user_id = $1 ORDER BY start_time_local, title",
