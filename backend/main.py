@@ -29,7 +29,30 @@ from src.schedule.models import (
     CreateClassRequest,
 )
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+
 settings = get_settings()
+
+def _sentry_traces_sampler(sampling_context: dict) -> float:
+    """Exclude health/metrics endpoints from performance tracing.
+    Uses .get() defensively — asgi_scope is absent for non-HTTP contexts (e.g. startup tasks).
+    """
+    path = (sampling_context.get("asgi_scope") or {}).get("path", "")
+    if path in ("/health", "/metrics"):
+        return 0.0
+    return 0.1
+
+
+if settings.sentry_dsn:
+    # Guard ensures sentry_dsn is non-empty before init; empty string raises BadDsn.
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        integrations=[FastApiIntegration()],
+        traces_sampler=_sentry_traces_sampler,
+        send_default_pii=False,
+    )
+
 BACKEND_ROOT = Path(__file__).resolve().parent
 STOPS_DB = BACKEND_ROOT / settings.stops_db_path
 APP_DB = BACKEND_ROOT / settings.app_db_path
