@@ -17,7 +17,8 @@ import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { theme } from "@/src/constants/theme";
 import { Bell, BellOff, Trash2 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
+import { useAnalytics } from "@/src/hooks/useAnalytics";
 import {
   ActivityIndicator,
   Alert,
@@ -67,6 +68,7 @@ function getTransitStatusColor(startTime: string, departInMins: number): string 
 export default function ScheduleScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const router = useRouter();
+  const { capture } = useAnalytics();
   const [classes, setClasses] = useState<ScheduleClass[]>([]);
   const [buildings, setBuildings] = useState<Building[]>([]);
   const [classRouteDatas, setClassRouteDatas] = useState<Record<string, ClassRouteData | null>>({});
@@ -94,6 +96,12 @@ export default function ScheduleScreen() {
   // "List" or "Week" view toggle
   const [viewMode, setViewMode] = useState<"list" | "week">("list");
   const [selectedWeekDay, setSelectedWeekDay] = useState<string | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      capture("schedule_viewed");
+    }, [capture])
+  );
 
   const load = useCallback(async () => {
     setError(null);
@@ -233,6 +241,10 @@ export default function ScheduleScreen() {
       setLocationError(null);
       await load();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      capture("class_added", {
+        has_building: false,  // schedule.tsx only uses custom destinations (destination_lat/lng)
+        has_custom_dest: locationLat !== null && locationLng !== null,
+      });
       setSuccessToast("Class added ✓");
       setTimeout(() => setSuccessToast(null), 2500);
     } catch (e) {

@@ -5,8 +5,9 @@ import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAnalytics } from "@/src/hooks/useAnalytics";
 import React from "react";
 import {
   ActivityIndicator,
@@ -54,6 +55,13 @@ export default function MapScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const { walkingModeId, walkingSpeedMps, bufferMinutes } = useRecommendationSettings();
   const router = useRouter();
+  const { capture } = useAnalytics();
+
+  useFocusEffect(
+    useCallback(() => {
+      capture("map_viewed");
+    }, [capture])
+  );
   const [status, setStatus] = useState<"loading" | "denied" | "error" | "ready">("loading");
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(UIUC_FALLBACK);
   const [stops, setStops] = useState<StopWithDistance[]>([]);

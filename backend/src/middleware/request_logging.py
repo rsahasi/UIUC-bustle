@@ -9,11 +9,26 @@ from src.monitoring.metrics import record_request
 logger = logging.getLogger(__name__)
 
 
+def _anonymize_ip(ip: str) -> str:
+    """Return a privacy-safe version of an IP address.
+    IPv4: zero the last octet (e.g. 1.2.3.4 → 1.2.3.0).
+    IPv6: keep only the first 3 groups (e.g. 2001:db8:1::1 → 2001:db8:1::).
+    """
+    if not ip:
+        return ""
+    if ":" in ip:
+        parts = ip.split(":")
+        return ":".join(parts[:3]) + "::"
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.{parts[1]}.{parts[2]}.0"
+    return ip
+
+
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    raw = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "")
+    return _anonymize_ip(raw)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):

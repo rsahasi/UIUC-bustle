@@ -190,8 +190,12 @@ def search_buildings_fts(db_path: str | Path, query: str, limit: int = 6) -> lis
     tokens = [t for t in query.strip().lower().split() if t]
     if not tokens:
         return []
-    # Build FTS5 MATCH pattern: each token as a prefix match
-    match_expr = " AND ".join(f"name:{t}*" for t in tokens)
+    # Build FTS5 MATCH pattern: each token as a quoted prefix match.
+    # Quoting prevents FTS5 operator injection (AND/OR/NOT/"/"()/- in user input).
+    def _fts5_quote(tok: str) -> str:
+        return '"' + tok.replace('"', '""') + '"'
+
+    match_expr = " AND ".join(f"name:{_fts5_quote(t)}*" for t in tokens)
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row

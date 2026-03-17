@@ -2,6 +2,7 @@ import { fetchBusRouteStops, fetchVehicles, fetchWalkingRoute } from "@/src/api/
 import type { BusStop, VehicleInfo } from "@/src/api/client";
 import { getMpsForMode, WALKING_MODES } from "@/src/constants/walkingMode";
 import type { WalkingModeId } from "@/src/constants/walkingMode";
+import { useAnalytics } from "@/src/hooks/useAnalytics";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { addActivityEntry, todayDateString } from "@/src/storage/activityLog";
@@ -56,6 +57,7 @@ type NavPhase = "walking" | "bus";
 export default function WalkNavScreen() {
   const router = useRouter();
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
+  const { capture } = useAnalytics();
   const { weightKg } = useRecommendationSettings();
   const params = useLocalSearchParams<{
     dest_lat: string;
@@ -141,10 +143,23 @@ export default function WalkNavScreen() {
   const walkingRouteCoordsRef = useRef<{ latitude: number; longitude: number }[]>([]);
   const offRouteRefetchRef = useRef(false);
 
+  // Fire once on mount — intentional empty deps to fire exactly once regardless of re-renders
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    capture("walk_started", { walking_mode: modeId });
+  }, []);
+
   // Keep navPhaseRef in sync
   useEffect(() => {
     navPhaseRef.current = navPhase;
   }, [navPhase]);
+
+  // Fire analytics when user transitions from walking to bus leg
+  useEffect(() => {
+    if (navPhase === "bus") {
+      capture("bus_phase_entered");
+    }
+  }, [navPhase, capture]);
 
   // Keep walkingRouteCoordsRef in sync
   useEffect(() => {
@@ -374,6 +389,7 @@ export default function WalkNavScreen() {
   // Show completion modal on arrival + fetch encouragement
   useEffect(() => {
     if (arrived) {
+      capture("trip_completed");
       if (timerRef.current) clearInterval(timerRef.current);
       setShowCompletion(true);
       (async () => {
@@ -399,7 +415,7 @@ export default function WalkNavScreen() {
         } catch {}
       })();
     }
-  }, [arrived, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
+  }, [arrived, capture, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
 
   const finishWalk = useCallback(async () => {
     await addActivityEntry({

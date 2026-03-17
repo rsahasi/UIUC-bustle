@@ -18,6 +18,17 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as TaskManager from 'expo-task-manager';
 import { useEffect } from "react";
+import * as Sentry from "@sentry/react-native";
+import { PostHogProvider, usePostHog } from "posthog-react-native";
+import { getOrCreateDeviceId } from "@/src/utils/deviceId";
+
+// Sentry — init before anything else; no-ops silently when DSN is absent
+if (process.env.NODE_ENV !== "test" && process.env.EXPO_PUBLIC_SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
+    tracesSampleRate: 0.1,
+  });
+}
 
 TaskManager.defineTask(AUTO_WALK_TASK_NAME, async ({ data, error }: any) => {
   if (error || !data?.locations?.length) return;
@@ -53,6 +64,22 @@ TaskManager.defineTask(AUTO_WALK_TASK_NAME, async ({ data, error }: any) => {
 
 SplashScreen.preventAutoHideAsync();
 
+/** Identifies the device in both Sentry and PostHog on first mount. */
+function AnalyticsIdentifier() {
+  const posthog = usePostHog();
+  useEffect(() => {
+    getOrCreateDeviceId().then((deviceId) => {
+      // PostHog: set stable distinct_id; after Supabase, swap to posthog.identify(user.id)
+      posthog?.identify(deviceId);
+      // Sentry: tag errors with same device ID
+      if (process.env.EXPO_PUBLIC_SENTRY_DSN) {
+        Sentry.setUser({ id: deviceId });
+      }
+    });
+  }, [posthog]);
+  return null;
+}
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     DMSerifDisplay_400Regular,
@@ -82,18 +109,29 @@ export default function RootLayout() {
     return null;
   }
 
+  const posthogKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY;
+
   return (
-    <>
-      <StatusBar style="light" />
-      <NotificationRedirect />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />
-        <Stack.Screen name="report-issue" options={{ headerShown: true, title: "Report issue", headerBackTitle: "Back" }} />
-        <Stack.Screen name="walk-nav" options={{ headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
-        <Stack.Screen name="after-class-planner" options={{ headerShown: true, title: "Plan my evening", headerBackTitle: "Back", presentation: "modal" }} />
-        <Stack.Screen name="route-tracker" options={{ headerShown: true, title: "Route", headerBackTitle: "Back" }} />
-      </Stack>
-    </>
+    <PostHogProvider
+      apiKey={posthogKey || ""}
+      options={{
+        host: "https://us.i.posthog.com",
+        disabled: !posthogKey || process.env.NODE_ENV === "test",
+      }}
+    >
+      <AnalyticsIdentifier />
+      <>
+        <StatusBar style="light" />
+        <NotificationRedirect />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />
+          <Stack.Screen name="report-issue" options={{ headerShown: true, title: "Report issue", headerBackTitle: "Back" }} />
+          <Stack.Screen name="walk-nav" options={{ headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
+          <Stack.Screen name="after-class-planner" options={{ headerShown: true, title: "Plan my evening", headerBackTitle: "Back", presentation: "modal" }} />
+          <Stack.Screen name="route-tracker" options={{ headerShown: true, title: "Route", headerBackTitle: "Back" }} />
+        </Stack>
+      </>
+    </PostHogProvider>
   );
 }

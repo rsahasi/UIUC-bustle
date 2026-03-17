@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # Google Places API (New) — set GOOGLE_PLACES_API_KEY in .env for place search
     google_places_api_key: str = ""
 
+    # Sentry error monitoring — set SENTRY_DSN in .env to enable
+    sentry_dsn: str = ""
+
 
 def get_settings() -> Settings:
     return Settings()

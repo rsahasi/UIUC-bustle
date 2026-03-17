@@ -4,6 +4,7 @@ import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { useLeaveBy } from "@/src/hooks/useLeaveBy";
+import { useAnalytics } from "@/src/hooks/useAnalytics";
 import type { DepartureItem, RecommendationOption, RecommendationStep, StopInfo } from "@/src/api/types";
 import { cancelClassReminder, cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
 import { scheduleLeaveNowAlert, cancelLeaveNowAlert, cancelAllLeaveNowAlerts, buildLeaveNowBody } from "@/src/notifications/leaveNow";
@@ -142,6 +143,7 @@ export default function HomeScreen() {
   const { enabled: classNotificationsEnabled } = useClassNotificationsEnabled();
   const { walkingModeId, walkingSpeedMps, bufferMinutes, rainMode } = useRecommendationSettings();
   const leaveBy = useLeaveBy();
+  const { capture } = useAnalytics();
   const router = useRouter();
   const params = useLocalSearchParams<{ highlight?: string; focus?: string }>();
   const [status, setStatus] = useState<"loading" | "error" | "denied" | "ready">("loading");
@@ -374,6 +376,14 @@ export default function HomeScreen() {
             }, { signal, apiKey: apiKey ?? undefined });
             recommendationsList = rec.options ?? [];
             setRecommendations(recommendationsList);
+            if (recommendationsList.length > 0) {
+              capture("route_viewed", {
+                route_count: recommendationsList.length,
+                next_class_minutes: nextClass
+                  ? Math.round((new Date(arriveByIsoToday(nextClass.start_time_local)).getTime() - Date.now()) / 60000)
+                  : undefined,
+              });
+            }
             setAfterLastClassPlace(null);
             setAfterLastClassRecs([]);
             // Cache route summary for notification
@@ -883,7 +893,12 @@ export default function HomeScreen() {
               accessibilityLabel="Share ETA"
               accessibilityRole="button"
               style={styles.shareBtn}
-              onPress={() => Share.share({ message: buildShareMessage(opt, destName) })}
+              onPress={async () => {
+                const result = await Share.share({ message: buildShareMessage(opt, destName) });
+                if (result.action !== Share.dismissedAction) {
+                  capture("share_trip_created");
+                }
+              }}
             >
               <Text style={styles.shareBtnText}>Share</Text>
             </Pressable>
