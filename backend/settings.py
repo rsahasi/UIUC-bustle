@@ -15,8 +15,7 @@ class Settings(BaseSettings):
     # CORS: "*" for dev; in production set to comma-separated origins, e.g. "https://app.example.com,https://admin.example.com"
     cors_origins: str = "*"
     mtd_api_key: str = ""  # Champaign-Urbana MTD Developer API key (get at developer.cumtd.com)
-    stops_db_path: str = "data/stops.db"  # Path relative to backend root, or absolute
-    app_db_path: str = "data/app.db"  # Buildings + schedule (run scripts/seed_buildings.py first)
+    database_url: str = ""  # PostgreSQL connection URL (Railway sets DATABASE_URL automatically)
 
     # Optional API key auth (for production / multi-tenant). When enabled, requests must include X-API-Key or Authorization: Bearer <key>.
     api_key_required: bool = False
