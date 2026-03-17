@@ -30,15 +30,18 @@ Railway Environment Variables
 ├── MTD_API_KEY
 ├── CLAUDE_API_KEY
 ├── SENTRY_DSN
-├── DATA_DIR=/mnt/data
+├── APP_DB_PATH=/mnt/data/app.db
+├── STOPS_DB_PATH=/mnt/data/stops.db
 ├── CORS_ORIGINS=https://*.up.railway.app
 └── API_KEY_REQUIRED=false
 ```
 
 **Key decisions:**
-- GTFS is read-only static data — baked into the Docker image at build time. Only changes when MTD publishes a new feed (rare); rebuilding the image is the upgrade path.
-- `app.db` and `stops.db` are user-mutable — persisted on a Railway Volume at `/mnt/data` so data survives deploys.
-- `DATA_DIR` env var separates volume path from baked-in GTFS path. `settings.py` exposes `data_dir`; repos read `settings.data_dir` for app/stops DB paths. GTFS path stays at `./data/gtfs.db` (relative to app, always baked in).
+
+- GTFS is read-only static data — baked into the Docker image at build time. `load_gtfs.py` resolves its output path via `Path(__file__).resolve().parent.parent / "data" / "gtfs.db"`, which lands at `/app/data/gtfs.db` inside the image. Only changes when MTD publishes a new feed; rebuilding the image is the upgrade path.
+- `app.db` and `stops.db` are user-mutable — persisted on a Railway Volume at `/mnt/data`.
+- `settings.py` already has `app_db_path: str = "data/app.db"` and `stops_db_path: str = "data/stops.db"`. `main.py` builds DB paths as `BACKEND_ROOT / settings.app_db_path` and `BACKEND_ROOT / settings.stops_db_path`. Python's `pathlib` replaces the left side when the right operand is an absolute path, so setting `APP_DB_PATH=/mnt/data/app.db` in Railway env vars routes correctly to the volume — **no code changes to `main.py` needed**.
+- `mobile/src/config/api.ts` already reads `EXPO_PUBLIC_API_BASE_URL` and falls back to `localhost:8000` — **no code changes needed**. Only `mobile/.env.example` needs the new variable documented.
 
 ---
 
@@ -58,6 +61,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Bake GTFS into image at build time (read-only static data)
+# Script resolves output to /app/data/gtfs.db via __file__
 RUN python scripts/load_gtfs.py
 
 # Ensure volume mount point exists
@@ -82,55 +86,38 @@ data/gtfs.db
 tests/
 ```
 
-**`backend/settings.py`** — add `data_dir: str = "./data"`:
-```python
-data_dir: str = "./data"  # Override with DATA_DIR env var; used for app.db and stops.db
-```
-
-**`backend/src/data/buildings_repo.py`** — replace hardcoded `./data/app.db` with `settings.data_dir`:
-```python
-from settings import settings
-DB_PATH = Path(settings.data_dir) / "app.db"
-```
-
-**`backend/src/data/stops_repo.py`** — same pattern:
-```python
-from settings import settings
-DB_PATH = Path(settings.data_dir) / "stops.db"
-```
-
-Note: `gtfs_repo.py` keeps its path at `./data/gtfs.db` — this is intentional, as GTFS is baked into the image and is NOT on the volume.
+Note: `data/gtfs.db` is excluded from the COPY step (don't copy stale local version). The `RUN python scripts/load_gtfs.py` step re-creates it fresh inside the image from the MTD feed.
 
 ### Mobile
 
-**`mobile/src/config/api.ts`** — read `EXPO_PUBLIC_API_BASE_URL` env var:
-```typescript
-export function getDefaultApiBaseUrl(): string {
-  return process.env.EXPO_PUBLIC_API_BASE_URL || "http://localhost:8000";
-}
-```
-
-**`mobile/.env.example`** — add the new variable (alongside existing Sentry/PostHog keys):
+**`mobile/.env.example`** — add `EXPO_PUBLIC_API_BASE_URL=` alongside existing Sentry/PostHog keys:
 ```
 EXPO_PUBLIC_API_BASE_URL=
 EXPO_PUBLIC_SENTRY_DSN=
 EXPO_PUBLIC_POSTHOG_API_KEY=
 ```
 
+No other mobile code changes needed — `mobile/src/config/api.ts` already reads `EXPO_PUBLIC_API_BASE_URL`.
+
 ---
 
-## Railway Setup Steps
-
-These are one-time manual steps (not automated):
+## Railway Setup Steps (one-time manual)
 
 1. Create Railway account at railway.app
-2. Create new project → "Deploy from GitHub repo" → select `rsahasi/UIUC-bustle`
+2. New project → "Deploy from GitHub repo" → select `rsahasi/UIUC-bustle`
 3. Set build context to `backend/` in service settings
 4. Add Volume: mount path `/mnt/data`, size 1GB
-5. Add environment variables (all listed above)
+5. Add environment variables:
+   - `MTD_API_KEY=<key>`
+   - `CLAUDE_API_KEY=<key>`
+   - `SENTRY_DSN=<dsn>` (optional)
+   - `APP_DB_PATH=/mnt/data/app.db`
+   - `STOPS_DB_PATH=/mnt/data/stops.db`
+   - `CORS_ORIGINS=https://<subdomain>.up.railway.app`
+   - `API_KEY_REQUIRED=false`
 6. Set health check path to `/health`
 7. Copy the generated `*.up.railway.app` domain
-8. Set `EXPO_PUBLIC_API_BASE_URL=https://<your-subdomain>.up.railway.app` in `mobile/.env`
+8. Set `EXPO_PUBLIC_API_BASE_URL=https://<subdomain>.up.railway.app` in `mobile/.env`
 
 ---
 
@@ -143,18 +130,25 @@ These are one-time manual steps (not automated):
 ## Error Handling
 
 - **GTFS load failure at build time**: build fails, Railway does not deploy. Fix the script and push again.
-- **Volume not mounted**: `app.db` writes fail with `OperationalError`. Railway dashboard shows mount status; remount and redeploy.
-- **Missing env vars**: `settings.py` uses Pydantic defaults — missing optional vars (e.g. `SENTRY_DSN`) silently disable the feature. `MTD_API_KEY` is required for live departures; absence causes graceful API errors (same behavior as local dev without the key).
+- **Volume not mounted**: writes to `app.db` fail with `OperationalError`. Railway dashboard shows mount status; remount and redeploy.
+- **Missing env vars**: `settings.py` uses Pydantic defaults — missing optional vars (e.g. `SENTRY_DSN`) silently disable the feature. `MTD_API_KEY` is required for live departures; absence causes graceful API errors (same behavior as local dev).
 
 ---
 
 ## Testing
 
 - Build Docker image locally: `docker build -t uiuc-bustle-backend ./backend`
-- Run locally with volume simulation: `docker run -p 8000:8000 -v $(pwd)/backend/data:/mnt/data -e DATA_DIR=/mnt/data uiuc-bustle-backend`
+- Run locally with volume simulation:
+  ```bash
+  docker run -p 8000:8000 \
+    -v $(pwd)/backend/local_data:/mnt/data \
+    -e APP_DB_PATH=/mnt/data/app.db \
+    -e STOPS_DB_PATH=/mnt/data/stops.db \
+    uiuc-bustle-backend
+  ```
 - Verify health: `curl http://localhost:8000/health` → `{"status":"ok"}`
 - Verify GTFS baked in: `curl http://localhost:8000/gtfs/route-all-stops?route_id=22` returns shape data
-- After Railway deploy: set `EXPO_PUBLIC_API_BASE_URL` and reload simulator — departures and recommendations should work
+- After Railway deploy: set `EXPO_PUBLIC_API_BASE_URL` and reload simulator
 
 ---
 
@@ -165,7 +159,8 @@ These are one-time manual steps (not automated):
 | `MTD_API_KEY` | Railway dashboard | Live bus departures and vehicles |
 | `CLAUDE_API_KEY` | Railway dashboard | AI route ranking and features |
 | `SENTRY_DSN` | Railway dashboard | Crash reporting (optional) |
-| `DATA_DIR` | Railway dashboard | Path for app.db and stops.db on volume |
+| `APP_DB_PATH` | Railway dashboard | Absolute path to app.db on volume (`/mnt/data/app.db`) |
+| `STOPS_DB_PATH` | Railway dashboard | Absolute path to stops.db on volume (`/mnt/data/stops.db`) |
 | `CORS_ORIGINS` | Railway dashboard | Allowed frontend origins |
 | `API_KEY_REQUIRED` | Railway dashboard | Set true to require X-API-Key on all requests |
 | `EXPO_PUBLIC_API_BASE_URL` | `mobile/.env` | Railway backend URL for the mobile app |
