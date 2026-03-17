@@ -1,4 +1,5 @@
 import { log } from "@/src/telemetry/logBuffer";
+import { supabase } from "@/src/auth/supabaseClient";
 import type {
   Building,
   BuildingsResponse,
@@ -24,9 +25,13 @@ export interface RequestOptions {
   apiKey?: string | null;
 }
 
-function mergeHeaders(init?: RequestInit, apiKey?: string | null): RequestInit["headers"] {
+async function mergeHeaders(init?: RequestInit, apiKey?: string | null): Promise<Headers> {
   const headers = init?.headers instanceof Headers ? new Headers(init.headers) : new Headers(init?.headers as HeadersInit);
   if (apiKey?.trim()) headers.set("X-API-Key", apiKey.trim());
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
   return headers;
 }
 
@@ -52,9 +57,10 @@ async function fetchWithRetry(
   init?: RequestInit & { signal?: AbortSignal; apiKey?: string | null }
 ): Promise<Response> {
   const { signal: userSignal, apiKey, ...rest } = init ?? {};
-  const headers = mergeHeaders(rest, apiKey);
-  const requestInit: RequestInit & { signal?: AbortSignal } = { ...rest, headers };
+  const headers = await mergeHeaders(rest, apiKey);
+  let requestInit: RequestInit & { signal?: AbortSignal } = { ...rest, headers };
   let lastError: unknown;
+  let refreshAttempted = false;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const timeoutController = new AbortController();
     const timeoutId = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS);
@@ -69,6 +75,19 @@ async function fetchWithRetry(
           const backoff = Math.min(RETRY_BASE_MS * Math.pow(2, attempt) + Math.random() * 300, RETRY_MAX_MS);
           await delay(backoff);
           continue;
+        }
+        if (res.status === 401) {
+          if (!refreshAttempted) {
+            refreshAttempted = true;
+            await supabase.auth.refreshSession();
+            const refreshedHeaders = await mergeHeaders(rest, apiKey);
+            requestInit = { ...requestInit, headers: refreshedHeaders };
+            continue; // retry with refreshed token
+          } else {
+            // Second 401 after refresh — session is truly invalid, sign out
+            await supabase.auth.signOut(); // AuthGate in _layout.tsx will redirect to /sign-in
+            return res;
+          }
         }
         return res;
       }
