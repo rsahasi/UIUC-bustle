@@ -7,7 +7,7 @@ export function useAnalytics(): {
   return {
     capture(event: string, properties?: Record<string, unknown>): void {
       try {
-        posthog?.capture(event, properties);
+        posthog?.capture(event, properties as Parameters<typeof posthog.capture>[1]);
       } catch {
         // swallow — analytics must never crash the app
       }
