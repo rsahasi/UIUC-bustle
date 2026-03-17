@@ -11,18 +11,32 @@
       "bundleIdentifier": "com.uiuc.bus",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Used to show nearby bus stops.",
-        "UIBackgroundModes": ["fetch"]
+        "UIBackgroundModes": [
+          "fetch"
+        ]
       }
     },
     "android": {
       "package": "com.uiuc.bus",
-      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ]
     },
     "plugins": [
       "expo-router",
       "expo-background-fetch",
       "expo-location",
-      ["expo-notifications", { "icon": "", "color": "#13294b", "sounds": [] }]
+      [
+        "expo-notifications",
+        {
+          "icon": "",
+          "color": "#13294b",
+          "sounds": []
+        }
+      ],
+      "expo-secure-store",
+      "@sentry/react-native/expo"
     ]
   }
 }
