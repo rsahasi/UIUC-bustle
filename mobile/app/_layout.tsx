@@ -13,14 +13,14 @@ import {
 } from "@expo-google-fonts/dm-sans";
 import { DMSerifDisplay_400Regular } from "@expo-google-fonts/dm-serif-display";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
+import { Redirect, Stack, useSegments } from "expo-router";
+import { useAuth } from "@/src/auth/useAuth";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as TaskManager from 'expo-task-manager';
 import { useEffect } from "react";
 import * as Sentry from "@sentry/react-native";
 import { PostHogProvider, usePostHog } from "posthog-react-native";
-import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 
 // Sentry — init before anything else; no-ops silently when DSN is absent
 if (process.env.NODE_ENV !== "test" && process.env.EXPO_PUBLIC_SENTRY_DSN) {
@@ -64,19 +64,17 @@ TaskManager.defineTask(AUTO_WALK_TASK_NAME, async ({ data, error }: any) => {
 
 SplashScreen.preventAutoHideAsync();
 
-/** Identifies the device in both Sentry and PostHog on first mount. */
-function AnalyticsIdentifier() {
+/** Identifies the user in both Sentry and PostHog once auth is established. */
+function AnalyticsIdentifier({ userId }: { userId: string | undefined }) {
   const posthog = usePostHog();
   useEffect(() => {
-    getOrCreateDeviceId().then((deviceId) => {
-      // PostHog: set stable distinct_id; after Supabase, swap to posthog.identify(user.id)
-      posthog?.identify(deviceId);
-      // Sentry: tag errors with same device ID
+    if (userId) {
+      posthog?.identify(userId);
       if (process.env.EXPO_PUBLIC_SENTRY_DSN) {
-        Sentry.setUser({ id: deviceId });
+        Sentry.setUser({ id: userId });
       }
-    });
-  }, [posthog]);
+    }
+  }, [posthog, userId]);
   return null;
 }
 
@@ -89,6 +87,9 @@ export default function RootLayout() {
     DMSans_700Bold,
   });
 
+  const { session, user, loading: authLoading } = useAuth();
+  const segments = useSegments();
+
   useEffect(() => {
     registerNotificationRefreshTask();
     // Write widget data on mount and every time app comes to foreground
@@ -100,13 +101,19 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    if (fontsLoaded) {
+    if (fontsLoaded && !authLoading) {
       SplashScreen.hideAsync();
     }
-  }, [fontsLoaded]);
+  }, [fontsLoaded, authLoading]);
 
-  if (!fontsLoaded) {
-    return null;
+  if (!fontsLoaded || authLoading) {
+    return null; // SplashScreen still showing
+  }
+  if (!session && segments[0] !== "sign-in") {
+    return <Redirect href="/sign-in" />;
+  }
+  if (session && segments[0] === "sign-in") {
+    return <Redirect href="/" />;
   }
 
   const posthogKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY;
@@ -119,12 +126,13 @@ export default function RootLayout() {
         disabled: !posthogKey || process.env.NODE_ENV === "test",
       }}
     >
-      <AnalyticsIdentifier />
+      <AnalyticsIdentifier userId={user?.id} />
       <>
         <StatusBar style="light" />
         <NotificationRedirect />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="sign-in" options={{ headerShown: false }} />
           <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />
           <Stack.Screen name="report-issue" options={{ headerShown: true, title: "Report issue", headerBackTitle: "Back" }} />
           <Stack.Screen name="walk-nav" options={{ headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
