@@ -1,16 +1,7 @@
-"""
-Buildings and schedule tables in app SQLite DB.
-"""
-import asyncio
 import json
-import sqlite3
 import uuid
-from pathlib import Path
-from typing import NamedTuple
-
-DEFAULT_USER_ID = "default"
-
-VALID_DAYS = frozenset({"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"})
+from typing import NamedTuple, Optional
+import asyncpg
 
 
 class BuildingRecord(NamedTuple):
@@ -27,335 +18,143 @@ class ClassRecord(NamedTuple):
     start_time_local: str
     building_id: str
     user_id: str
-    destination_lat: float | None = None
-    destination_lng: float | None = None
-    destination_name: str | None = None
-    end_time_local: str | None = None
+    destination_lat: Optional[float] = None
+    destination_lng: Optional[float] = None
+    destination_name: Optional[str] = None
+    end_time_local: Optional[str] = None
 
 
-def init_app_db(db_path: str | Path) -> None:
-    db_path = Path(db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS buildings (
-                building_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                lat REAL NOT NULL,
-                lng REAL NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schedule_classes (
-                class_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                days_of_week TEXT NOT NULL,
-                start_time_local TEXT NOT NULL,
-                building_id TEXT NOT NULL,
-                FOREIGN KEY (building_id) REFERENCES buildings(building_id),
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_schedule_classes_user ON schedule_classes(user_id)")
-        # Ensure default user exists
-        conn.execute(
-            "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
-            (DEFAULT_USER_ID,),
-        )
-        # Ensure "custom" pseudo-building exists (for address-search destinations)
-        conn.execute(
-            "INSERT OR IGNORE INTO buildings (building_id, name, lat, lng) VALUES (?, ?, ?, ?)",
-            ("custom", "Custom Location", 0.0, 0.0),
-        )
-        # FTS5 virtual table for fast building name search
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS buildings_fts USING fts5(
-                name, building_id UNINDEXED,
-                content=buildings, content_rowid=rowid
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TRIGGER IF NOT EXISTS buildings_fts_insert AFTER INSERT ON buildings BEGIN
-                INSERT INTO buildings_fts(rowid, name, building_id) VALUES (new.rowid, new.name, new.building_id);
-            END
-            """
-        )
-        # Rebuild FTS index from buildings table (idempotent)
-        try:
-            conn.execute("INSERT INTO buildings_fts(buildings_fts) VALUES('rebuild')")
-        except Exception:
-            pass  # May fail if trigger already kept it in sync
-
-        # Optional columns (backward-compatible migration)
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(schedule_classes)").fetchall()]
-        for col, typ in (
-            ("destination_lat", "REAL"),
-            ("destination_lng", "REAL"),
-            ("destination_name", "TEXT"),
-            ("end_time_local", "TEXT"),
-        ):
-            if col not in cols:
-                conn.execute(f"ALTER TABLE schedule_classes ADD COLUMN {col} {typ}")
-        conn.commit()
+def _row_to_building(row) -> BuildingRecord:
+    return BuildingRecord(
+        building_id=row["building_id"],
+        name=row["name"],
+        lat=row["lat"],
+        lng=row["lng"],
+    )
 
 
-def list_buildings(db_path: str | Path) -> list[BuildingRecord]:
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return []
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute("SELECT building_id, name, lat, lng FROM buildings ORDER BY name")
-        return [
-            BuildingRecord(
-                building_id=r["building_id"],
-                name=r["name"],
-                lat=r["lat"],
-                lng=r["lng"],
-            )
-            for r in cur.fetchall()
-        ]
-
-
-def search_buildings(db_path: str | Path, query: str, limit: int = 6) -> list[BuildingRecord]:
-    """
-    Token-aware, case-insensitive search.
-    Splits query into words; returns buildings where ALL tokens appear in name.
-    Falls back to ANY-token match if no AND results found.
-    Scoring: 4=all tokens + starts with first, 3=exact full name, 2=starts with query, 1=contains.
-    """
-    db_path = Path(db_path)
-    if not db_path.exists() or not query.strip():
-        return []
-    q = query.strip()
-    tokens = [t for t in q.lower().split() if t]
-    if not tokens:
-        return []
-
-    def _fetch(where_clause: str, params: list) -> list[BuildingRecord]:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute(
-                f"""
-                SELECT building_id, name, lat, lng,
-                       CASE
-                           WHEN lower(name) = ?                   THEN 4
-                           WHEN lower(name) LIKE ? || '%'         THEN 3
-                           WHEN lower(name) LIKE ? || '%'         THEN 2
-                           ELSE 1
-                       END AS score
-                FROM buildings
-                WHERE {where_clause}
-                  AND building_id != 'custom'
-                ORDER BY score DESC, name ASC
-                LIMIT ?
-                """,
-                [q.lower(), tokens[0], q.lower()] + params + [limit],
-            )
-            return [
-                BuildingRecord(building_id=r["building_id"], name=r["name"], lat=r["lat"], lng=r["lng"])
-                for r in cur.fetchall()
-            ]
-
-    # AND match only — all tokens must appear in the name.
-    # No OR fallback: broad token matches (e.g. "avenue", "hall") return garbage when
-    # the exact building isn't in the DB. Nominatim handles those cases instead.
-    and_clause = " AND ".join(f"lower(name) LIKE '%' || ? || '%'" for _ in tokens)
-    return _fetch(and_clause, list(tokens))
-
-
-def search_buildings_fts(db_path: str | Path, query: str, limit: int = 6) -> list[BuildingRecord]:
-    """
-    FTS5-accelerated building name search with prefix matching.
-    Falls back to search_buildings() if FTS table missing or query unsupported.
-    """
-    db_path = Path(db_path)
-    if not db_path.exists() or not query.strip():
-        return []
-    tokens = [t for t in query.strip().lower().split() if t]
-    if not tokens:
-        return []
-    # Build FTS5 MATCH pattern: each token as a quoted prefix match.
-    # Quoting prevents FTS5 operator injection (AND/OR/NOT/"/"()/- in user input).
-    def _fts5_quote(tok: str) -> str:
-        return '"' + tok.replace('"', '""') + '"'
-
-    match_expr = " AND ".join(f"name:{_fts5_quote(t)}*" for t in tokens)
+def _row_to_class(row) -> ClassRecord:
     try:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute(
-                """
-                SELECT b.building_id, b.name, b.lat, b.lng
-                FROM buildings_fts f
-                JOIN buildings b ON b.rowid = f.rowid
-                WHERE buildings_fts MATCH ?
-                  AND b.building_id != 'custom'
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (match_expr, limit),
-            )
-            rows = cur.fetchall()
-            if rows:
-                return [BuildingRecord(building_id=r["building_id"], name=r["name"], lat=r["lat"], lng=r["lng"]) for r in rows]
-    except Exception:
-        pass  # FTS not available yet — fall through to regular search
-    return search_buildings(db_path, query, limit)
+        days = json.loads(row["days_of_week"]) if row["days_of_week"] else []
+    except (json.JSONDecodeError, TypeError):
+        days = []
+    return ClassRecord(
+        class_id=row["class_id"],
+        title=row["title"],
+        days_of_week=days,
+        start_time_local=row["start_time_local"],
+        building_id=row["building_id"],
+        user_id=row["user_id"],
+        destination_lat=row["destination_lat"],
+        destination_lng=row["destination_lng"],
+        destination_name=row["destination_name"],
+        end_time_local=row["end_time_local"],
+    )
 
 
-def get_building(db_path: str | Path, building_id: str) -> BuildingRecord | None:
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return None
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute(
-            "SELECT building_id, name, lat, lng FROM buildings WHERE building_id = ?",
-            (building_id,),
-        )
-        r = cur.fetchone()
-        if r is None:
-            return None
-        return BuildingRecord(
-            building_id=r["building_id"],
-            name=r["name"],
-            lat=r["lat"],
-            lng=r["lng"],
-        )
+async def list_buildings(pool: asyncpg.Pool) -> list[BuildingRecord]:
+    rows = await pool.fetch(
+        "SELECT building_id, name, lat, lng FROM buildings ORDER BY name"
+    )
+    return [_row_to_building(r) for r in rows]
 
 
-def create_class(
-    db_path: str | Path,
+async def get_building(pool: asyncpg.Pool, building_id: str) -> Optional[BuildingRecord]:
+    row = await pool.fetchrow(
+        "SELECT building_id, name, lat, lng FROM buildings WHERE building_id = $1",
+        building_id,
+    )
+    return _row_to_building(row) if row else None
+
+
+async def search_buildings(
+    pool: asyncpg.Pool, query: str, limit: int = 6
+) -> list[BuildingRecord]:
+    """Search buildings by name using pg_trgm. Replaces both search_buildings and search_buildings_fts."""
+    pattern = f"%{query}%"
+    rows = await pool.fetch(
+        """
+        SELECT building_id, name, lat, lng
+        FROM buildings
+        WHERE building_id != 'custom'
+          AND (name ILIKE $1 OR similarity(name, $2) > 0.2)
+        ORDER BY similarity(name, $2) DESC
+        LIMIT $3
+        """,
+        pattern,
+        query,
+        limit,
+    )
+    return [_row_to_building(r) for r in rows]
+
+
+async def create_class(
+    pool: asyncpg.Pool,
     *,
     title: str,
     days_of_week: list[str],
     start_time_local: str,
-    building_id: str | None = None,
-    user_id: str = DEFAULT_USER_ID,
-    class_id: str | None = None,
-    destination_lat: float | None = None,
-    destination_lng: float | None = None,
-    destination_name: str | None = None,
-    end_time_local: str | None = None,
+    building_id: Optional[str] = None,
+    user_id: str = "default",
+    class_id: Optional[str] = None,
+    destination_lat: Optional[float] = None,
+    destination_lng: Optional[float] = None,
+    destination_name: Optional[str] = None,
+    end_time_local: Optional[str] = None,
 ) -> ClassRecord:
-    db_path = Path(db_path)
-    if not db_path.exists():
-        raise ValueError("Database not initialized. Run seed_buildings.py first.")
-    use_custom = destination_lat is not None and destination_lng is not None
-    if use_custom:
-        bid = "custom"
-        if get_building(db_path, bid) is None:
-            raise ValueError("Custom address support not initialized. Run init_app_db first.")
-    else:
-        if not building_id or not building_id.strip():
-            raise ValueError("Provide building_id or destination_lat, destination_lng, and destination_name.")
-        bid = building_id.strip()
-        if get_building(db_path, bid) is None:
-            raise ValueError(f"Building '{bid}' not found.")
-    cid = class_id or str(uuid.uuid4())
-    days_json = json.dumps(days_of_week)
-    dest_name = (destination_name or "").strip() if use_custom else None
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO schedule_classes
-                (class_id, user_id, title, days_of_week, start_time_local, building_id,
-                 destination_lat, destination_lng, destination_name, end_time_local)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                cid, user_id, title, days_json, start_time_local, bid,
-                destination_lat if use_custom else None,
-                destination_lng if use_custom else None,
-                dest_name,
-                end_time_local,
-            ),
-        )
-        conn.commit()
+    if class_id is None:
+        class_id = str(uuid.uuid4())
+    if building_id is None:
+        building_id = "custom"
+
+    await pool.execute(
+        """
+        INSERT INTO schedule_classes
+          (class_id, user_id, title, days_of_week, start_time_local, building_id,
+           destination_lat, destination_lng, destination_name, end_time_local)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        """,
+        class_id,
+        user_id,
+        title,
+        json.dumps(days_of_week),
+        start_time_local,
+        building_id,
+        destination_lat,
+        destination_lng,
+        destination_name,
+        end_time_local,
+    )
     return ClassRecord(
-        class_id=cid,
+        class_id=class_id,
         title=title,
         days_of_week=days_of_week,
         start_time_local=start_time_local,
-        building_id=bid,
+        building_id=building_id,
         user_id=user_id,
-        destination_lat=destination_lat if use_custom else None,
-        destination_lng=destination_lng if use_custom else None,
-        destination_name=dest_name,
+        destination_lat=destination_lat,
+        destination_lng=destination_lng,
+        destination_name=destination_name,
         end_time_local=end_time_local,
     )
 
 
-def delete_class(
-    db_path: str | Path,
-    class_id: str,
-    user_id: str = DEFAULT_USER_ID,
+async def delete_class(
+    pool: asyncpg.Pool, class_id: str, user_id: str = "default"
 ) -> bool:
-    """Delete a class by class_id for the given user. Returns True if a row was deleted."""
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return False
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.execute(
-            "DELETE FROM schedule_classes WHERE class_id = ? AND user_id = ?",
-            (class_id, user_id),
-        )
-        conn.commit()
-        return cur.rowcount > 0
+    result = await pool.execute(
+        "DELETE FROM schedule_classes WHERE class_id = $1 AND user_id = $2",
+        class_id,
+        user_id,
+    )
+    return result == "DELETE 1"
 
 
-def list_classes(
-    db_path: str | Path,
-    user_id: str = DEFAULT_USER_ID,
+async def list_classes(
+    pool: asyncpg.Pool, user_id: str = "default"
 ) -> list[ClassRecord]:
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return []
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute(
-            """
-            SELECT class_id, title, days_of_week, start_time_local, building_id, user_id,
-                   destination_lat, destination_lng, destination_name, end_time_local
-            FROM schedule_classes
-            WHERE user_id = ?
-            ORDER BY start_time_local, title
-            """,
-            (user_id,),
-        )
-        out = []
-        for r in cur.fetchall():
-            days = json.loads(r["days_of_week"])
-            if not isinstance(days, list):
-                days = []
-            out.append(
-                ClassRecord(
-                    class_id=r["class_id"],
-                    title=r["title"],
-                    days_of_week=days,
-                    start_time_local=r["start_time_local"],
-                    building_id=r["building_id"],
-                    user_id=r["user_id"],
-                    destination_lat=float(r["destination_lat"]) if r["destination_lat"] is not None else None,
-                    destination_lng=float(r["destination_lng"]) if r["destination_lng"] is not None else None,
-                    destination_name=r["destination_name"],
-                    end_time_local=r["end_time_local"],
-                )
-            )
-        return out
+    rows = await pool.fetch(
+        "SELECT * FROM schedule_classes WHERE user_id = $1 ORDER BY start_time_local, title",
+        user_id,
+    )
+    return [_row_to_class(r) for r in rows]

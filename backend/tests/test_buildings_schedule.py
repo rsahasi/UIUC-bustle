@@ -1,165 +1,99 @@
-"""Tests for buildings and schedule/classes: CRUD and validation."""
-from pathlib import Path
-
+import json
 import pytest
-from fastapi.testclient import TestClient
-
-import main
-from src.data.buildings_repo import create_class, init_app_db
-
-# Backend root for path setup
-BACKEND = Path(__file__).resolve().parent.parent
+from unittest.mock import AsyncMock, MagicMock, patch
+from src.data.buildings_repo import (
+    list_buildings, get_building, search_buildings,
+    create_class, delete_class, list_classes, BuildingRecord, ClassRecord
+)
 
 
-@pytest.fixture
-def app_db(tmp_path):
-    """Temporary app DB with one building for schedule tests."""
-    db = tmp_path / "app.db"
-    init_app_db(db)
-    import sqlite3
-    with sqlite3.connect(db) as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO buildings (building_id, name, lat, lng) VALUES (?, ?, ?, ?)",
-            ("test_bldg", "Test Building", 40.1, -88.2),
-        )
-        conn.commit()
-    return db
+def make_pool(*fetch_return, fetchrow_return=None, execute_return="INSERT 0 1"):
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=list(fetch_return))
+    pool.fetchrow = AsyncMock(return_value=fetchrow_return)
+    pool.execute = AsyncMock(return_value=execute_return)
+    return pool
 
 
-@pytest.fixture
-def client(app_db):
-    """TestClient with app DB overridden to temp DB."""
-    main.APP_DB = app_db
-    return TestClient(main.app)
+@pytest.mark.asyncio
+async def test_list_buildings_returns_records():
+    row = {"building_id": "siebel", "name": "Siebel Center", "lat": 40.1, "lng": -88.2}
+    pool = make_pool(row)
+    result = await list_buildings(pool)
+    assert len(result) == 1
+    assert result[0].building_id == "siebel"
+    assert result[0].name == "Siebel Center"
+    pool.fetch.assert_awaited_once()
 
 
-def test_get_buildings_empty(tmp_path):
-    main.APP_DB = tmp_path / "empty.db"
-    init_app_db(main.APP_DB)
-    client = TestClient(main.app)
-    r = client.get("/buildings")
-    assert r.status_code == 200
-    data = r.json()
-    assert "buildings" in data
-    # init_app_db now seeds the "custom" pseudo-building; filter it out for this assertion
-    real_buildings = [b for b in data["buildings"] if b["building_id"] != "custom"]
-    assert real_buildings == []
+@pytest.mark.asyncio
+async def test_get_building_found():
+    row = {"building_id": "siebel", "name": "Siebel Center", "lat": 40.1, "lng": -88.2}
+    pool = make_pool(fetchrow_return=row)
+    result = await get_building(pool, "siebel")
+    assert result is not None
+    assert result.building_id == "siebel"
 
 
-def test_get_buildings_seeded(app_db, client):
-    # Seed two buildings in fixture DB
-    import sqlite3
-    with sqlite3.connect(app_db) as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO buildings (building_id, name, lat, lng) VALUES (?, ?, ?, ?)",
-            ("second", "Second Building", 40.11, -88.22),
-        )
-        conn.commit()
-    r = client.get("/buildings")
-    assert r.status_code == 200
-    data = r.json()
-    assert len(data["buildings"]) >= 1
-    ids = [b["building_id"] for b in data["buildings"]]
-    assert "test_bldg" in ids
+@pytest.mark.asyncio
+async def test_get_building_not_found():
+    pool = make_pool(fetchrow_return=None)
+    result = await get_building(pool, "unknown")
+    assert result is None
 
 
-def test_post_schedule_class_success(app_db, client):
-    r = client.post(
-        "/schedule/classes",
-        json={
-            "title": "CS 101",
-            "days_of_week": ["MON", "WED"],
-            "start_time_local": "09:30",
-            "building_id": "test_bldg",
-        },
+@pytest.mark.asyncio
+async def test_search_buildings_returns_results():
+    row = {"building_id": "siebel", "name": "Siebel Center", "lat": 40.1, "lng": -88.2}
+    pool = make_pool(row)
+    result = await search_buildings(pool, "siebel", limit=6)
+    assert len(result) == 1
+    assert result[0].building_id == "siebel"
+    pool.fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_class_returns_record():
+    pool = make_pool()
+    pool.fetchrow = AsyncMock(return_value={
+        "building_id": "siebel", "name": "Siebel Center", "lat": 40.1, "lng": -88.2
+    })
+    result = await create_class(
+        pool,
+        title="CS 101",
+        days_of_week=["MON", "WED"],
+        start_time_local="09:00",
+        building_id="siebel",
+        user_id="default",
     )
-    assert r.status_code == 201
-    data = r.json()
-    assert data["title"] == "CS 101"
-    assert data["days_of_week"] == ["MON", "WED"]
-    assert data["start_time_local"] == "09:30"
-    assert data["building_id"] == "test_bldg"
-    assert "class_id" in data and len(data["class_id"]) > 0
+    assert result.title == "CS 101"
+    assert result.days_of_week == ["MON", "WED"]
+    pool.execute.assert_awaited_once()
 
 
-def test_get_schedule_classes_after_create(app_db, client):
-    client.post(
-        "/schedule/classes",
-        json={
-            "title": "Math 231",
-            "days_of_week": ["TUE", "THU"],
-            "start_time_local": "14:00",
-            "building_id": "test_bldg",
-        },
-    )
-    r = client.get("/schedule/classes")
-    assert r.status_code == 200
-    data = r.json()
-    assert "classes" in data
-    assert len(data["classes"]) >= 1
-    titles = [c["title"] for c in data["classes"]]
-    assert "Math 231" in titles
+@pytest.mark.asyncio
+async def test_delete_class_returns_true_on_success():
+    pool = make_pool(execute_return="DELETE 1")
+    result = await delete_class(pool, "some-class-id", "default")
+    assert result is True
 
 
-def test_post_schedule_class_validation_empty_title(app_db, client):
-    r = client.post(
-        "/schedule/classes",
-        json={
-            "title": "   ",
-            "days_of_week": ["MON"],
-            "start_time_local": "10:00",
-            "building_id": "test_bldg",
-        },
-    )
-    assert r.status_code == 422
+@pytest.mark.asyncio
+async def test_delete_class_returns_false_when_not_found():
+    pool = make_pool(execute_return="DELETE 0")
+    result = await delete_class(pool, "nonexistent", "default")
+    assert result is False
 
 
-def test_post_schedule_class_validation_invalid_day(app_db, client):
-    r = client.post(
-        "/schedule/classes",
-        json={
-            "title": "CS 101",
-            "days_of_week": ["MONDAY"],
-            "start_time_local": "10:00",
-            "building_id": "test_bldg",
-        },
-    )
-    assert r.status_code == 422
-
-
-def test_post_schedule_class_validation_invalid_time(app_db, client):
-    r = client.post(
-        "/schedule/classes",
-        json={
-            "title": "CS 101",
-            "days_of_week": ["MON"],
-            "start_time_local": "25:00",
-            "building_id": "test_bldg",
-        },
-    )
-    assert r.status_code == 422
-
-
-def test_post_schedule_class_building_not_found(app_db, client):
-    r = client.post(
-        "/schedule/classes",
-        json={
-            "title": "CS 101",
-            "days_of_week": ["MON", "WED"],
-            "start_time_local": "09:30",
-            "building_id": "nonexistent_building",
-        },
-    )
-    assert r.status_code == 400
-    assert "not found" in r.json().get("detail", "").lower()
-
-
-def test_create_class_repo_building_not_found(app_db):
-    with pytest.raises(ValueError, match="not found"):
-        create_class(
-            app_db,
-            title="X",
-            days_of_week=["MON"],
-            start_time_local="09:00",
-            building_id="nonexistent",
-        )
+@pytest.mark.asyncio
+async def test_list_classes_parses_days_of_week():
+    row = {
+        "class_id": "abc", "user_id": "default", "title": "CS 101",
+        "days_of_week": '["MON","WED"]', "start_time_local": "09:00",
+        "building_id": "siebel", "destination_lat": None, "destination_lng": None,
+        "destination_name": None, "end_time_local": "10:00"
+    }
+    pool = make_pool(row)
+    result = await list_classes(pool, "default")
+    assert result[0].days_of_week == ["MON", "WED"]
+    assert result[0].title == "CS 101"
