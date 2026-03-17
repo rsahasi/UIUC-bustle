@@ -50,3 +50,41 @@ When you need to restrict access or support multiple tenants:
 - Keep `DEBUG=false` in production.
 - Store `API_KEYS` and `MTD_API_KEY` in secrets (env or secret manager), not in code.
 - Rate limiting is per-IP (100/minute); if you use API keys, consider per-key limits in the future.
+
+## Railway Deployment
+
+### One-time setup
+
+1. Create a Railway account at https://railway.app
+2. New project → "Deploy from GitHub repo" → select `rsahasi/UIUC-bustle`
+3. In service settings, set **Root Directory** to `backend/`
+4. Add a **Volume**: mount path `/mnt/data`, size 1GB
+5. Add **Environment Variables**:
+   - `MTD_API_KEY=<your key>`
+   - `CLAUDE_API_KEY=<your key>`
+   - `SENTRY_DSN=<your dsn>` (optional)
+   - `APP_DB_PATH=/mnt/data/app.db`
+   - `STOPS_DB_PATH=/mnt/data/stops.db`
+   - `CORS_ORIGINS=https://<your-subdomain>.up.railway.app`
+   - `API_KEY_REQUIRED=false`
+6. Set **Health Check Path** to `/health`
+7. Deploy — Railway builds the Docker image and runs `load_gtfs.py` during the build
+
+### After deploy
+
+1. Copy your `*.up.railway.app` URL from the Railway dashboard
+2. Add to `mobile/.env`:
+   ```
+   EXPO_PUBLIC_API_BASE_URL=https://<your-subdomain>.up.railway.app
+   ```
+3. Reload the app — it will now talk to the Railway backend
+
+### Re-deploying
+
+Push to `main` — Railway auto-deploys. GTFS is re-downloaded on every build.
+
+### Updating GTFS data
+
+The GTFS feed is baked into the Docker image at build time. To get a fresh feed:
+- Push any change to `main` (or trigger a manual deploy in Railway dashboard)
+- Railway rebuilds the image and re-runs `load_gtfs.py`
