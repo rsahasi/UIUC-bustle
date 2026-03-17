@@ -1,10 +1,6 @@
-"""
-Local stops repository: SQLite-backed with Haversine nearby search.
-"""
-import sqlite3
-from pathlib import Path
+import math
 from typing import NamedTuple
-
+import asyncpg
 from src.data.geo import haversine_distance_km
 
 
@@ -15,73 +11,60 @@ class StopRecord(NamedTuple):
     lng: float
 
 
-def _bbox_delta_deg(lat: float, lng: float, radius_m: float) -> tuple[float, float]:
-    """Approximate lat/lng deltas for a bounding box around (lat, lng) with radius_m meters."""
-    # 1 deg lat ~ 111 km; 1 deg lng ~ 111 * cos(lat) km
-    import math
-    km = radius_m / 1000.0
-    dlat = km / 111.0
-    dlng = km / (111.0 * max(0.01, math.cos(math.radians(lat))))
+def _bbox_delta_deg(lat: float, radius_m: float) -> tuple[float, float]:
+    """Approximate lat/lng bounding box deltas for a given radius in meters."""
+    dlat = radius_m / 111_000
+    dlng = radius_m / (111_000 * math.cos(math.radians(lat)))
     return dlat, dlng
 
 
-def search_nearby(
-    db_path: str | Path,
+async def search_nearby(
+    pool: asyncpg.Pool,
     lat: float,
     lng: float,
     radius_m: float,
     limit: int = 10,
 ) -> list[StopRecord]:
-    """
-    Return stops within radius_m of (lat, lng), sorted by distance, up to limit.
-    Uses bounding box on indexed (lat, lng) then Haversine filter/sort for speed.
-    """
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return []
-
-    dlat, dlng = _bbox_delta_deg(lat, lng, radius_m)
-    lat_lo, lat_hi = lat - dlat, lat + dlat
-    lng_lo, lng_hi = lng - dlng, lng + dlng
-
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute(
-            """
-            SELECT stop_id, stop_name, lat, lng
-            FROM stops
-            WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?
-            """,
-            (lat_lo, lat_hi, lng_lo, lng_hi),
-        )
-        rows = cur.fetchall()
-
-    # Haversine filter and sort
-    radius_km = radius_m / 1000.0
-    with_dist: list[tuple[float, StopRecord]] = []
-    for r in rows:
-        stop = StopRecord(stop_id=r["stop_id"], stop_name=r["stop_name"], lat=r["lat"], lng=r["lng"])
-        d = haversine_distance_km(lat, lng, stop.lat, stop.lng)
-        if d <= radius_km:
-            with_dist.append((d, stop))
-    with_dist.sort(key=lambda x: x[0])
-    return [stop for _, stop in with_dist[:limit]]
+    dlat, dlng = _bbox_delta_deg(lat, radius_m)
+    rows = await pool.fetch(
+        """
+        SELECT stop_id, stop_name, lat, lng FROM stops
+        WHERE lat BETWEEN $1 AND $2 AND lng BETWEEN $3 AND $4
+        """,
+        lat - dlat,
+        lat + dlat,
+        lng - dlng,
+        lng + dlng,
+    )
+    stops = []
+    for row in rows:
+        dist_km = haversine_distance_km(lat, lng, row["lat"], row["lng"])
+        if dist_km * 1000 <= radius_m:
+            stops.append(StopRecord(
+                stop_id=row["stop_id"],
+                stop_name=row["stop_name"],
+                lat=row["lat"],
+                lng=row["lng"],
+            ))
+    stops.sort(key=lambda s: haversine_distance_km(lat, lng, s.lat, s.lng))
+    return stops[:limit]
 
 
-def init_db(db_path: str | Path) -> None:
-    """Create stops table and index if they do not exist."""
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS stops (
-                stop_id TEXT PRIMARY KEY,
-                stop_name TEXT NOT NULL,
-                lat REAL NOT NULL,
-                lng REAL NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_stops_lat_lng ON stops(lat, lng)"
-        )
-        conn.commit()
+async def upsert_stop(
+    pool: asyncpg.Pool,
+    stop_id: str,
+    stop_name: str,
+    lat: float,
+    lng: float,
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO stops (stop_id, stop_name, lat, lng)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (stop_id) DO UPDATE SET stop_name = $2, lat = $3, lng = $4
+        """,
+        stop_id,
+        stop_name,
+        lat,
+        lng,
+    )
