@@ -13,7 +13,11 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from settings import get_settings
-from src.data.buildings_repo import create_class, delete_class, init_app_db, list_buildings, list_classes, search_buildings, search_buildings_fts
+from src.data.db import init_pool, close_pool, get_pool
+from src.data.buildings_repo import (
+    list_buildings, get_building, search_buildings,
+    create_class, delete_class, list_classes, BuildingRecord, ClassRecord
+)
 from src.data.stops_repo import search_nearby
 from src.middleware import OptionalAPIKeyMiddleware, RequestLoggingMiddleware, get_valid_api_keys
 from src.monitoring import get_metrics
@@ -54,8 +58,6 @@ if settings.sentry_dsn:
     )
 
 BACKEND_ROOT = Path(__file__).resolve().parent
-STOPS_DB = BACKEND_ROOT / settings.stops_db_path
-APP_DB = BACKEND_ROOT / settings.app_db_path
 GTFS_DB = BACKEND_ROOT / "data" / "gtfs.db"
 
 # Structured logging: include module and level; handlers can add JSON later
@@ -113,10 +115,13 @@ _PLACE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{10,250}$")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_app_db(APP_DB)
+    if settings.database_url:
+        await init_pool(settings.database_url)
     app.state.mtd_client = MTDClient(api_key=settings.mtd_api_key) if settings.mtd_api_key else None
     yield
     app.state.mtd_client = None
+    if settings.database_url:
+        await close_pool()
 
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
@@ -379,7 +384,11 @@ async def autocomplete(request: Request, q: str = "", limit: int = 8):
         return {"results": []}
 
     # Parallel: buildings + Google Places (or Overpass POI + Nominatim fallback)
-    buildings_task = asyncio.create_task(asyncio.to_thread(search_buildings_fts, APP_DB, query, min(5, limit)))
+    try:
+        pool = get_pool()
+        buildings_task = asyncio.create_task(search_buildings(pool, query, min(5, limit)))
+    except RuntimeError:
+        buildings_task = asyncio.create_task(asyncio.sleep(0))
     google_key = getattr(settings, "google_places_api_key", "")
     if google_key:
         places_task = asyncio.create_task(_google_places_quick(query, limit=4))
@@ -404,7 +413,7 @@ async def autocomplete(request: Request, q: str = "", limit: int = 8):
 
     results: list[dict] = []
     seen_names: set[str] = set()
-    for b in buildings_raw:
+    for b in (buildings_raw or []):
         key = b.name.lower()
         if key not in seen_names:
             seen_names.add(key)
@@ -440,7 +449,7 @@ async def geocode(request: Request, q: str = ""):
 
 
 @app.get("/stops/nearby", response_model=NearbyStopsResponse)
-def stops_nearby(request: Request, lat: float = 0.0, lng: float = 0.0, radius_m: int = 800):
+async def stops_nearby(request: Request, lat: float = 0.0, lng: float = 0.0, radius_m: int = 800):
     _validate_lat_lng(lat, lng)
     _validate_uiuc_region(lat, lng)
     if not (RADIUS_M_MIN <= radius_m <= RADIUS_M_MAX):
@@ -449,7 +458,11 @@ def stops_nearby(request: Request, lat: float = 0.0, lng: float = 0.0, radius_m:
             detail=f"radius_m must be between {RADIUS_M_MIN} and {RADIUS_M_MAX}",
         )
     logger.info("telemetry route=stops_nearby radius_m=%s", radius_m)
-    stops = search_nearby(STOPS_DB, lat, lng, radius_m, limit=10)
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    stops = await search_nearby(pool, lat, lng, radius_m, limit=10)
     return NearbyStopsResponse(
         stops=[StopInfo(stop_id=s.stop_id, stop_name=s.stop_name, lat=s.lat, lng=s.lng) for s in stops]
     )
@@ -513,9 +526,13 @@ async def get_vehicles(request: Request, route_id: str = ""):
 
 
 @app.get("/buildings", response_model=BuildingsListResponse)
-def get_buildings(request: Request):
+async def get_buildings(request: Request):
     """List all buildings. Seed data with scripts/seed_buildings.py first."""
-    buildings = list_buildings(APP_DB)
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    buildings = await list_buildings(pool)
     return BuildingsListResponse(
         buildings=[
             BuildingResponse(building_id=b.building_id, name=b.name, lat=b.lat, lng=b.lng)
@@ -525,14 +542,18 @@ def get_buildings(request: Request):
 
 
 @app.get("/buildings/search", response_model=BuildingsListResponse)
-def search_buildings_endpoint(request: Request, q: str = "", limit: int = 6):
-    """Search buildings by name (case-insensitive contains). Returns up to `limit` results ranked by relevance."""
+async def search_buildings_endpoint(request: Request, q: str = "", limit: int = 6):
+    """Search buildings by name (pg_trgm). Returns up to `limit` results ranked by relevance."""
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
     query = (q or "").strip()
     if not query or len(query) < 2:
         return BuildingsListResponse(buildings=[])
     if not (1 <= limit <= 20):
         limit = 6
-    results = search_buildings(APP_DB, query, limit=limit)
+    results = await search_buildings(pool, query, limit=limit)
     return BuildingsListResponse(
         buildings=[
             BuildingResponse(building_id=b.building_id, name=b.name, lat=b.lat, lng=b.lng)
@@ -542,11 +563,15 @@ def search_buildings_endpoint(request: Request, q: str = "", limit: int = 6):
 
 
 @app.post("/schedule/classes", response_model=ClassResponse, status_code=201)
-def post_schedule_class(request: Request, body: CreateClassRequest):
+async def post_schedule_class(request: Request, body: CreateClassRequest):
     """Create a class for the default user. Use building_id or destination_lat/lng/name (from address search)."""
     try:
-        rec = create_class(
-            APP_DB,
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        rec = await create_class(
+            pool,
             title=body.title,
             days_of_week=body.days_of_week,
             start_time_local=body.start_time_local,
@@ -572,17 +597,25 @@ def post_schedule_class(request: Request, body: CreateClassRequest):
 
 
 @app.delete("/schedule/classes/{class_id}", status_code=204)
-def delete_schedule_class(request: Request, class_id: str):
+async def delete_schedule_class(request: Request, class_id: str):
     """Delete a class for the default user."""
-    deleted = delete_class(APP_DB, class_id)
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    deleted = await delete_class(pool, class_id, user_id="default")
     if not deleted:
         raise HTTPException(status_code=404, detail="Class not found.")
 
 
 @app.get("/schedule/classes", response_model=ClassesListResponse)
-def get_schedule_classes(request: Request):
+async def get_schedule_classes(request: Request):
     """List classes for the default user."""
-    classes = list_classes(APP_DB)
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    classes = await list_classes(pool, user_id="default")
     return ClassesListResponse(
         classes=[
             ClassResponse(
@@ -602,19 +635,6 @@ def get_schedule_classes(request: Request):
 
 
 # --- Recommendation (user location -> destination building) ---
-
-
-def _get_building_for_recommendation(building_id: str) -> tuple[float, float, str] | None:
-    from src.data.buildings_repo import get_building
-    b = get_building(APP_DB, building_id)
-    if b is None:
-        return None
-    return (b.lat, b.lng, b.name)
-
-
-def _search_nearby_for_recommendation(lat: float, lng: float, radius_m: float, limit: int) -> list[tuple[str, str, float, float]]:
-    stops = search_nearby(STOPS_DB, lat, lng, radius_m, limit=limit)
-    return [(s.stop_id, s.stop_name, s.lat, s.lng) for s in stops]
 
 
 def _get_departures_for_recommendation(stop_id: str) -> list[dict]:
@@ -643,29 +663,50 @@ def _find_exit_stop_for_recommendation(route_id: str, from_stop_id: str, dest_la
 
 
 @app.post("/recommendation", response_model=RecommendationResponse)
-def post_recommendation(request: Request, body: RecommendationRequest):
+async def post_recommendation(request: Request, body: RecommendationRequest):
     """Return 2–3 options (WALK + BUS) from user location to destination (building or custom lat/lng)."""
     _validate_lat_lng(body.lat, body.lng)
     _validate_uiuc_region(body.lat, body.lng)
+
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    loop = asyncio.get_running_loop()
+
     if body.destination_lat is not None and body.destination_lng is not None:
         dest_lat, dest_lng = body.destination_lat, body.destination_lng
         dest_name = body.destination_name or "Destination"
         destination_building_id = "custom"
         logger.info("telemetry route=recommendation custom_destination lat=%s lng=%s", dest_lat, dest_lng)
     elif body.destination_building_id:
-        building = _get_building_for_recommendation(body.destination_building_id)
+        building = await get_building(pool, body.destination_building_id)
         if building is None:
             raise HTTPException(
                 status_code=400,
                 detail=f"Building not found: {body.destination_building_id}.",
             )
-        dest_lat, dest_lng, dest_name = building
+        dest_lat, dest_lng, dest_name = building.lat, building.lng, building.name
         destination_building_id = body.destination_building_id
         logger.info("telemetry route=recommendation building_id=%s", destination_building_id)
     else:
         raise HTTPException(status_code=400, detail="Provide destination_building_id or destination_lat and destination_lng.")
+
+    # Sync callbacks for compute_recommendations — submit coroutines to the running event loop
+    def _get_building_cb(building_id: str):
+        b = asyncio.run_coroutine_threadsafe(get_building(pool, building_id), loop).result()
+        return (b.lat, b.lng, b.name) if b else None
+
+    def _search_nearby_cb(lat: float, lng: float, radius_m: float, limit: int):
+        stops = asyncio.run_coroutine_threadsafe(
+            search_nearby(pool, lat, lng, radius_m, limit=limit), loop
+        ).result()
+        return [(s.stop_id, s.stop_name, s.lat, s.lng) for s in stops]
+
     try:
-        options = compute_recommendations(
+        options = await asyncio.to_thread(
+            compute_recommendations,
             lat=body.lat,
             lng=body.lng,
             destination_building_id=destination_building_id,
@@ -678,8 +719,8 @@ def post_recommendation(request: Request, body: RecommendationRequest):
             max_options=body.max_options,
             prefer_bus=body.prefer_bus,
             now=None,
-            get_building=_get_building_for_recommendation,
-            search_nearby_stops=_search_nearby_for_recommendation,
+            get_building=_get_building_cb,
+            search_nearby_stops=_search_nearby_cb,
             get_departures=_get_departures_for_recommendation,
             find_exit_stop_fn=_find_exit_stop_for_recommendation,
         )
@@ -696,6 +737,7 @@ def post_recommendation(request: Request, body: RecommendationRequest):
             status_code=503,
             detail="Route computation failed. Please try again in a moment.",
         ) from e
+
     option_objects = [RecommendationOption(**o) for o in options]
 
     # AI ranking: if Claude key configured, rank and annotate options

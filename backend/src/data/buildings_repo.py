@@ -3,6 +3,8 @@ import uuid
 from typing import NamedTuple, Optional
 import asyncpg
 
+VALID_DAYS = frozenset({"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"})
+
 
 class BuildingRecord(NamedTuple):
     building_id: str
