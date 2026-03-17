@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Google Places API (New) — set GOOGLE_PLACES_API_KEY in .env for place search
     google_places_api_key: str = ""
 
+    # Supabase Auth — set SUPABASE_JWT_SECRET in Railway env vars (Settings → API → JWT Secret)
+    supabase_jwt_secret: str = ""
+
     # Sentry error monitoring — set SENTRY_DSN in .env to enable
     sentry_dsn: str = ""
 
