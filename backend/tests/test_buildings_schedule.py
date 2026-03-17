@@ -55,9 +55,6 @@ async def test_search_buildings_returns_results():
 @pytest.mark.asyncio
 async def test_create_class_returns_record():
     pool = make_pool()
-    pool.fetchrow = AsyncMock(return_value={
-        "building_id": "siebel", "name": "Siebel Center", "lat": 40.1, "lng": -88.2
-    })
     result = await create_class(
         pool,
         title="CS 101",
