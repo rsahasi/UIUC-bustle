@@ -14,6 +14,7 @@ import {
 import { DMSerifDisplay_400Regular } from "@expo-google-fonts/dm-serif-display";
 import { useFonts } from "expo-font";
 import { Redirect, Stack, useSegments } from "expo-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAuth } from "@/src/auth/useAuth";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
@@ -60,6 +61,16 @@ TaskManager.defineTask(AUTO_WALK_TASK_NAME, async ({ data, error }: any) => {
       await AsyncStorage.setItem('@uiuc_bus_pending_auto_walk', JSON.stringify(pending));
     }
   }
+});
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      gcTime: 300_000,
+      retry: 1,
+    },
+  },
 });
 
 SplashScreen.preventAutoHideAsync();
@@ -119,27 +130,29 @@ export default function RootLayout() {
   const posthogKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY;
 
   return (
-    <PostHogProvider
-      apiKey={posthogKey || ""}
-      options={{
-        host: "https://us.i.posthog.com",
-        disabled: !posthogKey || process.env.NODE_ENV === "test",
-      }}
-    >
-      <AnalyticsIdentifier userId={user?.id} />
-      <>
-        <StatusBar style="light" />
-        <NotificationRedirect />
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="sign-in" options={{ headerShown: false }} />
-          <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />
-          <Stack.Screen name="report-issue" options={{ headerShown: true, title: "Report issue", headerBackTitle: "Back" }} />
-          <Stack.Screen name="walk-nav" options={{ headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
-          <Stack.Screen name="after-class-planner" options={{ headerShown: true, title: "Plan my evening", headerBackTitle: "Back", presentation: "modal" }} />
-          <Stack.Screen name="route-tracker" options={{ headerShown: true, title: "Route", headerBackTitle: "Back" }} />
-        </Stack>
-      </>
-    </PostHogProvider>
+    <QueryClientProvider client={queryClient}>
+      <PostHogProvider
+        apiKey={posthogKey || ""}
+        options={{
+          host: "https://us.i.posthog.com",
+          disabled: !posthogKey || process.env.NODE_ENV === "test",
+        }}
+      >
+        <AnalyticsIdentifier userId={user?.id} />
+        <>
+          <StatusBar style="light" />
+          <NotificationRedirect />
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="sign-in" options={{ headerShown: false }} />
+            <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />
+            <Stack.Screen name="report-issue" options={{ headerShown: true, title: "Report issue", headerBackTitle: "Back" }} />
+            <Stack.Screen name="walk-nav" options={{ headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
+            <Stack.Screen name="after-class-planner" options={{ headerShown: true, title: "Plan my evening", headerBackTitle: "Back", presentation: "modal" }} />
+            <Stack.Screen name="route-tracker" options={{ headerShown: true, title: "Route", headerBackTitle: "Back" }} />
+          </Stack>
+        </>
+      </PostHogProvider>
+    </QueryClientProvider>
   );
 }
