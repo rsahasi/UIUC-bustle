@@ -266,21 +266,47 @@ async def _nominatim_lookup(query: str) -> dict:
     return result
 
 
+_nominatim_quick_cache: dict[str, tuple[float, list]] = {}
+_NOMINATIM_QUICK_TTL = 300  # 5 minutes
+
+
 async def _nominatim_quick(query: str, limit: int = 3) -> list[dict]:
-    """Nominatim search for autocomplete — short timeout, no rate-limit semaphore."""
+    """Nominatim search for autocomplete — short timeout, 5-min cache, 1 req/sec rate limit."""
     import httpx
+
+    # Fix 4: Nominatim is useless for very short queries; skip below 4 chars
+    if len(query) < 4:
+        return []
+
+    cache_key = query.lower()
+    now = time.time()
+    if cache_key in _nominatim_quick_cache:
+        expires_at, cached_results = _nominatim_quick_cache[cache_key]
+        if now < expires_at:
+            return cached_results[:limit]
+
     contextual = query if any(h in query.lower() for h in _LOCATION_HINTS) else f"{query}, Champaign, IL"
     try:
-        async with httpx.AsyncClient(timeout=3.0, headers={"User-Agent": GEOCODE_USER_AGENT}) as client:
-            r = await client.get(
-                NOMINATIM_URL,
-                params={"q": contextual, "format": "json", "limit": limit,
-                        "viewbox": NOMINATIM_VIEWBOX, "bounded": "1"},
-            )
-            r.raise_for_status()
-            data = r.json()
+        async with _nominatim_semaphore:
+            # Double-check cache inside semaphore
+            if cache_key in _nominatim_quick_cache:
+                expires_at, cached_results = _nominatim_quick_cache[cache_key]
+                if now < expires_at:
+                    return cached_results[:limit]
+
+            async with httpx.AsyncClient(timeout=3.0, headers={"User-Agent": GEOCODE_USER_AGENT}) as client:
+                r = await client.get(
+                    NOMINATIM_URL,
+                    params={"q": contextual, "format": "json", "limit": limit,
+                            "viewbox": NOMINATIM_VIEWBOX, "bounded": "1"},
+                )
+                r.raise_for_status()
+                data = r.json()
+            # Rate-limit: wait 1.05s before releasing semaphore
+            await asyncio.sleep(1.05)
     except Exception:
         return []
+
     results = []
     for item in data[:limit]:
         display = item.get("display_name", "")
@@ -292,7 +318,9 @@ async def _nominatim_quick(query: str, limit: int = 3) -> list[dict]:
             "lat": float(item.get("lat", 0)),
             "lng": float(item.get("lon", 0)),
         })
-    return results
+
+    _cache_put(_nominatim_quick_cache, cache_key, (now + _NOMINATIM_QUICK_TTL, results))
+    return results[:limit]
 
 
 async def _overpass_poi_search(query: str, limit: int = 5) -> list[dict]:
@@ -417,21 +445,33 @@ async def autocomplete(request: Request, q: str = "", limit: int = 8):
 
     buildings_raw, places_raw = await asyncio.gather(buildings_task, places_task)
 
-    results: list[dict] = []
+    # Fix 3: Score-based interleaving — smarter ranking than buildings-always-first
+    scored: list[tuple[float, dict]] = []
     seen_names: set[str] = set()
+    query_lower = query.lower()
+
     for b in (buildings_raw or []):
         key = b.name.lower()
-        if key not in seen_names:
-            seen_names.add(key)
-            results.append({"type": "building", "name": b.name, "lat": b.lat, "lng": b.lng, "building_id": b.building_id})
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        # Base score 0.4 for buildings + prefix bonus
+        score = 0.4 + (0.3 if key.startswith(query_lower) else 0.0)
+        scored.append((score, {"type": "building", "name": b.name, "lat": b.lat, "lng": b.lng, "building_id": b.building_id}))
 
-    remaining = limit - len(results)
-    for item in places_raw[:remaining]:
-        if item["name"].lower() not in seen_names:
-            seen_names.add(item["name"].lower())
-            results.append(item)
+    for item in (places_raw or []):
+        key = item["name"].lower()
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        # Base score 0.5 for Places (geo-filtered by Google) + prefix bonus
+        score = 0.5 + (0.3 if key.startswith(query_lower) else 0.0)
+        scored.append((score, item))
 
-    return {"results": results[:limit]}
+    scored.sort(key=lambda x: x[0], reverse=True)
+    results = [item for _, item in scored[:limit]]
+
+    return {"results": results}
 
 
 @app.get("/geocode")
@@ -1120,7 +1160,7 @@ async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
         if now < expires_at:
             preds = result.get("predictions", [])[:limit]
             return [{"type": "google_place", "name": p["main_text"], "secondary_text": p.get("secondary_text", ""),
-                     "lat": 0.0, "lng": 0.0, "place_id": p["place_id"]} for p in preds]
+                     "lat": p.get("lat", 0.0), "lng": p.get("lng", 0.0), "place_id": p["place_id"]} for p in preds]
 
     try:
         payload = {
@@ -1138,7 +1178,7 @@ async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
                 json=payload,
                 headers={
                     "X-Goog-Api-Key": api_key,
-                    "X-Goog-FieldMask": "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat",
+                    "X-Goog-FieldMask": "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat,suggestions.placePrediction.place.location",
                 },
             )
             r.raise_for_status()
@@ -1153,18 +1193,24 @@ async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
         sf = pp.get("structuredFormat") or {}
         main_text = (sf.get("mainText") or {}).get("text") or (pp.get("text") or {}).get("text") or ""
         secondary_text = (sf.get("secondaryText") or {}).get("text") or ""
+        # Extract location coordinates if available
+        place_loc = (pp.get("place") or {}).get("location") or {}
+        lat = float(place_loc.get("latitude") or 0.0)
+        lng = float(place_loc.get("longitude") or 0.0)
         if place_id and main_text:
             predictions.append({
                 "place_id": place_id,
                 "main_text": main_text,
                 "secondary_text": secondary_text,
                 "description": f"{main_text}, {secondary_text}".strip(", "),
+                "lat": lat,
+                "lng": lng,
             })
 
     cached_result = {"predictions": predictions}
     _places_autocomplete_cache[cache_key] = (cached_result, now + PLACES_AUTOCOMPLETE_TTL)
     return [{"type": "google_place", "name": p["main_text"], "secondary_text": p.get("secondary_text", ""),
-             "lat": 0.0, "lng": 0.0, "place_id": p["place_id"]} for p in predictions[:limit]]
+             "lat": p.get("lat", 0.0), "lng": p.get("lng", 0.0), "place_id": p["place_id"]} for p in predictions[:limit]]
 
 
 @app.post("/ai/walk-complete")
