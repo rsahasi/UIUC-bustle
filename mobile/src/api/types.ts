@@ -52,6 +52,19 @@ export interface ScheduleClass {
   end_time_local?: string | null;
 }
 
+/** PATCH /schedule/classes/:id */
+export interface UpdateClassRequest {
+  title?: string;
+  location_name?: string;
+  building_id?: string;
+  days_of_week?: string[];
+  start_time_local?: string;
+  end_time_local?: string;
+  destination_lat?: number;
+  destination_lng?: number;
+  destination_name?: string;
+}
+
 /** GET /vehicles */
 export interface VehicleInfo {
   vehicle_id: string;

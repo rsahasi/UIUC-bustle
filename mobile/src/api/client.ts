@@ -9,6 +9,7 @@ import type {
   RecommendationRequest,
   RecommendationResponse,
   ScheduleClass,
+  UpdateClassRequest,
   VehiclesResponse,
 } from "./types";
 
@@ -241,6 +242,37 @@ export async function fetchVehicles(
   const res = await fetchWithRetry(`${base}/vehicles${params}`, "/vehicles", options);
   if (!res.ok) throw new Error(`Vehicles: ${res.status}`);
   return safeJson(res, "/vehicles", { vehicles: [] });
+}
+
+/** PATCH /schedule/classes/:id */
+export async function updateClass(
+  baseUrl: string,
+  classId: string,
+  body: UpdateClassRequest,
+  options?: RequestOptions
+): Promise<ScheduleClass> {
+  const base = baseUrl.replace(/\/$/, "");
+  const res = await fetchWithRetry(
+    `${base}/schedule/classes/${encodeURIComponent(classId)}`,
+    "PATCH /schedule/classes/:id",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      apiKey: options?.apiKey,
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Update class: ${res.status}`);
+  }
+  try {
+    return (await res.json()) as ScheduleClass;
+  } catch {
+    log.warn("api_json_parse_failed path=PATCH /schedule/classes/:id", {});
+    throw new Error("Invalid response from server");
+  }
 }
 
 /** DELETE /schedule/classes/:id */

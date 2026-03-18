@@ -9,7 +9,7 @@ import type { AutocompleteResult } from "@/src/api/client";
 import type { Building, ScheduleClass } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { theme } from "@/src/constants/theme";
-import { Bell, BellOff, Trash2 } from "lucide-react-native";
+import { Bell, BellOff, Pencil, Trash2 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
@@ -24,7 +24,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useClasses, useBuildings, useDeleteClass, useCreateClass, useBuildingSearch } from "@/src/queries/schedule";
+import { useClasses, useBuildings, useDeleteClass, useCreateClass, useUpdateClass, useBuildingSearch } from "@/src/queries/schedule";
 import { usePlacesAutocomplete } from "@/src/queries/places";
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
@@ -74,6 +74,9 @@ export default function ScheduleScreen() {
 
   const { mutate: deleteClassMutation } = useDeleteClass();
   const { mutate: createClassMutation } = useCreateClass();
+  const { mutate: updateClassMutation } = useUpdateClass();
+
+  const [editingClass, setEditingClass] = useState<ScheduleClass | null>(null);
 
   const [classRouteDatas, setClassRouteDatas] = useState<Record<string, ClassRouteData | null>>({});
   const [title, setTitle] = useState("");
@@ -156,6 +159,35 @@ export default function ScheduleScreen() {
     return [...buildingResults, ...placesResults];
   })();
 
+  const resetForm = useCallback(() => {
+    setTitle("");
+    setDays([]);
+    setTime("09:00");
+    setEndTime("");
+    setLocationQuery("");
+    setDebouncedLocationQuery("");
+    setLocationDisplay(null);
+    setLocationLat(null);
+    setLocationLng(null);
+    setLocationError(null);
+    setEditingClass(null);
+  }, []);
+
+  const onEditClass = useCallback((c: ScheduleClass) => {
+    setEditingClass(c);
+    setTitle(c.title);
+    setDays([...c.days_of_week]);
+    setTime(c.start_time_local);
+    setEndTime(c.end_time_local ?? "");
+    const locName = c.destination_name ?? "";
+    setLocationQuery(locName);
+    setDebouncedLocationQuery("");
+    setLocationDisplay(locName || null);
+    setLocationLat(c.destination_lat ?? null);
+    setLocationLng(c.destination_lng ?? null);
+    setLocationError(null);
+  }, []);
+
   const toggleDay = (d: string) => {
     setDays((prev) =>
       prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]
@@ -222,6 +254,8 @@ export default function ScheduleScreen() {
     const newEnd = endTrimmed ? toMinutes(endTrimmed) : newStart + 75; // assume 75min if no end
     const conflicts: ScheduleClass[] = [];
     for (const cls of classes) {
+      // When editing, skip conflict check against the class being edited
+      if (editingClass && cls.class_id === editingClass.class_id) continue;
       if (!days.some((d) => cls.days_of_week.includes(d))) continue;
       const clsStart = toMinutes(cls.start_time_local);
       const clsEnd = cls.end_time_local ? toMinutes(cls.end_time_local) : clsStart + 75;
@@ -232,10 +266,10 @@ export default function ScheduleScreen() {
       const proceed = await new Promise<boolean>((resolve) => {
         Alert.alert(
           "Schedule conflict",
-          `This overlaps with ${msg}. Add anyway?`,
+          `This overlaps with ${msg}. ${editingClass ? "Save anyway?" : "Add anyway?"}`,
           [
             { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-            { text: "Add anyway", style: "destructive", onPress: () => resolve(true) },
+            { text: editingClass ? "Save anyway" : "Add anyway", style: "destructive", onPress: () => resolve(true) },
           ]
         );
       });
@@ -243,6 +277,35 @@ export default function ScheduleScreen() {
     }
 
     setSubmitting(true);
+
+    if (editingClass) {
+      // Edit mode: PATCH the existing class
+      const updates = {
+        title: t,
+        days_of_week: days,
+        start_time_local: time.trim(),
+        destination_lat: locationLat ?? undefined,
+        destination_lng: locationLng ?? undefined,
+        destination_name: locationDisplay ?? (locationQuery.trim() || undefined),
+        end_time_local: endTrimmed || undefined,
+      };
+      updateClassMutation({ classId: editingClass.class_id, updates }, {
+        onSuccess: () => {
+          resetForm();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          capture("class_edited", { class_id: editingClass.class_id });
+          setSuccessToast("Class saved ✓");
+          setTimeout(() => setSuccessToast(null), 2500);
+          setSubmitting(false);
+        },
+        onError: (e) => {
+          Alert.alert("Error", e instanceof Error ? e.message : "Failed to save class");
+          setSubmitting(false);
+        },
+      });
+      return;
+    }
+
     const body = {
       title: t,
       days_of_week: days,
@@ -254,16 +317,7 @@ export default function ScheduleScreen() {
     };
     createClassMutation(body, {
       onSuccess: () => {
-        setTitle("");
-        setDays([]);
-        setTime("09:00");
-        setEndTime("");
-        setLocationQuery("");
-        setDebouncedLocationQuery("");
-        setLocationDisplay(null);
-        setLocationLat(null);
-        setLocationLng(null);
-        setLocationError(null);
+        resetForm();
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         capture("class_added", {
           has_building: false,  // schedule.tsx only uses custom destinations (destination_lat/lng)
@@ -369,6 +423,14 @@ export default function ScheduleScreen() {
       )}
 
       <View style={styles.formCard}><View style={styles.form}>
+        {editingClass && (
+          <View style={styles.editingBanner}>
+            <Text style={styles.editingBannerText}>Editing: {editingClass.title}</Text>
+            <Pressable onPress={resetForm} accessibilityLabel="Cancel editing">
+              <Text style={styles.editingBannerCancel}>Cancel</Text>
+            </Pressable>
+          </View>
+        )}
         <Text style={styles.label}>Title</Text>
         <TextInput
           style={styles.input}
@@ -443,7 +505,7 @@ export default function ScheduleScreen() {
           onPress={submit}
           disabled={submitting}
         >
-          {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Add class</Text>}
+          {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{editingClass ? "Save" : "Add class"}</Text>}
         </Pressable>
       </View></View>
 
@@ -508,6 +570,13 @@ export default function ScheduleScreen() {
                   {disabledNotifIds.includes(c.class_id)
                     ? <BellOff size={18} color={theme.colors.textMuted} />
                     : <Bell size={18} color={theme.colors.navy} />}
+                </Pressable>
+                <Pressable
+                  style={styles.editBtn}
+                  onPress={() => onEditClass(c)}
+                  accessibilityLabel={`Edit ${c.title}`}
+                >
+                  <Pencil size={18} color={theme.colors.navy} />
                 </Pressable>
                 <Pressable
                   style={styles.deleteBtn}
@@ -644,8 +713,12 @@ const styles = StyleSheet.create({
   cardActions: { flexDirection: "row", alignItems: "center", gap: 4 },
   notifBtn: { padding: 4 },
   notifBtnText: { fontSize: 18 },
+  editBtn: { padding: 4 },
   deleteBtn: { padding: 4 },
   deleteBtnText: { fontSize: 18 },
+  editingBanner: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: theme.colors.navy, borderRadius: theme.radius.md, paddingVertical: 8, paddingHorizontal: 12, marginBottom: 8 },
+  editingBannerText: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.surface, flex: 1 },
+  editingBannerCancel: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange, marginLeft: 8 },
   classMeta: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
   notifMutedLabel: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.orange, marginTop: 4, fontStyle: "italic" },
   transitOverlay: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: theme.colors.border },

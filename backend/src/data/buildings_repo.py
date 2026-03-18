@@ -161,3 +161,50 @@ async def list_classes(
         user_id,
     )
     return [_row_to_class(r) for r in rows]
+
+
+_UPDATABLE_FIELDS = frozenset({
+    "title", "location_name", "building_id", "days_of_week",
+    "start_time_local", "end_time_local", "destination_lat", "destination_lng",
+    "destination_name",
+})
+
+
+async def update_class(
+    pool: asyncpg.Pool, class_id: str, user_id: str, updates: dict
+) -> ClassRecord | None:
+    """Update a class by ID and user_id. Returns updated record or None if not found."""
+    # Only keep safe, known fields that are not None
+    safe = {k: v for k, v in updates.items() if k in _UPDATABLE_FIELDS and v is not None}
+    if not safe:
+        # Nothing to update — return the existing record
+        row = await pool.fetchrow(
+            "SELECT * FROM schedule_classes WHERE class_id = $1 AND user_id = $2",
+            class_id,
+            user_id,
+        )
+        return _row_to_class(row) if row else None
+
+    # Serialize days_of_week to JSON string if present
+    if "days_of_week" in safe and isinstance(safe["days_of_week"], list):
+        safe["days_of_week"] = json.dumps(safe["days_of_week"])
+
+    set_clauses = []
+    params: list = []
+    for i, (col, val) in enumerate(safe.items(), start=1):
+        set_clauses.append(f"{col} = ${i}")
+        params.append(val)
+
+    # class_id and user_id are the last params
+    params.append(class_id)
+    params.append(user_id)
+    cid_param = len(params) - 1
+    uid_param = len(params)
+
+    sql = (
+        f"UPDATE schedule_classes SET {', '.join(set_clauses)} "
+        f"WHERE class_id = ${cid_param} AND user_id = ${uid_param} "
+        f"RETURNING *"
+    )
+    row = await pool.fetchrow(sql, *params)
+    return _row_to_class(row) if row else None

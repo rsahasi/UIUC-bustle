@@ -16,7 +16,7 @@ from settings import get_settings
 from src.data.db import init_pool, close_pool, get_pool
 from src.data.buildings_repo import (
     list_buildings, get_building, search_buildings,
-    create_class, delete_class, list_classes, BuildingRecord, ClassRecord
+    create_class, delete_class, list_classes, update_class, BuildingRecord, ClassRecord
 )
 from src.data.stops_repo import search_nearby
 from src.auth.jwt import get_current_user
@@ -32,6 +32,7 @@ from src.schedule.models import (
     ClassResponse,
     ClassesListResponse,
     CreateClassRequest,
+    UpdateClassRequest,
 )
 
 import sentry_sdk
@@ -616,6 +617,34 @@ async def delete_schedule_class(request: Request, class_id: str, user_id: str = 
     deleted = await delete_class(pool, class_id, user_id=user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Class not found.")
+
+
+@app.patch("/schedule/classes/{class_id}", response_model=ClassResponse)
+async def patch_schedule_class(request: Request, class_id: str, body: UpdateClassRequest, user_id: str = Depends(get_current_user)):
+    """Update fields on a class belonging to the authenticated user."""
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    updates = body.model_dump(exclude_none=True)
+    try:
+        rec = await update_class(pool, class_id, user_id=user_id, updates=updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Class not found.")
+    return ClassResponse(
+        class_id=rec.class_id,
+        title=rec.title,
+        days_of_week=rec.days_of_week,
+        start_time_local=rec.start_time_local,
+        building_id=rec.building_id,
+        destination_lat=rec.destination_lat,
+        destination_lng=rec.destination_lng,
+        destination_name=rec.destination_name,
+        end_time_local=rec.end_time_local,
+    )
 
 
 @app.get("/schedule/classes", response_model=ClassesListResponse)

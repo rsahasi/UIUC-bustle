@@ -2,10 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createClass,
   deleteClass,
+  updateClass,
   fetchBuildingSearch,
   fetchBuildings,
   fetchClasses,
 } from "@/src/api/client";
+import type { UpdateClassRequest } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 
 export function useClasses() {
@@ -56,6 +58,18 @@ export function useDeleteClass() {
   return useMutation({
     mutationFn: (classId: string) =>
       deleteClass(apiBaseUrl, classId, { apiKey }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["classes"] });
+    },
+  });
+}
+
+export function useUpdateClass() {
+  const { apiBaseUrl, apiKey } = useApiBaseUrl();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ classId, updates }: { classId: string; updates: UpdateClassRequest }) =>
+      updateClass(apiBaseUrl, classId, updates, { apiKey }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["classes"] });
     },
