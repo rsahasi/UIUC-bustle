@@ -341,7 +341,7 @@ export default function HomeScreen() {
       recommendations,
       location,
     }).catch(() => {});
-  }, [stops, recommendations]);
+  }, [stops, departuresByStop, scheduleClasses, recommendations, location]);
 
   // ── Recommendation analytics + classSummaryCache ──────────────────
   useEffect(() => {
@@ -364,7 +364,7 @@ export default function HomeScreen() {
       };
       setClassRouteData(nextClass.class_id, routeData).catch(() => {});
     }
-  }, [recommendations]);
+  }, [recommendations, scheduleClasses]);
 
   // ── Leave Now banner ──────────────────────────────────────────────
   useEffect(() => {
@@ -374,7 +374,7 @@ export default function HomeScreen() {
     const best = recommendations[0];
     scheduleLeaveNowAlert(nextClass.class_id, nextClass.title, best).catch(() => {});
     setLeaveNowBanner(best.depart_in_minutes <= 2 ? { option: best, classTitle: nextClass.title } : null);
-  }, [recommendations, classNotificationsEnabled]);
+  }, [recommendations, classNotificationsEnabled, scheduleClasses]);
 
   // ── Departures timestamp tracking ─────────────────────────────────
   useEffect(() => {
@@ -439,10 +439,10 @@ export default function HomeScreen() {
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["classes"] }),
-      queryClient.invalidateQueries({ queryKey: ["nearby-stops"] }),
-      queryClient.invalidateQueries({ queryKey: ["departures"] }),
-      queryClient.invalidateQueries({ queryKey: ["recommendation"] }),
+      queryClient.refetchQueries({ queryKey: ["classes"] }),
+      queryClient.refetchQueries({ queryKey: ["nearby-stops"] }),
+      queryClient.refetchQueries({ queryKey: ["departures"] }),
+      queryClient.refetchQueries({ queryKey: ["recommendation"] }),
     ]);
     setRefreshing(false);
   }, [queryClient]);
