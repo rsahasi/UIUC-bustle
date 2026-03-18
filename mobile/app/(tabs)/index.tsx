@@ -206,9 +206,10 @@ export default function HomeScreen() {
     location?.lng ?? 0,
     {
       enabled: !!location && location.lat !== 0,
+      placeholderData: cachedHomeData ? { stops: cachedHomeData.stops } : undefined,
     }
   );
-  const stops = ((nearbyStopsData?.stops ?? (cachedHomeData?.stops ?? [])) as StopWithDistance[]).slice(0, TOP_STOPS);
+  const stops = (nearbyStopsData?.stops ?? []).slice(0, TOP_STOPS) as StopWithDistance[];
 
   // Departures — one query per stop, all in parallel
   const departureQueries = useQueries({
@@ -385,8 +386,8 @@ export default function HomeScreen() {
   // ── Offline banner ────────────────────────────────────────────────
   useEffect(() => {
     const anyError = departureQueries.some(q => q.isError);
-    const hasStaleData = departureQueries.some(q => q.data !== undefined);
-    setOfflineBanner(anyError && hasStaleData);
+    const hasNoData = departureQueries.every(q => q.data === undefined);
+    setOfflineBanner(anyError && hasNoData);
   }, [departureQueries]);
 
   // ── After-last-class place recommendations ────────────────────────

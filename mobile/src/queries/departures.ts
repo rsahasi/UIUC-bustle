@@ -19,7 +19,7 @@ export function useDepartures(
 export function useNearbyStops(
   lat: number,
   lng: number,
-  options?: { enabled?: boolean }
+  options?: { enabled?: boolean; placeholderData?: { stops: import("@/src/api/types").StopWithDistance[] } }
 ) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
@@ -31,5 +31,6 @@ export function useNearbyStops(
       !!apiBaseUrl &&
       lat !== 0 &&
       lng !== 0,
+    placeholderData: options?.placeholderData,
   });
 }
