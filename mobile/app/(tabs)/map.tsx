@@ -1,6 +1,6 @@
-import { fetchAutocomplete, fetchBusRouteStops, fetchDepartures, fetchNearbyStops, fetchRecommendation, fetchVehicles, fetchWalkingRoute } from "@/src/api/client";
+import { fetchAutocomplete, fetchBusRouteStops, fetchRecommendation, fetchWalkingRoute } from "@/src/api/client";
 import type { AutocompleteResult } from "@/src/api/client";
-import type { DepartureItem, RecommendationOption, StopInfo, VehicleInfo } from "@/src/api/types";
+import type { RecommendationOption, StopInfo } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
@@ -9,6 +9,8 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
 import React from "react";
+import { useVehicles } from "@/src/queries/map";
+import { useDepartures, useNearbyStops } from "@/src/queries/departures";
 import {
   ActivityIndicator,
   Animated,
@@ -44,10 +46,8 @@ function MapLiveBadge({ count }: { count: number }) {
   );
 }
 
-const MAP_RADIUS_M = 1200;
 const INITIAL_DELTA = 0.008;
 const UIUC_FALLBACK = { lat: 40.1020, lng: -88.2272 };
-const VEHICLE_POLL_MS = 15_000;
 
 type StopWithDistance = StopInfo & { distance_m: number };
 
@@ -64,12 +64,32 @@ export default function MapScreen() {
   );
   const [status, setStatus] = useState<"loading" | "denied" | "error" | "ready">("loading");
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(UIUC_FALLBACK);
-  const [stops, setStops] = useState<StopWithDistance[]>([]);
   const [selectedStop, setSelectedStop] = useState<StopWithDistance | null>(null);
-  const [departures, setDepartures] = useState<DepartureItem[]>([]);
-  const [departuresLoading, setDeparturesLoading] = useState(false);
-  const [vehicles, setVehicles] = useState<VehicleInfo[]>([]);
   const [useUiucArea, setUseUiucArea] = useState(false);
+
+  // TanStack Query: vehicles (15s polling)
+  const { data: vehiclesData } = useVehicles();
+  const vehicles = vehiclesData?.vehicles ?? [];
+
+  // TanStack Query: nearby stops (reactive on location)
+  const { data: nearbyStopsData } = useNearbyStops(
+    location?.lat ?? 0,
+    location?.lng ?? 0,
+    { enabled: !!location && status === "ready" }
+  );
+  const stops: StopWithDistance[] = (nearbyStopsData?.stops ?? [])
+    .map((s) => ({
+      ...s,
+      distance_m: Math.round(haversineMeters(location?.lat ?? 0, location?.lng ?? 0, s.lat, s.lng)),
+    }))
+    .sort((a, b) => a.distance_m - b.distance_m);
+
+  // TanStack Query: departures for selected stop
+  const { data: departuresData, isLoading: departuresLoading } = useDepartures(
+    selectedStop?.stop_id ?? "",
+    { enabled: !!selectedStop }
+  );
+  const departures = departuresData?.departures ?? [];
 
   // Place search state
   const [mapSearch, setMapSearch] = useState("");
@@ -96,7 +116,6 @@ export default function MapScreen() {
   }, [emptyStateOpacity]);
 
   const mapRef = useRef<MapView | null>(null);
-  const vehiclePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentRegionRef = useRef({
     latitude: UIUC_FALLBACK.lat,
     longitude: UIUC_FALLBACK.lng,
@@ -133,15 +152,6 @@ export default function MapScreen() {
     }, 500);
   }, [location]);
 
-  const pollVehicles = useCallback(async () => {
-    try {
-      const res = await fetchVehicles(apiBaseUrl, undefined, { apiKey: apiKey ?? undefined });
-      setVehicles(res.vehicles ?? []);
-    } catch {
-      // Silently fail — vehicles are optional
-    }
-  }, [apiBaseUrl, apiKey]);
-
   const loadStops = useCallback(async () => {
     setStatus("loading");
     let latitude: number;
@@ -176,39 +186,12 @@ export default function MapScreen() {
       }
     }
 
-    try {
-      const data = await fetchNearbyStops(apiBaseUrl, latitude, longitude, MAP_RADIUS_M, { apiKey: apiKey ?? undefined });
-      const withDist = data.stops
-        .map((s) => ({
-          ...s,
-          distance_m: Math.round(haversineMeters(latitude, longitude, s.lat, s.lng)),
-        }))
-        .sort((a, b) => a.distance_m - b.distance_m);
-      setStops(withDist);
-      setStatus("ready");
-    } catch {
-      setStatus("error");
-      setStops([]);
-      setLocation(null);
-    }
-  }, [apiBaseUrl, apiKey, useUiucArea]);
+    setStatus("ready");
+  }, [useUiucArea]);
 
   useEffect(() => {
     loadStops();
   }, [loadStops]);
-
-  // Poll vehicles every 15s while map is visible
-  useEffect(() => {
-    if (status !== "ready") return;
-    pollVehicles();
-    vehiclePollRef.current = setInterval(pollVehicles, VEHICLE_POLL_MS);
-    return () => {
-      if (vehiclePollRef.current) {
-        clearInterval(vehiclePollRef.current);
-        vehiclePollRef.current = null;
-      }
-    };
-  }, [status, pollVehicles]);
 
   // Debounced autocomplete for place search
   useEffect(() => {
@@ -439,24 +422,14 @@ export default function MapScreen() {
   }, [selectedPlace, walkingModeId, router]);
 
   const onMarkerPress = useCallback(
-    async (stop: StopWithDistance) => {
+    (stop: StopWithDistance) => {
       setSelectedStop(stop);
       setSelectedPlace(null);
       setPlaceRoutes([]);
       setMapSearch("");
       setSuggestions([]);
-      setDepartures([]);
-      setDeparturesLoading(true);
-      try {
-        const res = await fetchDepartures(apiBaseUrl, stop.stop_id, 60, { apiKey: apiKey ?? undefined });
-        setDepartures(res.departures ?? []);
-      } catch {
-        setDepartures([]);
-      } finally {
-        setDeparturesLoading(false);
-      }
     },
-    [apiBaseUrl, apiKey]
+    []
   );
 
   const onOpenTrip = useCallback(
