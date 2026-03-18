@@ -24,8 +24,8 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useClasses, useBuildings, useDeleteClass, useCreateClass } from "@/src/queries/schedule";
-import { useAutocomplete, usePlacesAutocomplete } from "@/src/queries/places";
+import { useClasses, useBuildings, useDeleteClass, useCreateClass, useBuildingSearch } from "@/src/queries/schedule";
+import { usePlacesAutocomplete } from "@/src/queries/places";
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_LABELS: Record<string, string> = {
@@ -129,13 +129,21 @@ export default function ScheduleScreen() {
   }, [locationQuery]);
 
   // TQ-powered autocomplete queries
-  const { data: autocompleteData } = useAutocomplete(debouncedLocationQuery);
+  const { data: buildingSearchData } = useBuildingSearch(debouncedLocationQuery);
   const { data: placesData } = usePlacesAutocomplete(debouncedLocationQuery, locationSessionRef.current);
 
   // Combine building + places results into locationSuggestions
   const locationSuggestions: AutocompleteResult[] = (() => {
     if (debouncedLocationQuery.length < 2) return [];
-    const buildingResults = (autocompleteData?.results ?? []).slice(0, 4);
+    const buildingResults: AutocompleteResult[] = (buildingSearchData?.buildings ?? []).slice(0, 4).map((b) => ({
+      type: "building" as const,
+      name: b.name,
+      display_name: b.name,
+      lat: b.lat,
+      lng: b.lng,
+      building_id: b.building_id,
+      place_id: "",
+    }));
     const placesResults = (placesData?.predictions ?? []).slice(0, Math.max(0, 6 - buildingResults.length)).map((p) => ({
       type: "google_place" as const,
       name: p.main_text,
