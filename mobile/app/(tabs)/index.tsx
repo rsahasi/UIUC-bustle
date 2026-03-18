@@ -568,8 +568,10 @@ export default function HomeScreen() {
       let lat = item.lat;
       let lng = item.lng;
       let resolvedName = item.display_name || item.name;
-      // For Google Places results (lat=0, place_id set): resolve via /places/details
-      if (item.type === "google_place" && item.place_id && (lat === 0 || lng === 0)) {
+      if (lat !== 0 && lng !== 0) {
+        // Coords already embedded — use directly, no extra network call needed
+      } else if (item.type === "google_place" && item.place_id) {
+        // Fallback: resolve coords via /places/details (lat=0 means backend didn't embed them)
         const details = await fetchPlaceDetails(apiBaseUrl, item.place_id, { apiKey: apiKey ?? undefined });
         lat = details.lat;
         lng = details.lng;

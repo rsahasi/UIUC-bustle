@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
 import {
   fetchAutocomplete,
   fetchGeocode,
@@ -9,11 +10,18 @@ import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 
 export function useAutocomplete(query: string) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 200);
+    return () => clearTimeout(t);
+  }, [query]);
+
   return useQuery({
-    queryKey: ["autocomplete", query],
-    queryFn: () => fetchAutocomplete(apiBaseUrl, query, { apiKey }),
+    queryKey: ["autocomplete", debouncedQuery],
+    queryFn: () => fetchAutocomplete(apiBaseUrl, debouncedQuery, { apiKey }),
     staleTime: 10_000,
-    enabled: !!apiBaseUrl && query.length >= 2,
+    enabled: !!apiBaseUrl && debouncedQuery.length >= 2,
   });
 }
 

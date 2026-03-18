@@ -1,4 +1,4 @@
-import { fetchAutocomplete, fetchBusRouteStops, fetchRecommendation, fetchWalkingRoute } from "@/src/api/client";
+import { fetchAutocomplete, fetchBusRouteStops, fetchPlaceDetails, fetchRecommendation, fetchWalkingRoute } from "@/src/api/client";
 import type { AutocompleteResult } from "@/src/api/client";
 import type { RecommendationOption, StopInfo } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
@@ -360,20 +360,39 @@ export default function MapScreen() {
     return () => { cancelled = true; };
   }, [placeRoutes, selectedRouteIdx, location, selectedPlace, apiBaseUrl, apiKey]);
 
-  const onSelectSuggestion = useCallback((result: AutocompleteResult) => {
+  const onSelectSuggestion = useCallback(async (result: AutocompleteResult) => {
     Keyboard.dismiss();
     setMapSearch(result.name);
     setSuggestions([]);
     setSelectedStop(null);
-    setSelectedPlace({ lat: result.lat, lng: result.lng, name: result.display_name ?? result.name, building_id: result.building_id });
     fadeOutEmptyState();
+
+    let lat = result.lat;
+    let lng = result.lng;
+    let name = result.display_name ?? result.name;
+
+    if (lat !== 0 && lng !== 0) {
+      // Coords already embedded — use directly
+    } else if (result.type === "google_place" && result.place_id) {
+      // Fallback: resolve via /places/details when backend didn't embed coords
+      try {
+        const details = await fetchPlaceDetails(apiBaseUrl, result.place_id, { apiKey: apiKey ?? undefined });
+        lat = details.lat;
+        lng = details.lng;
+        if (details.display_name) name = details.display_name;
+      } catch {
+        // Leave lat/lng as 0 — setSelectedPlace will still be set but map won't animate meaningfully
+      }
+    }
+
+    setSelectedPlace({ lat, lng, name, building_id: result.building_id });
     mapRef.current?.animateToRegion({
-      latitude: result.lat,
-      longitude: result.lng,
+      latitude: lat,
+      longitude: lng,
       latitudeDelta: INITIAL_DELTA,
       longitudeDelta: INITIAL_DELTA,
     }, 500);
-  }, []);
+  }, [apiBaseUrl, apiKey, fadeOutEmptyState]);
 
   const clearSearch = useCallback(() => {
     setMapSearch("");
