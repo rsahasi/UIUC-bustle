@@ -1,12 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import {
-  createClass,
-  deleteClass,
-  fetchAutocomplete,
-  fetchBuildings,
-  fetchClasses,
   fetchPlaceDetails,
-  fetchPlacesAutocomplete,
 } from "@/src/api/client";
 import { cancelClassReminder } from "@/src/notifications/classReminders";
 import { disableClassNotif, enableClassNotif, getDisabledClassIds } from "@/src/storage/classNotifPrefs";
@@ -30,6 +24,8 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useClasses, useBuildings, useDeleteClass, useCreateClass } from "@/src/queries/schedule";
+import { useAutocomplete, usePlacesAutocomplete } from "@/src/queries/places";
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_LABELS: Record<string, string> = {
@@ -69,23 +65,29 @@ export default function ScheduleScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const router = useRouter();
   const { capture } = useAnalytics();
-  const [classes, setClasses] = useState<ScheduleClass[]>([]);
-  const [buildings, setBuildings] = useState<Building[]>([]);
+
+  const { data: classesData, isLoading, refetch: refetchClasses } = useClasses();
+  const { data: buildingsData } = useBuildings();
+  const classes = classesData?.classes ?? [];
+  const buildings = buildingsData?.buildings ?? [];
+  const refreshing = false; // TQ handles background refresh; keep for RefreshControl compat
+
+  const { mutate: deleteClassMutation } = useDeleteClass();
+  const { mutate: createClassMutation } = useCreateClass();
+
   const [classRouteDatas, setClassRouteDatas] = useState<Record<string, ClassRouteData | null>>({});
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [days, setDays] = useState<string[]>([]);
   const [time, setTime] = useState("09:00");
   const [endTime, setEndTime] = useState("");
   const [locationQuery, setLocationQuery] = useState("");
+  const [debouncedLocationQuery, setDebouncedLocationQuery] = useState("");
   const [locationSearching, setLocationSearching] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [locationDisplay, setLocationDisplay] = useState<string | null>(null);
   const [locationLat, setLocationLat] = useState<number | null>(null);
   const [locationLng, setLocationLng] = useState<number | null>(null);
-  const [locationSuggestions, setLocationSuggestions] = useState<AutocompleteResult[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [disabledNotifIds, setDisabledNotifIds] = useState<string[]>([]);
@@ -103,35 +105,49 @@ export default function ScheduleScreen() {
     }, [capture])
   );
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const [classesRes, buildingsRes] = await Promise.all([
-        fetchClasses(apiBaseUrl, { apiKey: apiKey ?? undefined }),
-        fetchBuildings(apiBaseUrl, { apiKey: apiKey ?? undefined }),
-      ]);
-      const loadedClasses = classesRes.classes ?? [];
-      setClasses(loadedClasses);
-      setBuildings(buildingsRes.buildings ?? []);
-      setDisabledNotifIds(await getDisabledClassIds());
-      // Load route data for each class
-      const routeEntries = await Promise.all(
-        loadedClasses.map(async (c) => [c.class_id, await getClassRouteData(c.class_id)] as [string, ClassRouteData | null])
-      );
-      setClassRouteDatas(Object.fromEntries(routeEntries));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load");
-      setClasses([]);
-      setBuildings([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [apiBaseUrl]);
+  // Load disabled notif IDs and class route data whenever classes update
+  useEffect(() => {
+    getDisabledClassIds().then(setDisabledNotifIds);
+  }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (classes.length === 0) return;
+    Promise.all(
+      classes.map(async (c) => [c.class_id, await getClassRouteData(c.class_id)] as [string, ClassRouteData | null])
+    ).then((entries) => setClassRouteDatas(Object.fromEntries(entries)));
+  }, [classes]);
+
+  // Debounce the location query for TQ hooks
+  useEffect(() => {
+    if (locationDebounceRef.current) clearTimeout(locationDebounceRef.current);
+    locationDebounceRef.current = setTimeout(() => {
+      setDebouncedLocationQuery(locationQuery.trim());
+    }, 300);
+    return () => {
+      if (locationDebounceRef.current) clearTimeout(locationDebounceRef.current);
+    };
+  }, [locationQuery]);
+
+  // TQ-powered autocomplete queries
+  const { data: autocompleteData } = useAutocomplete(debouncedLocationQuery);
+  const { data: placesData } = usePlacesAutocomplete(debouncedLocationQuery, locationSessionRef.current);
+
+  // Combine building + places results into locationSuggestions
+  const locationSuggestions: AutocompleteResult[] = (() => {
+    if (debouncedLocationQuery.length < 2) return [];
+    const buildingResults = (autocompleteData?.results ?? []).slice(0, 4);
+    const placesResults = (placesData?.predictions ?? []).slice(0, Math.max(0, 6 - buildingResults.length)).map((p) => ({
+      type: "google_place" as const,
+      name: p.main_text,
+      display_name: p.description,
+      lat: 0,
+      lng: 0,
+      building_id: "",
+      place_id: p.place_id,
+      secondary_text: p.secondary_text,
+    }));
+    return [...buildingResults, ...placesResults];
+  })();
 
   const toggleDay = (d: string) => {
     setDays((prev) =>
@@ -220,38 +236,41 @@ export default function ScheduleScreen() {
     }
 
     setSubmitting(true);
-    try {
-      await createClass(apiBaseUrl, {
-        title: t,
-        days_of_week: days,
-        start_time_local: time.trim(),
-        destination_lat: locationLat,
-        destination_lng: locationLng,
-        destination_name: locationDisplay ?? (locationQuery.trim() || undefined),
-        end_time_local: endTrimmed || undefined,
-      }, { apiKey: apiKey ?? undefined });
-      setTitle("");
-      setDays([]);
-      setTime("09:00");
-      setEndTime("");
-      setLocationQuery("");
-      setLocationDisplay(null);
-      setLocationLat(null);
-      setLocationLng(null);
-      setLocationError(null);
-      await load();
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      capture("class_added", {
-        has_building: false,  // schedule.tsx only uses custom destinations (destination_lat/lng)
-        has_custom_dest: locationLat !== null && locationLng !== null,
-      });
-      setSuccessToast("Class added ✓");
-      setTimeout(() => setSuccessToast(null), 2500);
-    } catch (e) {
-      Alert.alert("Error", e instanceof Error ? e.message : "Failed to add class");
-    } finally {
-      setSubmitting(false);
-    }
+    const body = {
+      title: t,
+      days_of_week: days,
+      start_time_local: time.trim(),
+      destination_lat: locationLat,
+      destination_lng: locationLng,
+      destination_name: locationDisplay ?? (locationQuery.trim() || undefined),
+      end_time_local: endTrimmed || undefined,
+    };
+    createClassMutation(body, {
+      onSuccess: () => {
+        setTitle("");
+        setDays([]);
+        setTime("09:00");
+        setEndTime("");
+        setLocationQuery("");
+        setDebouncedLocationQuery("");
+        setLocationDisplay(null);
+        setLocationLat(null);
+        setLocationLng(null);
+        setLocationError(null);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        capture("class_added", {
+          has_building: false,  // schedule.tsx only uses custom destinations (destination_lat/lng)
+          has_custom_dest: locationLat !== null && locationLng !== null,
+        });
+        setSuccessToast("Class added ✓");
+        setTimeout(() => setSuccessToast(null), 2500);
+        setSubmitting(false);
+      },
+      onError: (e) => {
+        Alert.alert("Error", e instanceof Error ? e.message : "Failed to add class");
+        setSubmitting(false);
+      },
+    });
   };
 
   const onLocationQueryChange = useCallback((text: string) => {
@@ -260,38 +279,13 @@ export default function ScheduleScreen() {
     setLocationDisplay(null);
     setLocationLat(null);
     setLocationLng(null);
-    if (locationDebounceRef.current) clearTimeout(locationDebounceRef.current);
-    const q = text.trim();
-    if (q.length < 2) {
-      setLocationSuggestions([]);
-      return;
-    }
-    locationDebounceRef.current = setTimeout(async () => {
-      try {
-        const [buildingRes, placesRes] = await Promise.all([
-          fetchAutocomplete(apiBaseUrl, q, { apiKey: apiKey ?? undefined }),
-          fetchPlacesAutocomplete(apiBaseUrl, q, locationSessionRef.current, { apiKey: apiKey ?? undefined }),
-        ]);
-        const buildings = (buildingRes.results ?? []).slice(0, 4);
-        const places = (placesRes.predictions ?? []).slice(0, Math.max(0, 6 - buildings.length)).map((p) => ({
-          type: "google_place" as const,
-          name: p.main_text,
-          display_name: p.description,
-          lat: 0,
-          lng: 0,
-          building_id: "",
-          place_id: p.place_id,
-          secondary_text: p.secondary_text,
-        }));
-        setLocationSuggestions([...buildings, ...places]);
-      } catch {}
-    }, 300);
-  }, [apiBaseUrl, apiKey]);
+  }, []);
 
   const onSelectLocationSuggestion = useCallback(async (item: AutocompleteResult) => {
-    setLocationSuggestions([]);
     locationSessionRef.current = Math.random().toString(36).slice(2);
     setLocationSearching(true);
+    // Clear debounced query so suggestions disappear
+    setDebouncedLocationQuery("");
     try {
       if (item.type === "google_place" && item.place_id) {
         const details = await fetchPlaceDetails(apiBaseUrl, item.place_id, { apiKey: apiKey ?? undefined });
@@ -312,27 +306,26 @@ export default function ScheduleScreen() {
     }
   }, [apiBaseUrl, apiKey]);
 
-  const onDeleteClass = useCallback(async (c: ScheduleClass) => {
+  const onDeleteClass = useCallback((c: ScheduleClass) => {
     Alert.alert("Delete class", `Remove "${c.title}"?`, [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete",
         style: "destructive",
-        onPress: async () => {
-          try {
-            await deleteClass(apiBaseUrl, c.class_id, { apiKey: apiKey ?? undefined });
-            await load();
-          } catch (e) {
-            Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete");
-          }
+        onPress: () => {
+          deleteClassMutation(c.class_id, {
+            onError: (e) => {
+              Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete");
+            },
+          });
         },
       },
     ]);
-  }, [apiBaseUrl, apiKey, load]);
+  }, [deleteClassMutation]);
 
   function classLocationLabel(c: ScheduleClass): string {
     if (c.destination_name) return c.destination_name;
-    return buildings.find((b) => b.building_id === c.building_id)?.name ?? c.building_id;
+    return buildings.find((b: Building) => b.building_id === c.building_id)?.name ?? c.building_id;
   }
 
   const DAY_ORDER: Record<string, number> = { MON: 0, TUE: 1, WED: 2, THU: 3, FRI: 4, SAT: 5, SUN: 6 };
@@ -347,7 +340,7 @@ export default function ScheduleScreen() {
     return (a.start_time_local ?? "").localeCompare(b.start_time_local ?? "");
   });
 
-  if (loading && !refreshing) {
+  if (isLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={theme.colors.navy} />
@@ -359,7 +352,7 @@ export default function ScheduleScreen() {
     <ScrollView
       contentContainerStyle={styles.container}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={theme.colors.navy} />
+        <RefreshControl refreshing={refreshing} onRefresh={() => { refetchClasses(); }} tintColor={theme.colors.navy} />
       }
     >
       {successToast && (
