@@ -150,9 +150,13 @@ app.add_middleware(
     api_key_required=settings.api_key_required,
     api_keys=get_valid_api_keys(settings.api_keys),
 )
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+if not _cors_origins and settings.debug:
+    # In debug/dev mode with no explicit origins configured, allow localhost only
+    _cors_origins = ["http://localhost:8081", "http://localhost:3000", "http://localhost:19006"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+    allow_origins=_cors_origins,
     allow_credentials=False,  # credentials=True + wildcard origin is a CORS misconfiguration
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-API-Key"],
@@ -439,6 +443,8 @@ async def geocode(request: Request, q: str = ""):
     query = (q or "").strip()
     if not query or len(query) < 2:
         raise HTTPException(status_code=400, detail="Provide a search query (e.g. McDonald's Champaign, or an address).")
+    if len(query) > 200:
+        raise HTTPException(status_code=400, detail="Query too long")
     try:
         result = await _nominatim_lookup(query)
     except LookupError as e:
@@ -668,7 +674,7 @@ def _find_exit_stop_for_recommendation(route_id: str, from_stop_id: str, dest_la
 
 
 @app.post("/recommendation", response_model=RecommendationResponse)
-async def post_recommendation(request: Request, body: RecommendationRequest):
+async def post_recommendation(request: Request, body: RecommendationRequest, user=Depends(get_current_user)):
     """Return 2–3 options (WALK + BUS) from user location to destination (building or custom lat/lng)."""
     _validate_lat_lng(body.lat, body.lng)
     _validate_uiuc_region(body.lat, body.lng)
@@ -684,7 +690,7 @@ async def post_recommendation(request: Request, body: RecommendationRequest):
         dest_lat, dest_lng = body.destination_lat, body.destination_lng
         dest_name = body.destination_name or "Destination"
         destination_building_id = "custom"
-        logger.info("telemetry route=recommendation custom_destination lat=%s lng=%s", dest_lat, dest_lng)
+        logger.info("telemetry route=recommendation custom_destination")
     elif body.destination_building_id:
         building = await get_building(pool, body.destination_building_id)
         if building is None:
@@ -860,32 +866,32 @@ def gtfs_all_stops_for_route(request: Request, route_id: str = ""):
     return {"stops": stops}
 
 
-from pydantic import BaseModel as _BaseModel
+from pydantic import BaseModel as _BaseModel, Field as _Field
 
 
 class AfterClassPlanRequest(_BaseModel):
-    freetext_plan: str = ""
+    freetext_plan: str = _Field("", max_length=500)
     lat: float = 0.0
     lng: float = 0.0
 
 
 class EodReportRequest(_BaseModel):
-    entries: list[dict] = []
+    entries: list[dict] = _Field([], max_length=50)
     total_steps: int = 0
     total_calories: float = 0.0
     total_distance_m: float = 0.0
 
 
 class WalkCompleteRequest(_BaseModel):
-    mode: str = "walk"
+    mode: str = _Field("walk", max_length=50)
     distance_m: float = 0.0
     calories: float = 0.0
-    dest_name: str = ""
+    dest_name: str = _Field("", max_length=200)
 
 
 @app.post("/ai/after-class-plan")
 @limiter.limit("10/minute")
-def post_after_class_plan(request: Request, body: AfterClassPlanRequest):
+def post_after_class_plan(request: Request, body: AfterClassPlanRequest, user=Depends(get_current_user)):
     """Return a chained trip plan for after the last class. Phase 2: heuristic; Phase 3: Claude."""
     from src.ai.planner import heuristic_after_class_plan
     if not body.freetext_plan.strip():
@@ -910,7 +916,7 @@ def post_after_class_plan(request: Request, body: AfterClassPlanRequest):
 
 @app.post("/ai/eod-report")
 @limiter.limit("10/minute")
-def post_eod_report(request: Request, body: EodReportRequest):
+def post_eod_report(request: Request, body: EodReportRequest, user=Depends(get_current_user)):
     """Return an AI end-of-day activity report. Requires CLAUDE_API_KEY."""
     claude_key = getattr(settings, "claude_api_key", "")
     if not claude_key:
@@ -1134,7 +1140,7 @@ async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
 
 @app.post("/ai/walk-complete")
 @limiter.limit("10/minute")
-def post_walk_complete(request: Request, body: WalkCompleteRequest):
+def post_walk_complete(request: Request, body: WalkCompleteRequest, user=Depends(get_current_user)):
     """Return a short encouragement message after completing a walk."""
     claude_key = getattr(settings, "claude_api_key", "")
     if not claude_key:

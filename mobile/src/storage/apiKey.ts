@@ -1,10 +1,10 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 
 const KEY = "@uiuc_bus_api_key";
 
 export async function getStoredApiKey(): Promise<string | null> {
   try {
-    const v = await AsyncStorage.getItem(KEY);
+    const v = await SecureStore.getItemAsync(KEY);
     if (v != null && v.trim()) return v.trim();
   } catch (_) {}
   return null;
@@ -12,8 +12,8 @@ export async function getStoredApiKey(): Promise<string | null> {
 
 export async function setStoredApiKey(key: string | null): Promise<void> {
   if (key == null || !key.trim()) {
-    await AsyncStorage.removeItem(KEY);
+    await SecureStore.deleteItemAsync(KEY);
     return;
   }
-  await AsyncStorage.setItem(KEY, key.trim());
+  await SecureStore.setItemAsync(KEY, key.trim());
 }

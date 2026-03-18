@@ -135,7 +135,8 @@ class MTDClient:
                 logger.warning("telemetry mtd_timeout attempt=%s stop_id=%s", attempt + 1, stop_id)
             except (httpx.HTTPError, ValueError) as e:
                 last_error = e
-                logger.warning("telemetry mtd_api_error attempt=%s stop_id=%s error=%s", attempt + 1, stop_id, str(e))
+                status = e.response.status_code if hasattr(e, "response") and e.response is not None else "unknown"
+                logger.warning("telemetry mtd_api_error attempt=%s stop_id=%s status=%s", attempt + 1, stop_id, status)
             if attempt < MTD_RETRY_ATTEMPTS - 1:
                 delay = min(MTD_RETRY_BASE_DELAY_SECONDS * (2**attempt), MTD_RETRY_MAX_DELAY_SECONDS)
                 await asyncio.sleep(delay)
@@ -167,7 +168,8 @@ class MTDClient:
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as e:
-            logger.warning("telemetry mtd_vehicles_error error=%s", str(e))
+            status = e.response.status_code if hasattr(e, "response") and e.response is not None else "unknown"
+            logger.warning("telemetry mtd_vehicles_error status=%s", status)
             return []
 
         raw_list = data.get("vehicles") or []

@@ -73,13 +73,14 @@ async def search_buildings(
     pool: asyncpg.Pool, query: str, limit: int = 6
 ) -> list[BuildingRecord]:
     """Search buildings by name using pg_trgm. Replaces both search_buildings and search_buildings_fts."""
-    pattern = f"%{query}%"
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
     rows = await pool.fetch(
         """
         SELECT building_id, name, lat, lng
         FROM buildings
         WHERE building_id != 'custom'
-          AND (name ILIKE $1 OR similarity(name, $2) > 0.2)
+          AND (name ILIKE $1 ESCAPE '\\' OR similarity(name, $2) > 0.2)
         ORDER BY similarity(name, $2) DESC
         LIMIT $3
         """,

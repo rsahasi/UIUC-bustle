@@ -12,8 +12,9 @@ class Settings(BaseSettings):
     debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
-    # CORS: "*" for dev; in production set to comma-separated origins, e.g. "https://app.example.com,https://admin.example.com"
-    cors_origins: str = "*"
+    # CORS: empty string disallows all cross-origin requests by default; in production set to comma-separated origins,
+    # e.g. "https://app.example.com,https://admin.example.com". In dev, set to "http://localhost:8081,http://localhost:3000".
+    cors_origins: str = ""
     mtd_api_key: str = ""  # Champaign-Urbana MTD Developer API key (get at developer.cumtd.com)
     database_url: str = ""  # PostgreSQL connection URL (Railway sets DATABASE_URL automatically)
 

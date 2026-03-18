@@ -161,21 +161,26 @@ def test_post_recommendation_building_not_found_returns_400():
     """POST /recommendation with unknown building_id returns 400."""
     from unittest.mock import AsyncMock, MagicMock, patch
     import main
+    from src.auth.jwt import get_current_user
     from src.data.buildings_repo import BuildingRecord
 
     mock_pool = MagicMock()
-    with patch("main.get_pool", return_value=mock_pool), \
-         patch("main.get_building", new=AsyncMock(return_value=None)):
-        client = TestClient(main.app)
-        r = client.post(
-            "/recommendation",
-            json={
-                "lat": 40.11,
-                "lng": -88.22,
-                "destination_building_id": "nonexistent_building",
-                "arrive_by_iso": "2025-02-20T16:00:00Z",
-            },
-        )
+    main.app.dependency_overrides[get_current_user] = lambda: "test-user-id"
+    try:
+        with patch("main.get_pool", return_value=mock_pool), \
+             patch("main.get_building", new=AsyncMock(return_value=None)):
+            client = TestClient(main.app)
+            r = client.post(
+                "/recommendation",
+                json={
+                    "lat": 40.11,
+                    "lng": -88.22,
+                    "destination_building_id": "nonexistent_building",
+                    "arrive_by_iso": "2025-02-20T16:00:00Z",
+                },
+            )
+    finally:
+        main.app.dependency_overrides.pop(get_current_user, None)
     assert r.status_code == 400
     assert "not found" in r.json().get("detail", "").lower()
 
@@ -185,6 +190,7 @@ def test_post_recommendation_schema_and_stable(tmp_path):
     from unittest.mock import AsyncMock, MagicMock, patch
     from datetime import datetime, timezone, timedelta
     import main
+    from src.auth.jwt import get_current_user
     from src.data.buildings_repo import BuildingRecord
 
     mock_pool = MagicMock()
@@ -193,20 +199,24 @@ def test_post_recommendation_schema_and_stable(tmp_path):
     # Use arrive_by 2 hours from now so walk option is valid
     arrive = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
 
-    with patch("main.get_pool", return_value=mock_pool), \
-         patch("main.get_building", new=AsyncMock(return_value=test_building)), \
-         patch("main.search_nearby", new=AsyncMock(return_value=[])):
-        client = TestClient(main.app)
-        r = client.post(
-            "/recommendation",
-            json={
-                "lat": 40.11,
-                "lng": -88.22,
-                "destination_building_id": "test_bldg",
-                "arrive_by_iso": arrive,
-                "max_options": 3,
-            },
-        )
+    main.app.dependency_overrides[get_current_user] = lambda: "test-user-id"
+    try:
+        with patch("main.get_pool", return_value=mock_pool), \
+             patch("main.get_building", new=AsyncMock(return_value=test_building)), \
+             patch("main.search_nearby", new=AsyncMock(return_value=[])):
+            client = TestClient(main.app)
+            r = client.post(
+                "/recommendation",
+                json={
+                    "lat": 40.11,
+                    "lng": -88.22,
+                    "destination_building_id": "test_bldg",
+                    "arrive_by_iso": arrive,
+                    "max_options": 3,
+                },
+            )
+    finally:
+        main.app.dependency_overrides.pop(get_current_user, None)
     assert r.status_code == 200
     data = r.json()
     assert "options" in data
