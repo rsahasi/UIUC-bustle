@@ -120,27 +120,41 @@ export function useLeaveBy(): LeaveByState {
   const locationRef = useRef<{ lat: number; lng: number }>(UIUC_FALLBACK);
   const [weather, setWeather] = useState<WeatherData | null>(null);
 
-  // Load location and weather on mount (unchanged from original)
+  // Load location on mount, then refresh every 60s so recParams stays fresh as user walks
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    const fetchLocation = async () => {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         if (status === "granted") {
-          const pos = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
-          locationRef.current = {
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-          };
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          if (!cancelled) {
+            locationRef.current = {
+              lat: loc.coords.latitude,
+              lng: loc.coords.longitude,
+            };
+          }
         }
       } catch {
         // fall through to UIUC_FALLBACK
       }
-      const { lat, lng } = locationRef.current;
-      const w = await getWeatherForLocation(lat, lng);
-      setWeather(w);
+    };
+
+    // Initial fetch + weather
+    (async () => {
+      await fetchLocation();
+      if (!cancelled) {
+        const { lat, lng } = locationRef.current;
+        const w = await getWeatherForLocation(lat, lng);
+        if (!cancelled) setWeather(w);
+      }
     })();
+
+    const interval = setInterval(fetchLocation, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   // Classes from shared TQ cache — no more fetchClasses or setInterval needed

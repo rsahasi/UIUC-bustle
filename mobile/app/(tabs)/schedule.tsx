@@ -16,6 +16,7 @@ import { useAnalytics } from "@/src/hooks/useAnalytics";
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -77,6 +78,7 @@ export default function ScheduleScreen() {
   const { mutate: updateClassMutation } = useUpdateClass();
 
   const [editingClass, setEditingClass] = useState<ScheduleClass | null>(null);
+  const [showForm, setShowForm] = useState(false);
 
   const [classRouteDatas, setClassRouteDatas] = useState<Record<string, ClassRouteData | null>>({});
   const [title, setTitle] = useState("");
@@ -171,6 +173,7 @@ export default function ScheduleScreen() {
     setLocationLng(null);
     setLocationError(null);
     setEditingClass(null);
+    setShowForm(false);
   }, []);
 
   const onEditClass = useCallback((c: ScheduleClass) => {
@@ -186,6 +189,7 @@ export default function ScheduleScreen() {
     setLocationLat(c.destination_lat ?? null);
     setLocationLng(c.destination_lng ?? null);
     setLocationError(null);
+    setShowForm(true);
   }, []);
 
   const toggleDay = (d: string) => {
@@ -410,6 +414,107 @@ export default function ScheduleScreen() {
   }
 
   return (
+    <View style={styles.screenWrapper}>
+      <Modal
+        visible={showForm}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={resetForm}
+      >
+        <ScrollView contentContainerStyle={styles.modalContainer} keyboardShouldPersistTaps="handled">
+          <View style={styles.modalHeader}>
+            <Pressable onPress={resetForm} accessibilityLabel="Cancel" accessibilityRole="button">
+              <Text style={styles.modalCancel}>Cancel</Text>
+            </Pressable>
+            <Text style={styles.modalTitle}>{editingClass ? "Edit Class" : "Add Class"}</Text>
+            <View style={{ width: 60 }} />
+          </View>
+          <View style={styles.formCard}><View style={styles.form}>
+            {editingClass && (
+              <View style={styles.editingBanner}>
+                <Text style={styles.editingBannerText}>Editing: {editingClass.title}</Text>
+              </View>
+            )}
+            <Text style={styles.label}>Title</Text>
+            <TextInput
+              style={styles.input}
+              value={title}
+              onChangeText={(text) => setTitle(text.slice(0, 60))}
+              maxLength={60}
+              placeholder="e.g. CS 101"
+            />
+            <Text style={styles.label}>Days</Text>
+            <View style={styles.dayRow}>
+              {DAYS.map((d) => (
+                <Pressable
+                  key={d}
+                  style={[styles.dayBtn, days.includes(d) && styles.dayBtnOn]}
+                  onPress={() => toggleDay(d)}
+                >
+                  <Text style={[styles.dayText, days.includes(d) && styles.dayTextOn]}>{d.slice(0, 1)}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={styles.label}>Start time (HH:MM)</Text>
+            <TextInput
+              style={styles.input}
+              value={time}
+              onChangeText={setTime}
+              placeholder="09:00"
+              keyboardType="numbers-and-punctuation"
+            />
+            <Text style={styles.label}>End time (HH:MM, optional)</Text>
+            <TextInput
+              style={styles.input}
+              value={endTime}
+              onChangeText={setEndTime}
+              placeholder="10:15"
+              keyboardType="numbers-and-punctuation"
+            />
+            <Text style={styles.label}>Class location (address or place)</Text>
+            <TextInput
+              style={styles.input}
+              value={locationQuery}
+              onChangeText={onLocationQueryChange}
+              placeholder="e.g. Lincoln Hall, Illini Union, 934 Lundy Lane"
+              autoCorrect={false}
+            />
+            {locationSearching && <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginTop: 6 }} />}
+            {locationSuggestions.length > 0 && (
+              <View style={styles.suggestionList}>
+                {locationSuggestions.map((item, i) => (
+                  <Pressable
+                    key={`${item.type}-${item.place_id ?? item.building_id}-${i}`}
+                    style={[styles.suggestionItem, i < locationSuggestions.length - 1 && styles.suggestionSep]}
+                    onPress={() => onSelectLocationSuggestion(item)}
+                  >
+                    <Text style={styles.suggestionName} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    {(item.secondary_text || item.display_name) ? (
+                      <Text style={styles.suggestionSub} numberOfLines={1}>
+                        {item.secondary_text ?? item.display_name}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            {locationError && <Text style={styles.locationError}>{locationError}</Text>}
+            {locationDisplay != null && (
+              <Text style={styles.locationConfirmed}>✓ {locationDisplay}</Text>
+            )}
+            <Pressable
+              style={[styles.submitBtn, submitting && styles.submitDisabled]}
+              onPress={submit}
+              disabled={submitting}
+            >
+              {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{editingClass ? "Save" : "Add class"}</Text>}
+            </Pressable>
+          </View></View>
+        </ScrollView>
+      </Modal>
+
     <ScrollView
       contentContainerStyle={styles.container}
       refreshControl={
@@ -421,93 +526,6 @@ export default function ScheduleScreen() {
           <Text style={styles.successToastText}>{successToast}</Text>
         </View>
       )}
-
-      <View style={styles.formCard}><View style={styles.form}>
-        {editingClass && (
-          <View style={styles.editingBanner}>
-            <Text style={styles.editingBannerText}>Editing: {editingClass.title}</Text>
-            <Pressable onPress={resetForm} accessibilityLabel="Cancel editing">
-              <Text style={styles.editingBannerCancel}>Cancel</Text>
-            </Pressable>
-          </View>
-        )}
-        <Text style={styles.label}>Title</Text>
-        <TextInput
-          style={styles.input}
-          value={title}
-          onChangeText={(text) => setTitle(text.slice(0, 60))}
-          maxLength={60}
-          placeholder="e.g. CS 101"
-        />
-        <Text style={styles.label}>Days</Text>
-        <View style={styles.dayRow}>
-          {DAYS.map((d) => (
-            <Pressable
-              key={d}
-              style={[styles.dayBtn, days.includes(d) && styles.dayBtnOn]}
-              onPress={() => toggleDay(d)}
-            >
-              <Text style={[styles.dayText, days.includes(d) && styles.dayTextOn]}>{d.slice(0, 1)}</Text>
-            </Pressable>
-          ))}
-        </View>
-        <Text style={styles.label}>Start time (HH:MM)</Text>
-        <TextInput
-          style={styles.input}
-          value={time}
-          onChangeText={setTime}
-          placeholder="09:00"
-          keyboardType="numbers-and-punctuation"
-        />
-        <Text style={styles.label}>End time (HH:MM, optional)</Text>
-        <TextInput
-          style={styles.input}
-          value={endTime}
-          onChangeText={setEndTime}
-          placeholder="10:15"
-          keyboardType="numbers-and-punctuation"
-        />
-        <Text style={styles.label}>Class location (address or place)</Text>
-        <TextInput
-          style={styles.input}
-          value={locationQuery}
-          onChangeText={onLocationQueryChange}
-          placeholder="e.g. Lincoln Hall, Illini Union, 934 Lundy Lane"
-          autoCorrect={false}
-        />
-        {locationSearching && <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginTop: 6 }} />}
-        {locationSuggestions.length > 0 && (
-          <View style={styles.suggestionList}>
-            {locationSuggestions.map((item, i) => (
-              <Pressable
-                key={`${item.type}-${item.place_id ?? item.building_id}-${i}`}
-                style={[styles.suggestionItem, i < locationSuggestions.length - 1 && styles.suggestionSep]}
-                onPress={() => onSelectLocationSuggestion(item)}
-              >
-                <Text style={styles.suggestionName} numberOfLines={1}>
-                  {item.name}
-                </Text>
-                {(item.secondary_text || item.display_name) ? (
-                  <Text style={styles.suggestionSub} numberOfLines={1}>
-                    {item.secondary_text ?? item.display_name}
-                  </Text>
-                ) : null}
-              </Pressable>
-            ))}
-          </View>
-        )}
-        {locationError && <Text style={styles.locationError}>{locationError}</Text>}
-        {locationDisplay != null && (
-          <Text style={styles.locationConfirmed}>✓ {locationDisplay}</Text>
-        )}
-        <Pressable
-          style={[styles.submitBtn, submitting && styles.submitDisabled]}
-          onPress={submit}
-          disabled={submitting}
-        >
-          {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{editingClass ? "Save" : "Add class"}</Text>}
-        </Pressable>
-      </View></View>
 
       {/* List / Week toggle */}
       <View style={styles.viewToggleRow}>
@@ -546,7 +564,7 @@ export default function ScheduleScreen() {
         <Text style={styles.empty}>
           {viewMode === "week" && selectedWeekDay
             ? `No classes on ${DAY_LABELS[selectedWeekDay]}.`
-            : "No classes yet. Fill in the form above to add your first class."}
+            : "No classes yet. Tap + to add your first class."}
         </Text>
       ) : (
         filteredClasses.map((c) => (
@@ -611,12 +629,51 @@ export default function ScheduleScreen() {
         <Text style={styles.planWeekBtnText}>Plan my evening →</Text>
       </Pressable>
     </ScrollView>
+
+      {/* FAB — add class */}
+      <Pressable
+        style={styles.fab}
+        onPress={() => setShowForm(true)}
+        accessibilityLabel="Add class"
+        accessibilityRole="button"
+      >
+        <Text style={styles.fabText}>+</Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screenWrapper: { flex: 1 },
   centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surface },
-  container: { padding: 16, paddingBottom: 32 },
+  container: { padding: 16, paddingBottom: 100 },
+  fab: {
+    position: "absolute",
+    bottom: 24,
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: theme.colors.navy,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  fabText: { fontSize: 28, color: "#fff", lineHeight: 32, fontFamily: "DMSans_400Regular" },
+  modalContainer: { padding: 16, paddingBottom: 40 },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  modalTitle: { fontSize: 18, fontFamily: "DMSans_700Bold", color: theme.colors.navy },
+  modalCancel: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, width: 60 },
   formCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, marginBottom: 16, padding: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
   form: { marginBottom: 0 },
   label: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, marginTop: 12, marginBottom: 4 },
