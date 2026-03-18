@@ -7,6 +7,7 @@ import { getPendingAutoWalk, clearPendingAutoWalk } from "@/src/utils/autoWalkDe
 import { type ActivityEntry, addActivityEntry, calcStreak, dateStringForOffset, getActivityForDate, getActivityLog, todayDateString, WEEKLY_STEP_GOAL, getWeeklyStepGoal, setWeeklyStepGoal } from "@/src/storage/activityLog";
 import { computeAllInsights, getDismissedInsights, dismissInsight, type PatternInsights } from "@/src/utils/patternEngine";
 import PatternInsightCards from "@/src/components/PatternInsightCards";
+import { useMutation } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -50,9 +51,16 @@ export default function ActivityScreen() {
   const [topDestination, setTopDestination] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [reportLoading, setReportLoading] = useState(false);
-  const [reportText, setReportText] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
+  const {
+    mutate: generateReport,
+    isPending: reportLoading,
+    data: reportData,
+  } = useMutation({
+    mutationFn: (payload: Parameters<typeof fetchEodReport>[1]) =>
+      fetchEodReport(apiBaseUrl, payload, { apiKey: apiKey ?? undefined }),
+  });
+  const reportText = reportData?.report ?? null;
   const [pendingWalk, setPendingWalk] = useState<any>(null);
   const [patternInsights, setPatternInsights] = useState<PatternInsights | null>(null);
   const [dismissedInsightKeys, setDismissedInsightKeys] = useState<string[]>([]);
@@ -127,30 +135,24 @@ export default function ActivityScreen() {
     loadData();
   }, [loadData]);
 
-  const doGetReport = useCallback(async () => {
+  const doGetReport = useCallback(() => {
     setShowAiDisclosure(false);
-    setReportLoading(true);
-    setReportText(null);
     setReportError(null);
-    try {
-      const data = await fetchEodReport(
-        apiBaseUrl,
-        {
-          entries: todayEntries,
-          total_steps: todayEntries.reduce((s, e) => s + e.stepCount, 0),
-          total_calories: todayEntries.reduce((s, e) => s + e.caloriesBurned, 0),
-          total_distance_m: todayEntries.reduce((s, e) => s + e.distanceM, 0),
-        },
-        { apiKey: apiKey ?? undefined }
-      );
-      setReportText(data.report ?? "No report generated.");
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (e) {
-      setReportError(e instanceof Error ? e.message : "Failed to get report.");
-    } finally {
-      setReportLoading(false);
-    }
-  }, [apiBaseUrl, apiKey, todayEntries]);
+    const payload = {
+      entries: todayEntries,
+      total_steps: todayEntries.reduce((s, e) => s + e.stepCount, 0),
+      total_calories: todayEntries.reduce((s, e) => s + e.caloriesBurned, 0),
+      total_distance_m: todayEntries.reduce((s, e) => s + e.distanceM, 0),
+    };
+    generateReport(payload, {
+      onSuccess: () => {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      },
+      onError: (e) => {
+        setReportError(e instanceof Error ? e.message : "Failed to get report.");
+      },
+    });
+  }, [todayEntries, generateReport]);
 
   const onGetReport = useCallback(async () => {
     const consented = await AsyncStorage.getItem(AI_DISCLOSURE_KEY);
