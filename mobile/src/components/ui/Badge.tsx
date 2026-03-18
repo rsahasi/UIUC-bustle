@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 
 interface BadgeProps {
   label: string;
-  variant?: "live" | "route" | "info";
+  variant?: "live" | "route" | "info" | "delayed" | "early";
   size?: "sm" | "md";
 }
 
@@ -31,5 +31,13 @@ const styles = {
   info: StyleSheet.create({
     container: { backgroundColor: theme.colors.surfaceAlt, borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.colors.border },
     label: { color: theme.colors.textSecondary },
+  }),
+  delayed: StyleSheet.create({
+    container: { backgroundColor: "#EF4444", borderRadius: theme.radius.sm },
+    label: { color: "#fff" },
+  }),
+  early: StyleSheet.create({
+    container: { backgroundColor: "#22C55E", borderRadius: theme.radius.sm },
+    label: { color: "#fff" },
   }),
 };

@@ -16,6 +16,7 @@ import type { ClassRouteData } from "@/src/storage/classSummaryCache";
 import { buildRouteSummary, formatOptionLabel } from "@/src/utils/routeFormatting";
 import { markClassAsWalkedToday } from "@/src/storage/walkedClassToday";
 import { addRecentSearch, clearRecentSearches, getRecentSearches, type RecentSearch } from "@/src/storage/recentSearches";
+import { Badge } from "@/src/components/ui/Badge";
 import { arriveByIsoToday } from "@/src/utils/arriveBy";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import { getNextClassToday } from "@/src/utils/nextClass";
@@ -1346,6 +1347,12 @@ export default function HomeScreen() {
                       departuresFetchedAt != null && Date.now() - departuresFetchedAt > 2 * 60 * 1000
                         ? <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>
                         : <LiveBadge />
+                    )}
+                    {d.delay_status === "delayed" && d.delay_mins != null && (
+                      <Badge label={`+${d.delay_mins}m`} variant="delayed" size="sm" />
+                    )}
+                    {d.delay_status === "early" && d.delay_mins != null && (
+                      <Badge label={`${Math.abs(d.delay_mins)}m early`} variant="early" size="sm" />
                     )}
                   </View>
                 ))

@@ -155,3 +155,76 @@ def test_normalize_departures_response_empty():
     out = _normalize_departures_response("X", {})
     assert out["stop_id"] == "X"
     assert out["departures"] == []
+
+
+# --- Delay computation tests ---
+
+
+def test_normalize_departure_delayed():
+    """When expected is 3+ mins after scheduled, delay_status is 'delayed'."""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    scheduled = (now + datetime.timedelta(minutes=5)).isoformat()
+    expected = (now + datetime.timedelta(minutes=8)).isoformat()
+    raw = {
+        "route": {"route_short_name": "5", "route_id": "5"},
+        "headsign": "Lincoln Square",
+        "expected": expected,
+        "scheduled": scheduled,
+        "is_monitored": True,
+    }
+    result = _normalize_departure(raw)
+    assert result["delay_mins"] == 3
+    assert result["delay_status"] == "delayed"
+    assert result["scheduled_mins"] is not None
+
+
+def test_normalize_departure_on_time():
+    """When expected ≈ scheduled (delta < 3), delay_status is 'on_time'."""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    scheduled = (now + datetime.timedelta(minutes=10)).isoformat()
+    expected = (now + datetime.timedelta(minutes=11)).isoformat()
+    raw = {
+        "route": {"route_short_name": "22"},
+        "headsign": "Research Park",
+        "expected": expected,
+        "scheduled": scheduled,
+        "is_monitored": True,
+    }
+    result = _normalize_departure(raw)
+    assert result["delay_mins"] == 1
+    assert result["delay_status"] == "on_time"
+
+
+def test_normalize_departure_early():
+    """When expected is 2+ mins before scheduled, delay_status is 'early'."""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    scheduled = (now + datetime.timedelta(minutes=10)).isoformat()
+    expected = (now + datetime.timedelta(minutes=7)).isoformat()
+    raw = {
+        "route": {"route_short_name": "12"},
+        "headsign": "Downtown",
+        "expected": expected,
+        "scheduled": scheduled,
+        "is_monitored": False,
+    }
+    result = _normalize_departure(raw)
+    assert result["delay_mins"] == -3
+    assert result["delay_status"] == "early"
+
+
+def test_normalize_departure_no_scheduled():
+    """When scheduled field is absent, delay fields are all None."""
+    raw = {
+        "route": {"route_short_name": "5"},
+        "headsign": "Lincoln Square",
+        "expected_mins": 7,
+        "expected": "2025-02-20T14:32:00",
+        "is_monitored": True,
+    }
+    result = _normalize_departure(raw)
+    assert result["scheduled_mins"] is None
+    assert result["delay_mins"] is None
+    assert result["delay_status"] is None

@@ -17,6 +17,9 @@ export interface DepartureItem {
   expected_mins: number;
   expected_time_iso: string | null;
   is_realtime: boolean;
+  scheduled_mins?: number | null;
+  delay_mins?: number | null;
+  delay_status?: "on_time" | "delayed" | "early" | null;
 }
 
 export interface DeparturesResponse {
