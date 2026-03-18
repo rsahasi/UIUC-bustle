@@ -1348,10 +1348,10 @@ export default function HomeScreen() {
                         ? <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>
                         : <LiveBadge />
                     )}
-                    {d.delay_status === "delayed" && d.delay_mins != null && (
+                    {d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3 && (
                       <Badge label={`+${d.delay_mins}m`} variant="delayed" size="sm" />
                     )}
-                    {d.delay_status === "early" && d.delay_mins != null && (
+                    {d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2 && (
                       <Badge label={`${Math.abs(d.delay_mins)}m early`} variant="early" size="sm" />
                     )}
                   </View>
