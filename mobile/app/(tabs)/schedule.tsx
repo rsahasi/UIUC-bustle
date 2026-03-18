@@ -76,7 +76,6 @@ export default function ScheduleScreen() {
   const { mutate: createClassMutation } = useCreateClass();
 
   const [classRouteDatas, setClassRouteDatas] = useState<Record<string, ClassRouteData | null>>({});
-  const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [days, setDays] = useState<string[]>([]);
   const [time, setTime] = useState("09:00");
@@ -368,7 +367,6 @@ export default function ScheduleScreen() {
           <Text style={styles.successToastText}>{successToast}</Text>
         </View>
       )}
-      {error && <Text style={styles.error}>{error}</Text>}
 
       <View style={styles.formCard}><View style={styles.form}>
         <Text style={styles.label}>Title</Text>
@@ -550,7 +548,6 @@ export default function ScheduleScreen() {
 const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surface },
   container: { padding: 16, paddingBottom: 32 },
-  error: { color: theme.colors.error, fontFamily: "DMSans_400Regular", fontSize: 14, marginBottom: 12 },
   formCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, marginBottom: 16, padding: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
   form: { marginBottom: 0 },
   label: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, marginTop: 12, marginBottom: 4 },
