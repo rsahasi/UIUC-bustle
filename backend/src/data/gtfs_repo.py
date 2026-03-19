@@ -74,7 +74,9 @@ def find_connecting_trips(
         conn.row_factory = sqlite3.Row
         # Pad after_time to HH:MM:SS for string comparison (GTFS times are zero-padded)
         padded_after = after_time.strip() if after_time.strip() else "00:00:00"
-        # Find trips with both stops, origin before dest, departing at or after after_time
+        # Find trips with both stops, origin before dest, departing at or after after_time.
+        # MTD real-time stop IDs (e.g. "GRGMUM") are the prefix of GTFS stop IDs (e.g. "GRGMUM:1"),
+        # so use LIKE prefix matching to handle both formats.
         cur = conn.execute(
             """
             SELECT
@@ -86,9 +88,9 @@ def find_connecting_trips(
                 o.stop_sequence AS o_seq,
                 d.stop_sequence AS d_seq
             FROM gtfs_stop_times o
-            JOIN gtfs_stop_times d ON d.trip_id = o.trip_id AND d.stop_id = ? AND d.stop_sequence > o.stop_sequence
+            JOIN gtfs_stop_times d ON d.trip_id = o.trip_id AND d.stop_id LIKE ? || '%' AND d.stop_sequence > o.stop_sequence
             JOIN gtfs_trips t ON t.trip_id = o.trip_id
-            WHERE o.stop_id = ? AND o.departure_time >= ?
+            WHERE o.stop_id LIKE ? || '%' AND o.departure_time >= ?
             ORDER BY o.departure_time
             LIMIT 10
             """,
@@ -127,17 +129,23 @@ def get_stops_for_trip_between(
         return []
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        # Get sequence numbers for from/to stops
+        # Get sequence numbers for from/to stops.
+        # Use LIKE prefix matching so MTD IDs (e.g. "GRGMUM") match GTFS IDs (e.g. "GRGMUM:1").
         cur = conn.execute(
-            "SELECT stop_id, stop_sequence FROM gtfs_stop_times WHERE trip_id = ? AND stop_id IN (?, ?)",
+            "SELECT stop_id, stop_sequence FROM gtfs_stop_times WHERE trip_id = ? AND (stop_id LIKE ? || '%' OR stop_id LIKE ? || '%')",
             (trip_id, from_stop_id, to_stop_id),
         )
         rows = cur.fetchall()
-        seq_map: dict[str, int] = {}
+        from_seq: int | None = None
+        to_seq: int | None = None
         for r in rows:
-            seq_map[r["stop_id"]] = r["stop_sequence"]
-        from_seq = seq_map.get(from_stop_id)
-        to_seq = seq_map.get(to_stop_id)
+            sid, seq = r["stop_id"], r["stop_sequence"]
+            if sid == from_stop_id or sid.startswith(from_stop_id + ":"):
+                if from_seq is None or seq < from_seq:
+                    from_seq = seq
+            if sid == to_stop_id or sid.startswith(to_stop_id + ":"):
+                if to_seq is None or seq < to_seq:
+                    to_seq = seq
         if from_seq is None or to_seq is None:
             return []
         cur2 = conn.execute(

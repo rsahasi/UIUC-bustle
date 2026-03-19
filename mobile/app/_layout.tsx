@@ -132,10 +132,11 @@ export default function RootLayout() {
   return (
     <QueryClientProvider client={queryClient}>
       <PostHogProvider
-        apiKey={posthogKey || ""}
+        apiKey={posthogKey || "placeholder"}
         options={{
           host: "https://us.i.posthog.com",
           disabled: !posthogKey || process.env.NODE_ENV === "test",
+          captureScreenViews: false,
         }}
       >
         <AnalyticsIdentifier userId={user?.id} />

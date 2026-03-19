@@ -473,15 +473,6 @@ export default function MapScreen() {
     );
   }
 
-  if (status === "loading") {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={theme.colors.navy} />
-        <Text style={styles.centeredText}>Getting location and nearby stops…</Text>
-      </View>
-    );
-  }
-
   if (status === "denied") {
     return (
       <View style={styles.centered}>
@@ -628,6 +619,11 @@ export default function MapScreen() {
       </MapView>
 
       {/* Search bar */}
+      {status === "loading" && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="small" color={theme.colors.navy} />
+        </View>
+      )}
       <View style={styles.searchContainer}>
         <View style={styles.searchRow}>
           <Search size={16} color={theme.colors.textMuted} style={{ marginLeft: 12, marginRight: 4 }} />
@@ -803,6 +799,15 @@ const styles = StyleSheet.create({
   retryBtnSecondary: { backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.navy, marginTop: 8 },
   retryBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_600SemiBold" },
   retryBtnSecondaryText: { color: theme.colors.navy, fontFamily: "DMSans_600SemiBold" },
+  loadingOverlay: {
+    position: "absolute",
+    top: 70,
+    alignSelf: "center",
+    backgroundColor: "rgba(255,255,255,0.85)",
+    borderRadius: 20,
+    padding: 8,
+    zIndex: 10,
+  },
   searchContainer: {
     position: "absolute",
     top: 16,

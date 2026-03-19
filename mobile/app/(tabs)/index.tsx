@@ -1153,6 +1153,13 @@ export default function HomeScreen() {
         </View>
       )}
 
+      {/* Section divider — separates search results from class schedule block */}
+      <View style={styles.scheduleSectionDivider}>
+        <View style={styles.scheduleSectionLine} />
+        <Text style={styles.scheduleSectionLabel}>Your schedule</Text>
+        <View style={styles.scheduleSectionLine} />
+      </View>
+
       {/* Next up card */}
       <View style={styles.nextUpCard}>
         <View style={styles.nextUpLabelRow}>
@@ -1161,11 +1168,24 @@ export default function HomeScreen() {
         </View>
         {nextUp ? (
           <>
-            <Text style={styles.nextUpText}>{nextUp.title}</Text>
-            <Text style={styles.nextUpTime}>{nextUp.start_time_local}</Text>
-            <Pressable style={styles.walkingToClassBtn} onPress={onWalkingToClass}>
-              <Text style={styles.walkingToClassBtnText}>I'm walking to this class</Text>
-            </Pressable>
+            <View style={styles.nextUpBodyRow}>
+              <View style={styles.nextUpClassInfo}>
+                <Text style={styles.nextUpText}>{nextUp.title}</Text>
+                <Text style={styles.nextUpTime}>{nextUp.start_time_local}</Text>
+                <Pressable
+                  style={styles.walkingToClassBtn}
+                  onPress={() => scrollRef.current?.scrollTo({ y: recommendationsY.current, animated: true })}
+                >
+                  <Text style={styles.walkingToClassBtnText}>How are you getting there? →</Text>
+                </Pressable>
+              </View>
+              {recommendations.length > 0 && (
+                <View style={styles.nextUpWalkBadge}>
+                  <Text style={styles.nextUpWalkBadgeNum}>{sumWalkingMinutes(recommendations[0].steps)}</Text>
+                  <Text style={styles.nextUpWalkBadgeUnit}>min{"\n"}walking</Text>
+                </View>
+              )}
+            </View>
           </>
         ) : (
           <>
@@ -1179,16 +1199,6 @@ export default function HomeScreen() {
           </>
         )}
       </View>
-
-      {/* Activity row */}
-      {nextUp && recommendations.length > 0 && (
-        <View style={styles.activityRow}>
-          <Text style={styles.activityLabel}>Activity</Text>
-          <Text style={styles.activityText}>
-            ~{sumWalkingMinutes(recommendations[0].steps)} min walking (this trip)
-          </Text>
-        </View>
-      )}
 
       {nextUp && recommendations.length === 0 && (
         <View style={styles.recommendationsUnavailable}>
@@ -1227,8 +1237,8 @@ export default function HomeScreen() {
             recommendationsY.current = e.nativeEvent.layout.y;
           }}
         >
-          <View style={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg }}>
-            <Text style={[styles.sectionTitle, { marginBottom: 0, paddingHorizontal: 0, paddingTop: 0 }]}>Get there</Text>
+          <View style={styles.getThereHeader}>
+            <Text style={styles.getThereTitle}>Get there</Text>
             <Text style={styles.sectionSubtitle}>{nextUp.title}</Text>
           </View>
           {/* Sort toggle for class recommendations */}
@@ -1310,7 +1320,7 @@ export default function HomeScreen() {
       <Text style={styles.stopsSectionTitle}>Nearby stops</Text>
       {stops.length > 0 && Object.keys(departuresByStop).every((id) => (departuresByStop[id]?.length ?? 0) === 0) && (
         <View style={styles.mtdHint}>
-          <Text style={styles.mtdHintText}>Live bus times need MTD_API_KEY on the server. Set it in the backend .env to see departures.</Text>
+          <Text style={styles.mtdHintText}>No upcoming departures at nearby stops. Buses may not be running at this time.</Text>
         </View>
       )}
       {stops.length === 0 ? (
@@ -1427,47 +1437,66 @@ const styles = StyleSheet.create({
   searchBtnText: { color: "#fff", fontFamily: "DMSans_600SemiBold", fontSize: 16 },
   searchError: { color: theme.colors.error, fontFamily: "DMSans_400Regular", fontSize: 13, marginTop: 8 },
 
+  // Schedule section divider (separates search results from class block)
+  scheduleSectionDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: 20,
+    marginTop: 28,
+    marginBottom: 20,
+    gap: 10,
+  },
+  scheduleSectionLine: { flex: 1, height: 1, backgroundColor: theme.colors.border },
+  scheduleSectionLabel: {
+    fontFamily: "DMSans_600SemiBold",
+    fontSize: 10,
+    letterSpacing: 1.2,
+    textTransform: "uppercase" as const,
+    color: theme.colors.textMuted,
+  },
+
   // Next up card
-  nextUpLabelRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 },
+  nextUpLabelRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
   nextUpCard: {
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.lg,
     marginHorizontal: 16,
-    marginTop: 14,
-    marginBottom: 4,
-    padding: 16,
+    marginTop: 0,
+    marginBottom: 0,
+    padding: 18,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 3,
     borderLeftWidth: 4,
     borderLeftColor: theme.colors.orange,
   },
-  nextUpLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 10, letterSpacing: 1, textTransform: "uppercase" as const, color: theme.colors.orange },
-  nextUpText: { fontFamily: "DMSans_700Bold", fontSize: 17, color: theme.colors.navy },
-  nextUpTime: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.textSecondary, marginTop: 1 },
-  walkingToClassBtn: { marginTop: 8, alignSelf: "flex-start" },
+  nextUpLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 10, letterSpacing: 1.2, textTransform: "uppercase" as const, color: theme.colors.orange },
+  nextUpBodyRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  nextUpClassInfo: { flex: 1 },
+  nextUpText: { fontFamily: "DMSans_700Bold", fontSize: 18, color: theme.colors.navy },
+  nextUpTime: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.textSecondary, marginTop: 2 },
+  walkingToClassBtn: { marginTop: 10, alignSelf: "flex-start" },
   walkingToClassBtnText: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange },
-
-  // Activity row
-  activityRow: {
-    backgroundColor: theme.colors.surface,
-    padding: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    flexDirection: "row",
+  nextUpWalkBadge: {
+    backgroundColor: "#FFF3EE",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
+    minWidth: 64,
   },
-  activityLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 11, letterSpacing: 0.8, textTransform: "uppercase" as const, color: theme.colors.textMuted },
-  activityText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary },
+  nextUpWalkBadgeNum: { fontFamily: "DMSans_700Bold", fontSize: 24, color: theme.colors.orange, lineHeight: 26 },
+  nextUpWalkBadgeUnit: { fontFamily: "DMSans_400Regular", fontSize: 10, color: theme.colors.textMuted, textAlign: "center" as const, lineHeight: 13, marginTop: 2 },
 
   // Recommendations section
   recommendationsSection: { marginBottom: 0 },
   sectionTitle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 20, color: theme.colors.navy, marginBottom: 2, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg },
   sectionSubtitle: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, paddingHorizontal: theme.spacing.lg, marginBottom: 6 },
+  getThereHeader: { paddingHorizontal: theme.spacing.lg, paddingTop: 32, paddingBottom: 2 },
+  getThereTitle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 22, color: theme.colors.navy, marginBottom: 2 },
 
   // Option card — transit board redesign
   optionCard: {
