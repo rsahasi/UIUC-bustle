@@ -9,7 +9,7 @@ import type { AutocompleteResult } from "@/src/api/client";
 import type { Building, ScheduleClass } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { theme } from "@/src/constants/theme";
-import { Bell, BellOff, Pencil, Trash2 } from "lucide-react-native";
+import { Bell, BellOff, CalendarDays, Pencil, Trash2 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
@@ -626,6 +626,7 @@ export default function ScheduleScreen() {
         ))
       )}
       <Pressable style={styles.planWeekBtn} onPress={() => router.push('/after-class-planner')}>
+        <CalendarDays size={15} color={theme.colors.orange} />
         <Text style={styles.planWeekBtnText}>Plan my evening →</Text>
       </Pressable>
     </ScrollView>
@@ -764,7 +765,7 @@ const styles = StyleSheet.create({
   weekDayTextActive: { color: theme.colors.surface },
   listTitle: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, marginBottom: 8 },
   empty: { fontFamily: "DMSans_400Regular", fontSize: 14, color: theme.colors.textSecondary },
-  card: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, padding: 12, marginBottom: 8, borderLeftWidth: 4, borderLeftColor: theme.colors.navy, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
+  card: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, padding: 12, marginBottom: 8, borderLeftWidth: 4, borderLeftColor: theme.colors.orange, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   classTitle: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, flex: 1 },
   cardActions: { flexDirection: "row", alignItems: "center", gap: 4 },
@@ -781,7 +782,7 @@ const styles = StyleSheet.create({
   transitOverlay: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: theme.colors.border },
   transitOverlayText: { fontSize: 12, fontFamily: 'DMSans_500Medium', color: theme.colors.textSecondary },
   transitStatusDot: { width: 8, height: 8, borderRadius: 4 },
-  planWeekBtn: { marginTop: 20, padding: 14, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.orange, alignItems: 'center' },
+  planWeekBtn: { marginTop: 20, padding: 14, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.orange, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 },
   planWeekBtnText: { fontSize: 15, fontFamily: 'DMSans_600SemiBold', color: theme.colors.orange },
   successToast: { backgroundColor: theme.colors.success, borderRadius: theme.radius.md, padding: 12, marginBottom: 12, alignItems: 'center' },
   successToastText: { color: '#fff', fontSize: 14, fontFamily: 'DMSans_600SemiBold' },

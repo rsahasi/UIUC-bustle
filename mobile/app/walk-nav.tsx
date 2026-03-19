@@ -907,9 +907,9 @@ const styles = StyleSheet.create({
   },
   hudRow: { flexDirection: "row", justifyContent: "space-around", marginBottom: 8 },
   hudCell: { alignItems: "center" },
-  hudLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", marginBottom: 2 },
+  hudLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", marginBottom: 2 },
   hudValue: { fontSize: 20, fontFamily: "DMSans_700Bold", color: "#fff" },
-  hudMode: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.8)", textAlign: "center", marginBottom: 4 },
+  hudMode: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", textAlign: "center", marginBottom: 4 },
   hudDest: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange, textAlign: "center" },
   cancelBtn: {
     position: "absolute",
@@ -965,9 +965,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   modalBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_700Bold" },
-  entranceNotice: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", marginTop: 2, textAlign: "center" },
+  entranceNotice: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.55)", marginTop: 2, textAlign: "center" },
   paceWarning: { fontSize: 12, fontFamily: "DMSans_600SemiBold", color: theme.colors.error, backgroundColor: "rgba(220,38,38,0.15)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, marginTop: 4, textAlign: "center" },
-  paceAhead: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.6)", marginTop: 2, textAlign: "center" },
+  paceAhead: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", marginTop: 2, textAlign: "center" },
   pinWrapper: { alignItems: "center" },
   pinBulb: {
     width: 20,
