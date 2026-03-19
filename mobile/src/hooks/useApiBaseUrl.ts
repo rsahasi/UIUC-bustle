@@ -9,7 +9,9 @@ export function useApiBaseUrl(): {
   setApiKey: (key: string | null) => Promise<void>;
   refresh: () => Promise<void>;
 } {
-  const [apiBaseUrl, setState] = useState<string>("http://localhost:8000");
+  const [apiBaseUrl, setState] = useState<string>(
+    (process.env.EXPO_PUBLIC_API_BASE_URL?.trim() ?? "").replace(/\/$/, "") || "http://localhost:8000"
+  );
   const [apiKey, setApiKeyState] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {

@@ -7,36 +7,70 @@
     "scheme": "uiuc-bus",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#13294B"
+    },
     "ios": {
-      "bundleIdentifier": "com.uiuc.bus",
+      "supportsTablet": false,
+      "bundleIdentifier": "com.uiucbustle.app",
+      "buildNumber": "1",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Used to show nearby bus stops.",
+        "NSLocationWhenInUseUsageDescription": "UIUC Bustle uses your location to show nearby bus stops and departures.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "UIUC Bustle uses your location in the background to detect walks and provide timely bus alerts.",
+        "NSLocationAlwaysUsageDescription": "UIUC Bustle uses your location in the background to detect walks and provide timely bus alerts.",
+        "NSMotionUsageDescription": "UIUC Bustle tracks your steps to log walking activity and estimate calories burned.",
         "UIBackgroundModes": [
-          "fetch"
+          "fetch",
+          "location"
         ]
       }
     },
     "android": {
-      "package": "com.uiuc.bus",
+      "package": "com.uiucbustle.app",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#13294B"
+      },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION"
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "ACTIVITY_RECOGNITION"
       ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-router",
       "expo-background-fetch",
-      "expo-location",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "UIUC Bustle uses your location to show nearby bus stops and detect walks.",
+          "locationAlwaysPermission": "UIUC Bustle uses background location to detect walks and send timely bus alerts.",
+          "locationWhenInUsePermission": "UIUC Bustle uses your location to show nearby bus stops and departures."
+        }
+      ],
       [
         "expo-notifications",
         {
-          "icon": "",
-          "color": "#13294b",
+          "icon": "./assets/icon.png",
+          "color": "#13294B",
           "sounds": []
         }
       ],
       "expo-secure-store",
       "@sentry/react-native/expo"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "uiuc-bus-mobile"
+      }
+    }
   }
 }

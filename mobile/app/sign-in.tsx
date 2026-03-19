@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Linking,
 } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import { supabase } from "@/src/auth/supabaseClient";
@@ -106,6 +107,17 @@ export default function SignInScreen() {
         <Text style={styles.successText}>Check your email for a sign-in link.</Text>
       )}
       {error && <Text style={styles.errorText}>{error}</Text>}
+
+      <Text style={styles.privacyText}>
+        By signing in you agree to our{" "}
+        <Text
+          style={styles.privacyLink}
+          onPress={() => Linking.openURL("https://your-privacy-policy-url.com")}
+        >
+          Privacy Policy
+        </Text>
+        .
+      </Text>
     </View>
   );
 }
@@ -178,5 +190,17 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontFamily: "DMSans_400Regular",
     textAlign: "center",
+  },
+  privacyText: {
+    position: "absolute",
+    bottom: 36,
+    color: "#888",
+    fontFamily: "DMSans_400Regular",
+    fontSize: 12,
+    textAlign: "center",
+  },
+  privacyLink: {
+    color: "#aaa",
+    textDecorationLine: "underline",
   },
 });
