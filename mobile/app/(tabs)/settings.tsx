@@ -3,6 +3,7 @@ import { resetAllPatterns } from "@/src/utils/patternEngine";
 import { theme } from "@/src/constants/theme";
 import { WALKING_MODES } from "@/src/constants/walkingMode";
 import type { WalkingModeId } from "@/src/constants/walkingMode";
+import { useAuth } from "@/src/auth/useAuth";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
@@ -35,6 +36,7 @@ import {
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const { user, signOut } = useAuth();
   const { apiBaseUrl, setApiBaseUrl, apiKey, setApiKey } = useApiBaseUrl();
   const { enabled: classNotificationsEnabled, setEnabled: setClassNotificationsEnabled } =
     useClassNotificationsEnabled();
@@ -119,6 +121,17 @@ export default function SettingsScreen() {
     [apiBaseUrl, apiKey, setClassNotificationsEnabled]
   );
 
+  const handleSignOut = useCallback(() => {
+    Alert.alert(
+      "Sign out",
+      "Are you sure you want to sign out?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Sign out", style: "destructive", onPress: () => signOut() },
+      ]
+    );
+  }, [signOut]);
+
   const isValidApiUrl = useCallback((value: string) => {
     const url = value.trim().replace(/\/$/, "");
     if (!url) return false;
@@ -171,6 +184,29 @@ export default function SettingsScreen() {
       style={{ flex: 1, backgroundColor: theme.colors.surfaceAlt }}
     >
     <ScrollView contentContainerStyle={styles.container}>
+      <Text style={styles.sectionHeader}>Account</Text>
+      <View style={styles.sectionCard}>
+        <View style={styles.accountRow}>
+          <View style={styles.accountAvatar}>
+            <Text style={styles.accountAvatarText}>
+              {(user?.email?.[0] ?? "?").toUpperCase()}
+            </Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.accountEmail}>{user?.email ?? "—"}</Text>
+            <Text style={styles.accountHint}>Signed in via Supabase</Text>
+          </View>
+        </View>
+        <Pressable
+          style={styles.signOutBtn}
+          onPress={handleSignOut}
+          accessibilityLabel="Sign out"
+          accessibilityRole="button"
+        >
+          <Text style={styles.signOutBtnText}>Sign out</Text>
+        </Pressable>
+      </View>
+
       <Text style={styles.sectionHeader}>Connection</Text>
       <View style={styles.sectionCard}>
       <Text style={styles.label}>API base URL</Text>
@@ -568,4 +604,20 @@ const styles = StyleSheet.create({
   aboutLabel: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.text },
   aboutValue: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.textSecondary },
   aboutLink: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: theme.colors.navy },
+  accountRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
+  accountAvatar: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: theme.colors.navy,
+    justifyContent: "center", alignItems: "center",
+  },
+  accountAvatarText: { color: "#fff", fontSize: 18, fontFamily: "DMSans_700Bold" },
+  accountEmail: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
+  accountHint: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 2 },
+  signOutBtn: {
+    padding: 14, borderRadius: theme.radius.md,
+    backgroundColor: "rgba(220, 38, 38, 0.08)",
+    borderWidth: 1, borderColor: theme.colors.error,
+    alignItems: "center",
+  },
+  signOutBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.error },
 });

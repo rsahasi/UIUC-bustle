@@ -17,7 +17,7 @@ def get_current_user(request: Request) -> str:
     """
     secret = get_settings().supabase_jwt_secret
     if not secret:
-        raise HTTPException(status_code=503, detail="Auth not configured")
+        raise HTTPException(status_code=503, detail="Auth not configured — set SUPABASE_JWT_SECRET environment variable")
     token = _extract_bearer(request)
     try:
         payload = jwt.decode(

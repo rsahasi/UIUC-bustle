@@ -3,8 +3,10 @@ import "@/src/tasks/notificationRefresh"; // registers defineTask at module leve
 import { registerNotificationRefreshTask } from "@/src/tasks/notificationRefresh";
 import { AUTO_WALK_TASK_NAME } from '@/src/utils/autoWalkDetect';
 import { refreshWidgetData } from '@/src/tasks/widgetRefresh';
+import { supabase } from "@/src/auth/supabaseClient";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
+import * as ExpoLinking from 'expo-linking';
 import {
   DMSans_400Regular,
   DMSans_500Medium,
@@ -116,6 +118,25 @@ export default function RootLayout() {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, authLoading]);
+
+  useEffect(() => {
+    // Handle deep links (magic link callback)
+    const handleUrl = async ({ url }: { url: string }) => {
+      if (url.includes('auth/callback')) {
+        const { error } = await supabase.auth.exchangeCodeForSession(url);
+        if (error) console.warn('Magic link exchange error:', error.message);
+      }
+    };
+
+    // Handle the case where the app was opened from a cold start via the link
+    ExpoLinking.getInitialURL().then((url) => {
+      if (url) handleUrl({ url });
+    });
+
+    // Handle the case where the app was already open (foreground)
+    const sub = ExpoLinking.addEventListener('url', handleUrl);
+    return () => sub.remove();
+  }, []);
 
   if (!fontsLoaded || authLoading) {
     return null; // SplashScreen still showing
