@@ -17,6 +17,7 @@ import { buildRouteSummary, formatOptionLabel } from "@/src/utils/routeFormattin
 import { markClassAsWalkedToday } from "@/src/storage/walkedClassToday";
 import { addRecentSearch, clearRecentSearches, getRecentSearches, type RecentSearch } from "@/src/storage/recentSearches";
 import { Badge } from "@/src/components/ui/Badge";
+import { DepartureRow } from "@/src/components/ui/DepartureRow";
 import { arriveByIsoToday } from "@/src/utils/arriveBy";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import { getNextClassToday } from "@/src/utils/nextClass";
@@ -1333,31 +1334,34 @@ export default function HomeScreen() {
               {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
                 <Text style={styles.depText}>No departures</Text>
               ) : (
-                (departuresByStop[stop.stop_id] ?? []).map((d, i) => (
-                  <View key={i} style={styles.depRow}>
-                    <Pressable
-                      onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
-                      accessibilityLabel={`Track route ${d.route}`}
-                    >
-                      <View style={styles.depRouteBadge}>
-                        <Text style={styles.depRouteBadgeText}>{d.route}</Text>
-                      </View>
-                    </Pressable>
-                    <Text style={styles.depHeadsign} numberOfLines={1}>{d.headsign || "—"}</Text>
-                    <Text style={styles.depCountdown}>{d.expected_mins} min</Text>
-                    {d.is_realtime && (
-                      departuresFetchedAt != null && Date.now() - departuresFetchedAt > 2 * 60 * 1000
-                        ? <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>
-                        : <LiveBadge />
-                    )}
-                    {d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3 && (
-                      <Badge label={`+${d.delay_mins}m`} variant="delayed" size="sm" />
-                    )}
-                    {d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2 && (
-                      <Badge label={`${Math.abs(d.delay_mins)}m early`} variant="early" size="sm" />
-                    )}
-                  </View>
-                ))
+                (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
+                  const isStale = d.is_realtime && departuresFetchedAt != null && Date.now() - departuresFetchedAt > 2 * 60 * 1000;
+                  const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
+                  const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
+                  const hasExtras = isStale || showDelayed || showEarly;
+                  return (
+                    <View key={i}>
+                      <Pressable
+                        onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
+                        accessibilityLabel={`Track route ${d.route}`}
+                      >
+                        <DepartureRow
+                          route={d.route}
+                          headsign={d.headsign || "—"}
+                          expectedMins={d.expected_mins}
+                          isRealtime={d.is_realtime && !isStale}
+                        />
+                      </Pressable>
+                      {hasExtras && (
+                        <View style={styles.depExtrasRow}>
+                          {isStale && <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>}
+                          {showDelayed && <Badge label={`+${d.delay_mins}m`} variant="delayed" size="sm" />}
+                          {showEarly && <Badge label={`${Math.abs(d.delay_mins!)}m early`} variant="early" size="sm" />}
+                        </View>
+                      )}
+                    </View>
+                  );
+                })
               )}
             </View>
           </View>
@@ -1376,7 +1380,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceAlt,
   },
   centeredText: { marginTop: 12, fontFamily: "DMSans_400Regular", fontSize: 15, color: theme.colors.textSecondary },
-  scrollContent: { paddingBottom: 40, backgroundColor: "#F0F2F5" },
+  scrollContent: { paddingBottom: 40, backgroundColor: theme.colors.surfaceAlt },
   greetingBlock: { backgroundColor: theme.colors.surface, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
   greeting: { fontSize: 26, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy, letterSpacing: -0.3 },
   greetingDate: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 3 },
@@ -1395,13 +1399,13 @@ const styles = StyleSheet.create({
   searchInputWrapper: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F0F2F5",
-    borderRadius: 14,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.md,
     height: 52,
     paddingHorizontal: 14,
     marginBottom: 10,
     borderWidth: 1.5,
-    borderColor: "#E4E8EF",
+    borderColor: theme.colors.border,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
@@ -1427,7 +1431,7 @@ const styles = StyleSheet.create({
   nextUpLabelRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 },
   nextUpCard: {
     backgroundColor: theme.colors.surface,
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     marginHorizontal: 16,
     marginTop: 14,
     marginBottom: 4,
@@ -1468,7 +1472,7 @@ const styles = StyleSheet.create({
   // Option card — transit board redesign
   optionCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     marginHorizontal: 16,
     marginBottom: 10,
     marginTop: 0,
@@ -1512,7 +1516,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.orange,
     paddingHorizontal: 18,
     paddingVertical: 9,
-    borderRadius: 20,
+    borderRadius: theme.radius.md,
   },
   startBtnInlineText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff" },
 
@@ -1531,7 +1535,7 @@ const styles = StyleSheet.create({
   stopsSectionTitle: { fontFamily: "DMSans_700Bold", fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginBottom: 0, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 10 },
   card: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     marginHorizontal: 16,
     marginBottom: 10,
     overflow: "hidden",
@@ -1547,18 +1551,7 @@ const styles = StyleSheet.create({
   favoriteStopBtnText: { fontFamily: "DMSans_500Medium", fontSize: 16, color: "rgba(255,255,255,0.6)" },
   distance: { fontFamily: "DMSans_400Regular", fontSize: 11, color: "rgba(255,255,255,0.55)", marginTop: 0 },
   departures: { paddingHorizontal: 14, paddingVertical: 4 },
-  depRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: "#F3F4F6" },
-  depRouteBadge: {
-    backgroundColor: theme.colors.navy,
-    borderRadius: 6,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    minWidth: 38,
-    alignItems: "center",
-  },
-  depRouteBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 12, color: "#fff" },
-  depHeadsign: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.text, flex: 1 },
-  depCountdown: { fontFamily: "DMSans_700Bold", fontSize: 15, color: theme.colors.navy },
+  depExtrasRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: theme.spacing.lg, paddingBottom: 6 },
   depText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, padding: 14 },
   liveBadge: {
     backgroundColor: theme.colors.orange,
@@ -1646,7 +1639,7 @@ const styles = StyleSheet.create({
   // Leave By smart card
   leaveByCard: {
     backgroundColor: theme.colors.navy,
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     marginHorizontal: 16,
     marginVertical: 10,
     padding: 16,

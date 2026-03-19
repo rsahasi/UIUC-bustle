@@ -33,11 +33,11 @@ const styles = {
     label: { color: theme.colors.textSecondary },
   }),
   delayed: StyleSheet.create({
-    container: { backgroundColor: "#EF4444", borderRadius: theme.radius.sm },
+    container: { backgroundColor: theme.colors.error, borderRadius: theme.radius.sm },
     label: { color: "#fff" },
   }),
   early: StyleSheet.create({
-    container: { backgroundColor: "#22C55E", borderRadius: theme.radius.sm },
+    container: { backgroundColor: theme.colors.success, borderRadius: theme.radius.sm },
     label: { color: "#fff" },
   }),
 };
