@@ -26,7 +26,7 @@ import {
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { theme } from "@/src/constants/theme";
-import { MapPin, Search, X } from "lucide-react-native";
+import { Bus, Footprints, MapPin, Search, X } from "lucide-react-native";
 
 function MapLiveBadge({ count }: { count: number }) {
   const opacity = useRef(new Animated.Value(1)).current;
@@ -552,8 +552,25 @@ export default function MapScreen() {
           <Marker
             coordinate={{ latitude: selectedPlace.lat, longitude: selectedPlace.lng }}
             title={selectedPlace.name}
-            pinColor={theme.colors.success}
-          />
+            anchor={{ x: 0.5, y: 1.0 }}
+            key="dest"
+          >
+            <View style={{ alignItems: 'center' }}>
+              <View style={{
+                width: 22, height: 22, borderRadius: 11,
+                backgroundColor: theme.colors.navy,
+                borderWidth: 2.5, borderColor: theme.colors.surface,
+                shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.3, shadowRadius: 3, elevation: 4,
+                justifyContent: 'center', alignItems: 'center',
+              }}>
+                <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: theme.colors.surface }} />
+              </View>
+              <View style={{ width: 0, height: 0, borderLeftWidth: 5, borderRightWidth: 5, borderTopWidth: 7,
+                borderLeftColor: 'transparent', borderRightColor: 'transparent',
+                borderTopColor: theme.colors.navy, marginTop: -1 }} />
+            </View>
+          </Marker>
         )}
         {vehicles.map((v) => (
           <Marker
@@ -565,23 +582,48 @@ export default function MapScreen() {
           />
         ))}
         {walkPolylines.map((coords, i) => (
-          <Polyline
-            key={`walk-${selectedRouteIdx}-${i}`}
-            coordinates={coords}
-            strokeColor="rgba(29, 111, 240, 1)"
-            strokeWidth={2}
-            lineDashPattern={[6, 4]}
-            zIndex={10}
-          />
+          <React.Fragment key={`walk-frag-${selectedRouteIdx}-${i}`}>
+            <Polyline
+              key={`walk-outline-${selectedRouteIdx}-${i}`}
+              coordinates={coords}
+              strokeColor="rgba(255,255,255,0.85)"
+              strokeWidth={6}
+              lineDashPattern={[8, 6]}
+              zIndex={8}
+              lineCap={"round" as any}
+            />
+            <Polyline
+              key={`walk-main-${selectedRouteIdx}-${i}`}
+              coordinates={coords}
+              strokeColor={theme.colors.navy}
+              strokeWidth={3}
+              lineDashPattern={[8, 6]}
+              zIndex={9}
+              lineCap={"round" as any}
+            />
+          </React.Fragment>
         ))}
         {busPolylines.map((coords, i) => (
-          <Polyline
-            key={`bus-${selectedRouteIdx}-${i}`}
-            coordinates={coords}
-            strokeColor="rgba(29, 111, 240, 1)"
-            strokeWidth={5}
-            zIndex={11}
-          />
+          <React.Fragment key={`bus-frag-${selectedRouteIdx}-${i}`}>
+            <Polyline
+              key={`bus-shadow-${selectedRouteIdx}-${i}`}
+              coordinates={coords}
+              strokeColor="rgba(19,41,75,0.25)"
+              strokeWidth={9}
+              zIndex={10}
+              lineCap={"round" as any}
+              lineJoin={"round" as any}
+            />
+            <Polyline
+              key={`bus-main-${selectedRouteIdx}-${i}`}
+              coordinates={coords}
+              strokeColor={theme.colors.orange}
+              strokeWidth={5}
+              zIndex={11}
+              lineCap={"round" as any}
+              lineJoin={"round" as any}
+            />
+          </React.Fragment>
         ))}
       </MapView>
 
@@ -678,6 +720,30 @@ export default function MapScreen() {
                         ? `Leave now · ${opt.eta_minutes} min total`
                         : `Leave in ${opt.depart_in_minutes} min · ${opt.eta_minutes} min total`}
                     </Text>
+                    <View style={{ flexDirection: 'row', gap: 4, marginTop: 5, flexWrap: 'wrap' }}>
+                      {opt.steps
+                        .filter(s => s.type === 'WALK_TO_STOP' || s.type === 'RIDE' || s.type === 'WALK_TO_DEST')
+                        .map((step, si) => (
+                          <View key={si} style={{
+                            flexDirection: 'row', alignItems: 'center', gap: 3,
+                            backgroundColor: step.type === 'RIDE' ? 'rgba(232,74,39,0.10)' : 'rgba(19,41,75,0.07)',
+                            paddingHorizontal: 7, paddingVertical: 3,
+                            borderRadius: 99,
+                          }}>
+                            {step.type === 'RIDE'
+                              ? <Bus size={10} color={theme.colors.orange} />
+                              : <Footprints size={10} color={theme.colors.navy} />}
+                            <Text style={{
+                              fontSize: 11, fontFamily: 'DMSans_500Medium',
+                              color: step.type === 'RIDE' ? theme.colors.orange : theme.colors.navy,
+                            }}>
+                              {step.type === 'RIDE'
+                                ? (step.route_short_name || step.route || 'Bus')
+                                : `${Math.round((step.walk_distance_m || 0) / 80)}m`}
+                            </Text>
+                          </View>
+                        ))}
+                    </View>
                   </View>
                   <Pressable style={styles.startBtn} onPress={() => onStartNavigation(opt)}>
                     <Text style={styles.startBtnText}>Go</Text>
@@ -897,9 +963,9 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.sm,
   },
   routeRowSelected: {
-    backgroundColor: "#EEF1F6",
+    backgroundColor: "rgba(232, 74, 39, 0.06)",
     borderLeftWidth: 3,
-    borderLeftColor: theme.colors.navy,
+    borderLeftColor: theme.colors.orange,
   },
   routeInfo: { flex: 1, marginRight: 12 },
   routeLabel: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
