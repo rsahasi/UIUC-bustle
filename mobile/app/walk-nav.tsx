@@ -803,7 +803,7 @@ export default function WalkNavScreen() {
 
       <Pressable style={[styles.cancelBtn, { flexDirection: "row", alignItems: "center", gap: 4 }]} onPress={onCancel}>
         <X size={14} color="#fff" />
-        <Text style={styles.cancelBtnText}>Cancel walk</Text>
+        <Text style={styles.cancelBtnText}>{isBusMode ? "Cancel Route" : "Cancel Walk"}</Text>
       </Pressable>
 
       {/* Completion modal */}
