@@ -67,10 +67,6 @@
       "expo-secure-store",
       "@sentry/react-native/expo"
     ],
-    "extra": {
-      "eas": {
-        "projectId": "uiuc-bus-mobile"
-      }
-    }
+    "extra": {}
   }
 }
