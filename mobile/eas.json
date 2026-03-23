@@ -16,13 +16,13 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://your-backend-url.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://uiuc-bustle-production.up.railway.app"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://your-backend-url.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://uiuc-bustle-production.up.railway.app"
       }
     }
   },
