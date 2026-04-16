@@ -4,6 +4,8 @@ import type {
   Building,
   BuildingsResponse,
   ClassesResponse,
+  CrowdingInfo,
+  CrowdingReportRequest,
   DeparturesResponse,
   NearbyStopsResponse,
   RecommendationRequest,
@@ -17,6 +19,7 @@ export type { Building, ClassesResponse, ScheduleClass } from "./types";
 export type { RecommendationOption, RecommendationResponse, RecommendationStep } from "./types";
 export type { DeparturesResponse, NearbyStopsResponse } from "./types";
 export type { VehicleInfo, VehiclesResponse } from "./types";
+export type { CrowdingInfo, CrowdingReportRequest, CrowdingLevel } from "./types";
 
 export type RequestSignal = AbortSignal | undefined;
 
@@ -242,6 +245,47 @@ export async function fetchVehicles(
   const res = await fetchWithRetry(`${base}/vehicles${params}`, "/vehicles", options);
   if (!res.ok) throw new Error(`Vehicles: ${res.status}`);
   return safeJson(res, "/vehicles", { vehicles: [] });
+}
+
+/** GET /crowding/:vehicle_id - fetch crowding info for a vehicle */
+export async function fetchCrowding(
+  baseUrl: string,
+  vehicleId: string,
+  routeId?: string,
+  options?: { apiKey?: string },
+): Promise<CrowdingInfo | null> {
+  try {
+    const params = routeId ? `?route_id=${encodeURIComponent(routeId)}` : "";
+    const url = `${baseUrl.replace(/\/$/, "")}/crowding/${encodeURIComponent(vehicleId)}${params}`;
+    const res = await fetch(url, {
+      headers: options?.apiKey ? { "X-API-Key": options.apiKey } : {},
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as CrowdingInfo;
+  } catch {
+    return null;
+  }
+}
+
+/** POST /crowding/report - submit a crowding report */
+export async function submitCrowdingReport(
+  baseUrl: string,
+  body: CrowdingReportRequest,
+  options?: { apiKey?: string },
+): Promise<{ success: boolean; current_aggregate: CrowdingInfo | null }> {
+  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/crowding/report`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options?.apiKey ? { "X-API-Key": options.apiKey } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).detail ?? `HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 /** PATCH /schedule/classes/:id */

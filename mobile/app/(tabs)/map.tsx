@@ -1,6 +1,8 @@
-import { fetchAutocomplete, fetchBusRouteStops, fetchPlaceDetails, fetchRecommendation, fetchWalkingRoute } from "@/src/api/client";
+import { fetchAutocomplete, fetchBusRouteStops, fetchPlaceDetails, fetchRecommendation, fetchWalkingRoute, fetchCrowding } from "@/src/api/client";
 import type { AutocompleteResult } from "@/src/api/client";
-import type { RecommendationOption, StopInfo } from "@/src/api/types";
+import type { RecommendationOption, StopInfo, CrowdingInfo } from "@/src/api/types";
+import { CrowdingSheet } from "@/src/components/CrowdingSheet";
+import { crowdingColor } from "@/src/utils/crowding";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
@@ -101,6 +103,9 @@ export default function MapScreen() {
   type LatLng = { latitude: number; longitude: number };
   const [walkPolylines, setWalkPolylines] = useState<LatLng[][]>([]);
   const [busPolylines, setBusPolylines] = useState<LatLng[][]>([]);
+
+  const [vehicleCrowding, setVehicleCrowding] = useState<Record<string, CrowdingInfo>>({});
+  const [crowdingSheet, setCrowdingSheet] = useState<{ vehicleId: string; routeId: string } | null>(null);
 
   const [showEmptyState, setShowEmptyState] = useState(true);
   const emptyStateOpacity = useRef(new Animated.Value(1)).current;
@@ -360,6 +365,25 @@ export default function MapScreen() {
     return () => { cancelled = true; };
   }, [placeRoutes, selectedRouteIdx, location, selectedPlace, apiBaseUrl, apiKey]);
 
+  useEffect(() => {
+    if (!vehicles.length || !apiBaseUrl) return;
+    let cancelled = false;
+    async function pollCrowding() {
+      const updates: Record<string, CrowdingInfo> = {};
+      await Promise.all(
+        vehicles.map(async (v) => {
+          const info = await fetchCrowding(apiBaseUrl, v.vehicle_id, v.route_id, { apiKey: apiKey ?? undefined });
+          if (info) updates[v.vehicle_id] = info;
+        })
+      );
+      if (!cancelled) setVehicleCrowding((prev) => ({ ...prev, ...updates }));
+    }
+    pollCrowding();
+    const id = setInterval(pollCrowding, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicles.map(v => v.vehicle_id).join(","), apiBaseUrl, apiKey]);
+
   const onSelectSuggestion = useCallback(async (result: AutocompleteResult) => {
     Keyboard.dismiss();
     setMapSearch(result.name);
@@ -563,15 +587,30 @@ export default function MapScreen() {
             </View>
           </Marker>
         )}
-        {vehicles.map((v) => (
-          <Marker
-            key={`vehicle-${v.vehicle_id}`}
-            coordinate={{ latitude: v.lat, longitude: v.lng }}
-            title={`Bus ${v.route_id}`}
-            description={v.headsign || undefined}
-            pinColor={theme.colors.orange}
-          />
-        ))}
+        {vehicles.map((v) => {
+          const crowding = vehicleCrowding[v.vehicle_id];
+          const ringColor = crowdingColor(crowding);
+          return (
+            <Marker
+              key={`vehicle-${v.vehicle_id}`}
+              coordinate={{ latitude: v.lat, longitude: v.lng }}
+              title={`Bus ${v.route_id}`}
+              description={v.headsign || undefined}
+              onPress={() => setCrowdingSheet({ vehicleId: v.vehicle_id, routeId: v.route_id })}
+            >
+              <View style={{ alignItems: "center", justifyContent: "center" }}>
+                <View style={{
+                  width: 28, height: 28, borderRadius: 14,
+                  borderWidth: 3, borderColor: ringColor,
+                  backgroundColor: theme.colors.orange,
+                  alignItems: "center", justifyContent: "center",
+                }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "white" }} />
+                </View>
+              </View>
+            </Marker>
+          );
+        })}
         {walkPolylines.map((coords, i) => (
           <React.Fragment key={`walk-frag-${selectedRouteIdx}-${i}`}>
             <Polyline
@@ -617,6 +656,15 @@ export default function MapScreen() {
           </React.Fragment>
         ))}
       </MapView>
+
+      {crowdingSheet && (
+        <CrowdingSheet
+          visible={!!crowdingSheet}
+          vehicleId={crowdingSheet.vehicleId}
+          routeId={crowdingSheet.routeId}
+          onClose={() => setCrowdingSheet(null)}
+        />
+      )}
 
       {/* Search bar */}
       {status === "loading" && (

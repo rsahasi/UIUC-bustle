@@ -3,7 +3,9 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +21,12 @@ from src.data.buildings_repo import (
     create_class, delete_class, list_classes, update_class, BuildingRecord, ClassRecord
 )
 from src.data.stops_repo import search_nearby
+from src.data.crowding_repo import (
+    init_crowding_schema, insert_report, get_recent_reports,
+    check_rate_limit, get_reports_by_route, delete_old_reports,
+    compute_weighted_level, CROWDING_DB_PATH,
+)
+from src.data.crowding_estimate import estimate_crowding_level
 from src.auth.jwt import get_current_user
 from src.middleware import OptionalAPIKeyMiddleware, RequestLoggingMiddleware, get_valid_api_keys
 from src.monitoring import get_metrics
@@ -120,7 +128,24 @@ async def lifespan(app: FastAPI):
     if settings.database_url:
         await init_pool(settings.database_url)
     app.state.mtd_client = MTDClient(api_key=settings.mtd_api_key) if settings.mtd_api_key else None
+
+    await init_crowding_schema()
+
+    async def _crowding_cleanup():
+        while True:
+            try:
+                deleted = await delete_old_reports(CROWDING_DB_PATH, older_than_hours=2)
+                if deleted:
+                    logger.info("telemetry crowding_cleanup deleted=%d", deleted)
+            except Exception as e:
+                logger.warning("telemetry crowding_cleanup_error error=%s", str(e))
+            await asyncio.sleep(3600)
+
+    cleanup_task = asyncio.create_task(_crowding_cleanup())
+
     yield
+
+    cleanup_task.cancel()
     app.state.mtd_client = None
     if settings.database_url:
         await close_pool()
@@ -568,6 +593,78 @@ async def get_vehicles(request: Request, route_id: str = ""):
     except Exception as e:
         logger.warning("telemetry vehicles_error error=%s", str(e))
         raise HTTPException(status_code=502, detail="Failed to fetch vehicle positions.") from e
+
+
+# --- Crowding reports ---
+
+from pydantic import BaseModel as _PydanticBaseModel
+
+
+class CrowdingReportRequest(_PydanticBaseModel):
+    vehicle_id: str
+    route_id: str
+    trip_id: Optional[str] = None
+    crowding_level: int
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    user_token: Optional[str] = None
+
+
+class CrowdingResponse(_PydanticBaseModel):
+    level: int
+    confidence: str
+    source: str
+    report_count: int
+
+
+@app.post("/crowding/report")
+@limiter.limit("30/minute")
+async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
+    """Submit a crowding report. Rate limited. Server-side 10-min per-token rate limit."""
+    if not 1 <= body.crowding_level <= 4:
+        raise HTTPException(status_code=422, detail="crowding_level must be 1-4")
+    if body.user_token:
+        already_reported = await check_rate_limit(CROWDING_DB_PATH, body.user_token, body.vehicle_id)
+        if already_reported:
+            raise HTTPException(status_code=429, detail="You already reported this bus recently. Try again in 10 minutes.")
+    await insert_report(
+        CROWDING_DB_PATH,
+        vehicle_id=body.vehicle_id,
+        route_id=body.route_id,
+        trip_id=body.trip_id,
+        crowding_level=body.crowding_level,
+        user_token=body.user_token,
+        lat=body.lat,
+        lon=body.lon,
+    )
+    reports = await get_recent_reports(CROWDING_DB_PATH, body.vehicle_id)
+    agg = compute_weighted_level(reports)
+    current = {"level": agg.level, "confidence": agg.confidence, "source": agg.source, "report_count": agg.report_count} if agg else None
+    logger.info("telemetry route=crowding_report vehicle=%s level=%d", body.vehicle_id, body.crowding_level)
+    return {"success": True, "current_aggregate": current}
+
+
+@app.get("/crowding/route/{route_id}")
+async def get_route_crowding(request: Request, route_id: str):
+    """Get crowding for all active vehicles on a route."""
+    grouped = await get_reports_by_route(CROWDING_DB_PATH, route_id)
+    result = {}
+    for vid, reports in grouped.items():
+        agg = compute_weighted_level(reports)
+        if agg:
+            result[vid] = {"level": agg.level, "confidence": agg.confidence, "source": "crowdsourced", "report_count": agg.report_count}
+    return {"route_id": route_id, "vehicles": result}
+
+
+@app.get("/crowding/{vehicle_id}", response_model=CrowdingResponse)
+async def get_vehicle_crowding(request: Request, vehicle_id: str, route_id: str = ""):
+    """Get crowding for a vehicle. Falls back to schedule estimate if < 2 crowdsourced reports."""
+    reports = await get_recent_reports(CROWDING_DB_PATH, vehicle_id)
+    agg = compute_weighted_level(reports)
+    if agg and agg.report_count >= 2:
+        return CrowdingResponse(level=agg.level, confidence=agg.confidence, source="crowdsourced", report_count=agg.report_count)
+    estimate = estimate_crowding_level(route_id or "unknown", datetime.now(timezone.utc))
+    return CrowdingResponse(level=estimate["level"], confidence=estimate["confidence"], source="estimated", report_count=agg.report_count if agg else 0)
 
 
 # --- Buildings & Schedule (MVP: default user only) ---
