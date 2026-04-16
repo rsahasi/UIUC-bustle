@@ -33,6 +33,7 @@ import { useCrowding } from "@/src/queries/crowding";
 import type { RouteCardProps } from "@/src/components/ui/RouteCard";
 import { RouteCard } from "@/src/components/ui/RouteCard";
 import { CrowdingBadge } from "@/src/components/ui/CrowdingBadge";
+import { CrowdingBanner } from "@/src/components/CrowdingBanner";
 function newSessionToken(): string {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 }
@@ -1305,6 +1306,17 @@ export default function HomeScreen() {
               </OptionCardWithCrowding>
             );
           })}
+          {/* Crowding banner for top bus recommendation */}
+          {(() => {
+            const rideStep = recommendations[0]?.steps?.find(s => s.type === "RIDE");
+            if (!rideStep?.vehicle_id || !rideStep?.route_id) return null;
+            return (
+              <CrowdingBanner
+                vehicleId={rideStep.vehicle_id}
+                routeId={rideStep.route_id}
+              />
+            );
+          })()}
           {/* Smart callouts for class recommendations */}
           {(() => {
             const walkOpt = recommendations.find((o) => o.type === 'WALK');
