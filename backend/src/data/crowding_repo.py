@@ -49,6 +49,11 @@ CREATE INDEX IF NOT EXISTS idx_crowding_route_reported
     ON crowding_reports (route_id, reported_at)
 """
 
+_CREATE_IDX_TOKEN_VEHICLE_SQL = """
+CREATE INDEX IF NOT EXISTS idx_crowding_token_vehicle
+    ON crowding_reports (anonymous_user_token, vehicle_id, reported_at DESC)
+"""
+
 
 async def init_crowding_schema(db_path: Path = CROWDING_DB_PATH) -> None:
     """Create crowding_reports table and indexes if not exist."""
@@ -57,6 +62,7 @@ async def init_crowding_schema(db_path: Path = CROWDING_DB_PATH) -> None:
         await db.execute(_CREATE_TABLE_SQL)
         await db.execute(_CREATE_IDX_VEHICLE_SQL)
         await db.execute(_CREATE_IDX_ROUTE_SQL)
+        await db.execute(_CREATE_IDX_TOKEN_VEHICLE_SQL)
         await db.commit()
 
 
