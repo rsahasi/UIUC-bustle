@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -658,7 +659,6 @@ async def get_route_crowding(request: Request, route_id: str):
 @app.get("/crowding/{vehicle_id}", response_model=CrowdingResponse)
 async def get_vehicle_crowding(request: Request, vehicle_id: str, route_id: str = ""):
     """Get crowding for a vehicle. Falls back to schedule estimate if < 2 crowdsourced reports."""
-    from datetime import datetime, timezone
     reports = await get_recent_reports(CROWDING_DB_PATH, vehicle_id)
     agg = compute_weighted_level(reports)
     if agg and agg.report_count >= 2:
