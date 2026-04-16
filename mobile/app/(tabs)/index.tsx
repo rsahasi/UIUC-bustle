@@ -23,7 +23,7 @@ import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import { getNextClassToday } from "@/src/utils/nextClass";
 import * as Location from "expo-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useClasses } from "@/src/queries/schedule";
 import { useNearbyStops } from "@/src/queries/departures";
@@ -32,6 +32,7 @@ import { useAutocomplete } from "@/src/queries/places";
 import { useCrowding } from "@/src/queries/crowding";
 import type { RouteCardProps } from "@/src/components/ui/RouteCard";
 import { RouteCard } from "@/src/components/ui/RouteCard";
+import { CrowdingBadge } from "@/src/components/ui/CrowdingBadge";
 function newSessionToken(): string {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 }
@@ -42,6 +43,23 @@ function RouteCardWithCrowding({ option, ...props }: RouteCardWithCrowdingProps)
   const rideStep = option.steps?.find((s) => s.type === "RIDE");
   const { data: crowding } = useCrowding(rideStep?.vehicle_id ?? null, rideStep?.route_id);
   return <RouteCard option={option} crowding={crowding} {...props} />;
+}
+interface OptionCardWithCrowdingProps {
+  option: RecommendationOption;
+  children: React.ReactNode;
+}
+function OptionCardWithCrowding({ option, children }: OptionCardWithCrowdingProps) {
+  const rideStep = option.steps?.find((s) => s.type === "RIDE");
+  const { data: crowding } = useCrowding(rideStep?.vehicle_id ?? null, rideStep?.route_id);
+  if (!crowding || option.type !== "BUS") return <>{children}</>;
+  return (
+    <View>
+      {children}
+      <View style={{ paddingHorizontal: 20, paddingBottom: 4, marginTop: -4 }}>
+        <CrowdingBadge info={crowding} size="sm" />
+      </View>
+    </View>
+  );
 }
 import {
   ActivityIndicator,
@@ -1079,13 +1097,17 @@ export default function HomeScreen() {
           </View>
           {sortedOptions(searchResults).map((opt, index) => {
             const isWalk = opt.type === "WALK";
-            return renderOptionCard(
-              opt,
-              index,
-              `search-${index}`,
-              false,
-              () => (isWalk ? onStartWalk(opt, searchDestinationName?.split(",")[0]) : onStartBus(opt)),
-              searchDestinationName?.split(",")[0] ?? "destination"
+            return (
+              <OptionCardWithCrowding key={`search-${index}`} option={opt}>
+                {renderOptionCard(
+                  opt,
+                  index,
+                  `search-${index}`,
+                  false,
+                  () => (isWalk ? onStartWalk(opt, searchDestinationName?.split(",")[0]) : onStartBus(opt)),
+                  searchDestinationName?.split(",")[0] ?? "destination"
+                )}
+              </OptionCardWithCrowding>
             );
           })}
           {/* Smart callouts for search results */}
@@ -1228,13 +1250,17 @@ export default function HomeScreen() {
           </View>
           {afterLastClassRecs.map((opt, index) => {
             const isWalk = opt.type === "WALK";
-            return renderOptionCard(
-              opt,
-              index,
-              `after-${index}`,
-              false,
-              () => (isWalk ? onStartWalk(opt) : onStartBus(opt)),
-              afterLastClassPlace?.name ?? "destination"
+            return (
+              <OptionCardWithCrowding key={`after-${index}`} option={opt}>
+                {renderOptionCard(
+                  opt,
+                  index,
+                  `after-${index}`,
+                  false,
+                  () => (isWalk ? onStartWalk(opt) : onStartBus(opt)),
+                  afterLastClassPlace?.name ?? "destination"
+                )}
+              </OptionCardWithCrowding>
             );
           })}
         </View>
@@ -1272,14 +1298,18 @@ export default function HomeScreen() {
             const isWalk = opt.type === "WALK";
             const allBusLate = recommendations.filter((o) => o.type !== 'WALK').every((o) => optionStatus(o, nextUp?.start_time_local) === 'late');
             const highlighted = (isWalk && highlightWalk) || (isWalk && allBusLate);
-            return renderOptionCard(
-              opt,
-              index,
-              `rec-${index}`,
-              highlighted,
-              () => (isWalk ? onStartWalk(opt) : onStartBus(opt)),
-              nextUp?.title ?? "class",
-              nextUp?.start_time_local
+            return (
+              <OptionCardWithCrowding key={`rec-${index}`} option={opt}>
+                {renderOptionCard(
+                  opt,
+                  index,
+                  `rec-${index}`,
+                  highlighted,
+                  () => (isWalk ? onStartWalk(opt) : onStartBus(opt)),
+                  nextUp?.title ?? "class",
+                  nextUp?.start_time_local
+                )}
+              </OptionCardWithCrowding>
             );
           })}
           {/* Smart callouts for class recommendations */}
