@@ -36,14 +36,7 @@ import { CrowdingBadge } from "@/src/components/ui/CrowdingBadge";
 function newSessionToken(): string {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 }
-interface RouteCardWithCrowdingProps extends Omit<RouteCardProps, "crowding"> {
-  option: RecommendationOption;
-}
-function RouteCardWithCrowding({ option, ...props }: RouteCardWithCrowdingProps) {
-  const rideStep = option.steps?.find((s) => s.type === "RIDE");
-  const { data: crowding } = useCrowding(rideStep?.vehicle_id ?? null, rideStep?.route_id);
-  return <RouteCard option={option} crowding={crowding} {...props} />;
-}
+
 interface OptionCardWithCrowdingProps {
   option: RecommendationOption;
   children: React.ReactNode;
