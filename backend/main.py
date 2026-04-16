@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -26,6 +26,15 @@ from src.mtd.client import MTDClient
 from src.mtd.models import DeparturesResponse, NearbyStopsResponse, StopInfo
 from src.recommendation.models import RecommendationOption, RecommendationRequest, RecommendationResponse
 from src.recommendation.service import compute_recommendations
+from src.share.models import (
+    CreateShareTripRequest,
+    CreateShareTripResponse,
+    PatchShareTripRequest,
+    ShareTripStatusResponse,
+    VALID_PHASES,
+)
+from src.share.repo import create_shared_trip, get_shared_trip_status, patch_shared_trip, init_share_schema, SHARE_DB_PATH
+from src.share.page import build_share_page
 from src.schedule.models import (
     BuildingsListResponse,
     BuildingResponse,
@@ -119,6 +128,7 @@ _PLACE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{10,250}$")
 async def lifespan(app: FastAPI):
     if settings.database_url:
         await init_pool(settings.database_url)
+    init_share_schema()
     app.state.mtd_client = MTDClient(api_key=settings.mtd_api_key) if settings.mtd_api_key else None
     yield
     app.state.mtd_client = None
@@ -1232,3 +1242,56 @@ def post_walk_complete(request: Request, body: WalkCompleteRequest, user=Depends
     except Exception as e:
         logger.warning("telemetry walk_complete_error error=%s", str(e))
         return {"encouragement": f"Great job walking to {body.dest_name}!"}
+
+
+# ── Share My Trip ──────────────────────────────────────────────────────────────
+
+@app.post("/share/trips", response_model=CreateShareTripResponse)
+@limiter.limit("20/minute")
+def post_share_trip(request: Request, body: CreateShareTripRequest):
+    """Create a new shared trip record. Returns token and shareable URL."""
+    if body.phase not in VALID_PHASES:
+        raise HTTPException(status_code=400, detail=f"phase must be one of {sorted(VALID_PHASES)}")
+    token = create_shared_trip(
+        db_path=SHARE_DB_PATH,
+        destination=body.destination[:200],
+        route_id=body.route_id,
+        route_name=body.route_name,
+        stop_name=body.stop_name,
+        phase=body.phase,
+        eta_epoch=body.eta_epoch,
+    )
+    base = settings.public_base_url.rstrip("/") if settings.public_base_url else str(request.base_url).rstrip("/")
+    url = f"{base}/t/{token}"
+    return CreateShareTripResponse(token=token, url=url)
+
+
+@app.patch("/share/trips/{token}")
+@limiter.limit("60/minute")
+def patch_share_trip(request: Request, token: str, body: PatchShareTripRequest):
+    """Update phase and/or eta for a shared trip. Returns 404 if expired or not found."""
+    if body.phase is not None and body.phase not in VALID_PHASES:
+        raise HTTPException(status_code=400, detail=f"phase must be one of {sorted(VALID_PHASES)}")
+    updated = patch_shared_trip(SHARE_DB_PATH, token, body.phase, body.eta_epoch)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Trip not found or has expired")
+    return {"ok": True}
+
+
+@app.get("/share/trips/{token}/status", response_model=ShareTripStatusResponse)
+@limiter.exempt
+def get_share_trip_status(request: Request, token: str):
+    """Poll current state of a shared trip."""
+    status = get_shared_trip_status(SHARE_DB_PATH, token)
+    if status is None:
+        return ShareTripStatusResponse(expired=True)
+    return ShareTripStatusResponse(**status)
+
+
+@app.get("/t/{token}", response_class=HTMLResponse, include_in_schema=False)
+@limiter.exempt
+def share_trip_page(request: Request, token: str):
+    """Serve the recipient share page."""
+    if not re.fullmatch(r'[A-Za-z0-9_\-]{6,16}', token):
+        return HTMLResponse("<h1>Invalid link</h1>", status_code=400)
+    return HTMLResponse(content=build_share_page(token))

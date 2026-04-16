@@ -6,9 +6,12 @@ import type {
   ClassesResponse,
   DeparturesResponse,
   NearbyStopsResponse,
+  PatchShareTripRequest,
   RecommendationRequest,
   RecommendationResponse,
   ScheduleClass,
+  ShareTripRequest,
+  ShareTripResponse,
   UpdateClassRequest,
   VehiclesResponse,
 } from "./types";
@@ -17,6 +20,7 @@ export type { Building, ClassesResponse, ScheduleClass } from "./types";
 export type { RecommendationOption, RecommendationResponse, RecommendationStep } from "./types";
 export type { DeparturesResponse, NearbyStopsResponse } from "./types";
 export type { VehicleInfo, VehiclesResponse } from "./types";
+export type { ShareTripRequest, ShareTripResponse, PatchShareTripRequest } from "./types";
 
 export type RequestSignal = AbortSignal | undefined;
 
@@ -482,4 +486,35 @@ export async function fetchGeocode(
     throw new Error((err as { detail?: string }).detail || `Geocode: ${res.status}`);
   }
   return res.json() as Promise<GeocodeResult>;
+}
+
+export async function createShareTrip(
+  baseUrl: string,
+  body: ShareTripRequest,
+  opts?: RequestOptions
+): Promise<ShareTripResponse> {
+  const res = await fetchWithRetry(`${baseUrl}/share/trips`, "/share/trips", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    apiKey: opts?.apiKey,
+    signal: opts?.signal,
+  });
+  if (!res.ok) throw new Error(`share_create_failed status=${res.status}`);
+  return res.json();
+}
+
+/** Fire-and-forget: silently updates phase/eta. Call without await. */
+export function patchShareTrip(
+  baseUrl: string,
+  token: string,
+  body: PatchShareTripRequest,
+  opts?: RequestOptions
+): void {
+  fetchWithRetry(`${baseUrl}/share/trips/${token}`, `/share/trips/${token}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    apiKey: opts?.apiKey,
+  }).catch(() => {/* silent — stale phase on recipient is acceptable */});
 }

@@ -1,6 +1,7 @@
 import React from "react";
-import { fetchBusRouteStops, fetchVehicles, fetchWalkingRoute } from "@/src/api/client";
+import { createShareTrip, fetchBusRouteStops, fetchVehicles, fetchWalkingRoute, patchShareTrip } from "@/src/api/client";
 import type { BusStop, VehicleInfo } from "@/src/api/client";
+import type { ShareTripRequest } from "@/src/api/types";
 import { getMpsForMode, WALKING_MODES } from "@/src/constants/walkingMode";
 import type { WalkingModeId } from "@/src/constants/walkingMode";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
@@ -12,13 +13,14 @@ import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { Pedometer } from "expo-sensors";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Bus, Flame, Footprints, Timer, X } from "lucide-react-native";
+import { Bus, Flame, Footprints, Share2, Timer, X } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
   Platform,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   View,
@@ -129,6 +131,7 @@ export default function WalkNavScreen() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const vehiclePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const arrivedRef = useRef(false);
+  const shareTokenRef = useRef<string | null>(null);
   const walkedDistanceMRef = useRef(0);
   const lastPositionRef = useRef<{ lat: number; lng: number } | null>(null);
   const walkingRouteFetchedRef = useRef(false);
@@ -136,9 +139,34 @@ export default function WalkNavScreen() {
   // Track current target for arrival detection
   const currentTargetRef = useRef<{ lat: number; lng: number }>({ lat: destLat, lng: destLng });
 
+  const [shareErrorToast, setShareErrorToast] = useState<string | null>(null);
+
   const [zoomDelta, setZoomDelta] = useState(0.005);
   const zoomIn = () => setZoomDelta((d) => Math.max(d / 2, 0.0003));
   const zoomOut = () => setZoomDelta((d) => Math.min(d * 2, 0.5));
+
+  const handleWalkNavShare = useCallback(async () => {
+    const etaEpoch = distanceM !== null ? Math.floor(Date.now() / 1000) + Math.floor(distanceM / speedMps) : undefined;
+    const body: ShareTripRequest = {
+      destination: hasFinalDest ? finalDestName : destName,
+      route_id: routeId || null,
+      route_name: null,
+      stop_name: null,
+      phase: navPhaseRef.current === "bus" ? "on_bus" : "walking",
+      eta_epoch: etaEpoch,
+    };
+    try {
+      const result = await createShareTrip(apiBaseUrl, body, { apiKey: apiKey ?? undefined });
+      shareTokenRef.current = result.token;
+      const msg = `Heading to ${body.destination}${routeId ? ` · Bus ${routeId}` : ""}. ${result.url}`;
+      await Share.share({ message: msg, url: result.url });
+    } catch {
+      setShareErrorToast("Couldn't reach share server — sharing directly");
+      setTimeout(() => setShareErrorToast(null), 2500);
+      const msg = `Heading to ${body.destination}${routeId ? ` · Bus ${routeId}` : ""}`;
+      await Share.share({ message: msg });
+    }
+  }, [apiBaseUrl, apiKey, destName, finalDestName, hasFinalDest, routeId, speedMps, distanceM]);
 
   const mapRef = useRef<MapView | null>(null);
   const walkingRouteCoordsRef = useRef<{ latitude: number; longitude: number }[]>([]);
@@ -155,12 +183,16 @@ export default function WalkNavScreen() {
     navPhaseRef.current = navPhase;
   }, [navPhase]);
 
-  // Fire analytics when user transitions from walking to bus leg
+  // Send on_bus PATCH when navPhase transitions to "bus" — separated from the
+  // "waiting" PATCH (fired in the location callback) to avoid a request ordering race.
   useEffect(() => {
+    if (navPhase === "bus" && shareTokenRef.current) {
+      patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "on_bus" }, { apiKey: apiKey ?? undefined });
+    }
     if (navPhase === "bus") {
       capture("bus_phase_entered");
     }
-  }, [navPhase, capture]);
+  }, [navPhase, apiBaseUrl, apiKey, capture]);
 
   // Keep walkingRouteCoordsRef in sync
   useEffect(() => {
@@ -368,7 +400,11 @@ export default function WalkNavScreen() {
             if (isBusMode && phase === "walking") {
               // Arrived at boarding stop — switch to bus phase
               arrivedRef.current = false; // reset so we can detect alighting stop arrival
+              if (shareTokenRef.current) {
+                patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "waiting" }, { apiKey: apiKey ?? undefined });
+              }
               setNavPhase("bus");
+              // on_bus PATCH is sent by a separate useEffect watching navPhase === "bus"
               currentTargetRef.current = { lat: alightingLat, lng: alightingLng };
               setDistanceM(null);
               fetchBusData();
@@ -390,8 +426,12 @@ export default function WalkNavScreen() {
   // Show completion modal on arrival + fetch encouragement
   useEffect(() => {
     if (arrived) {
+      if (showCompletion) return; // already handled
       capture("trip_completed");
       if (timerRef.current) clearInterval(timerRef.current);
+      if (shareTokenRef.current) {
+        patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "arrived" }, { apiKey: apiKey ?? undefined });
+      }
       setShowCompletion(true);
       (async () => {
         try {
@@ -416,7 +456,7 @@ export default function WalkNavScreen() {
         } catch {}
       })();
     }
-  }, [arrived, capture, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
+  }, [arrived, showCompletion, capture, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
 
   const finishWalk = useCallback(async () => {
     await addActivityEntry({
@@ -729,6 +769,16 @@ export default function WalkNavScreen() {
 
       {/* HUD overlay */}
       <View style={styles.hud}>
+        <View style={styles.hudHeader}>
+          <Pressable
+            accessibilityLabel="Share trip"
+            accessibilityRole="button"
+            onPress={handleWalkNavShare}
+            style={styles.hudShareBtn}
+          >
+            <Share2 size={18} color={theme.colors.navy} />
+          </Pressable>
+        </View>
         {navPhase === "walking" ? (
           <>
             <View style={styles.hudRow}>
@@ -794,6 +844,12 @@ export default function WalkNavScreen() {
           </>
         )}
       </View>
+
+      {shareErrorToast && (
+        <View style={styles.shareErrorToast}>
+          <Text style={styles.shareErrorToastText}>{shareErrorToast}</Text>
+        </View>
+      )}
 
       {locationError && (
         <View style={styles.errorBanner}>
@@ -904,6 +960,15 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
     borderTopLeftRadius: theme.radius.lg,
     borderTopRightRadius: theme.radius.lg,
+  },
+  hudHeader: { flexDirection: "row", justifyContent: "flex-end", marginBottom: 8 },
+  hudShareBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    justifyContent: "center",
+    alignItems: "center",
   },
   hudRow: { flexDirection: "row", justifyContent: "space-around", marginBottom: 8 },
   hudCell: { alignItems: "center" },
@@ -1032,4 +1097,17 @@ const styles = StyleSheet.create({
   zoomBtn: { width: 44, height: 42, alignItems: "center", justifyContent: "center" },
   zoomBtnText: { fontSize: 22, fontFamily: "DMSans_400Regular", color: theme.colors.navy, lineHeight: 26 },
   zoomDivider: { height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.border, marginHorizontal: 8 },
+  shareErrorToast: {
+    position: "absolute",
+    bottom: 200,
+    left: 24,
+    right: 24,
+    backgroundColor: "rgba(0,0,0,0.75)",
+    borderRadius: theme.radius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    zIndex: 30,
+  },
+  shareErrorToastText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_400Regular" },
 });

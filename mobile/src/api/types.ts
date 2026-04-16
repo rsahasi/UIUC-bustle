@@ -131,3 +131,24 @@ export interface RecommendationRequest {
 export interface RecommendationResponse {
   options: RecommendationOption[];
 }
+
+/** POST /share/trips */
+export interface ShareTripRequest {
+  destination: string;
+  route_id?: string | null;
+  route_name?: string | null;
+  stop_name?: string | null;
+  phase: "walking" | "waiting" | "on_bus" | "arrived";
+  eta_epoch?: number | null;
+}
+
+export interface ShareTripResponse {
+  token: string;
+  url: string;
+}
+
+/** PATCH /share/trips/{token} */
+export interface PatchShareTripRequest {
+  phase?: "walking" | "waiting" | "on_bus" | "arrived";
+  eta_epoch?: number | null;
+}
