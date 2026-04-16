@@ -4,15 +4,18 @@ import { Bus, Footprints } from "lucide-react-native";
 import { StyleSheet, Text, View } from "react-native";
 import { Badge } from "./Badge";
 import { Button } from "./Button";
+import { CrowdingBadge } from "./CrowdingBadge";
+import type { CrowdingInfo } from "@/src/api/types";
 
-interface RouteCardProps {
+export interface RouteCardProps {
   option: RecommendationOption;
   onStartWalk?: () => void;
   onStartBus?: () => void;
   isHighlighted?: boolean;
+  crowding?: CrowdingInfo | null;
 }
 
-export function RouteCard({ option, onStartWalk, onStartBus, isHighlighted }: RouteCardProps) {
+export function RouteCard({ option, onStartWalk, onStartBus, isHighlighted, crowding }: RouteCardProps) {
   const isBus = option.type === "BUS";
   const etaText = `${option.eta_minutes ?? "?"}m ETA`;
   const departText = option.depart_in_minutes != null
@@ -24,7 +27,10 @@ export function RouteCard({ option, onStartWalk, onStartBus, isHighlighted }: Ro
       {isHighlighted && <View style={styles.accentBar} />}
       <View style={styles.header}>
         <Badge label={isBus ? "Bus" : "Walk"} variant={isBus ? "route" : "info"} />
-        <Text style={styles.eta}>{etaText}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: theme.spacing.sm }}>
+          {isBus && crowding && <CrowdingBadge info={crowding} size="sm" />}
+          <Text style={styles.eta}>{etaText}</Text>
+        </View>
       </View>
       {departText && <Text style={styles.depart}>{departText}</Text>}
       {option.summary ? <Text style={styles.summary} numberOfLines={2}>{option.summary}</Text> : null}

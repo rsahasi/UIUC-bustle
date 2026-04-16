@@ -29,8 +29,19 @@ import { useClasses } from "@/src/queries/schedule";
 import { useNearbyStops } from "@/src/queries/departures";
 import { useRecommendation } from "@/src/queries/recommendation";
 import { useAutocomplete } from "@/src/queries/places";
+import { useCrowding } from "@/src/queries/crowding";
+import type { RouteCardProps } from "@/src/components/ui/RouteCard";
+import { RouteCard } from "@/src/components/ui/RouteCard";
 function newSessionToken(): string {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
+interface RouteCardWithCrowdingProps extends Omit<RouteCardProps, "crowding"> {
+  option: RecommendationOption;
+}
+function RouteCardWithCrowding({ option, ...props }: RouteCardWithCrowdingProps) {
+  const rideStep = option.steps?.find((s) => s.type === "RIDE");
+  const { data: crowding } = useCrowding(rideStep?.vehicle_id ?? null, rideStep?.route_id);
+  return <RouteCard option={option} crowding={crowding} {...props} />;
 }
 import {
   ActivityIndicator,
