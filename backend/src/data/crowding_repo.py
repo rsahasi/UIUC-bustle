@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, TypedDict
 
 import aiosqlite
 
@@ -53,6 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_crowding_route_reported
 async def init_crowding_schema(db_path: Path = CROWDING_DB_PATH) -> None:
     """Create crowding_reports table and indexes if not exist."""
     async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(_CREATE_TABLE_SQL)
         await db.execute(_CREATE_IDX_VEHICLE_SQL)
         await db.execute(_CREATE_IDX_ROUTE_SQL)
@@ -67,8 +68,13 @@ async def init_crowding_schema(db_path: Path = CROWDING_DB_PATH) -> None:
 class CrowdingAggregate:
     level: int        # 1–4
     confidence: str   # "low" | "medium" | "high"
-    source: str       # always "crowdsourced" from this function
+    source: Literal["crowdsourced"]  # always "crowdsourced" from this function
     report_count: int
+
+
+class ReportRow(TypedDict):
+    crowding_level: int
+    reported_at: datetime
 
 
 def _weight(reported_at: datetime) -> float:
@@ -94,7 +100,7 @@ def _weight(reported_at: datetime) -> float:
     return 1.0
 
 
-def compute_weighted_level(reports: list[dict]) -> Optional[CrowdingAggregate]:
+def compute_weighted_level(reports: list[ReportRow]) -> Optional[CrowdingAggregate]:
     """Compute a weighted crowding aggregate from a list of raw reports.
 
     Each report dict must contain:
@@ -151,6 +157,7 @@ async def insert_report(
     lon: Optional[float],
 ) -> None:
     """Insert a new crowding report into the database."""
+    # One connection per call: safe for SQLite WAL mode; avoids shared-state concurrency issues.
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """
@@ -263,5 +270,6 @@ async def delete_old_reports(
             "DELETE FROM crowding_reports WHERE reported_at < datetime('now', ?)",
             (modifier,),
         )
+        count = cursor.rowcount
         await db.commit()
-        return cursor.rowcount
+        return count
