@@ -65,6 +65,26 @@ export interface UpdateClassRequest {
   destination_name?: string;
 }
 
+/** Crowding level: 1=empty, 2=some seats, 3=standing room, 4=full */
+export type CrowdingLevel = 1 | 2 | 3 | 4;
+
+export interface CrowdingInfo {
+  level: CrowdingLevel;
+  confidence: string;
+  source: "crowdsourced" | "estimated";
+  report_count: number;
+}
+
+export interface CrowdingReportRequest {
+  vehicle_id: string;
+  route_id: string;
+  trip_id?: string;
+  crowding_level: CrowdingLevel;
+  lat?: number;
+  lon?: number;
+  user_token?: string;
+}
+
 /** GET /vehicles */
 export interface VehicleInfo {
   vehicle_id: string;
@@ -73,6 +93,7 @@ export interface VehicleInfo {
   heading: number;
   route_id: string;
   headsign: string;
+  crowding?: CrowdingInfo;
 }
 
 export interface VehiclesResponse {
@@ -99,6 +120,8 @@ export interface RecommendationStep {
   alighting_stop_id?: string | null;
   alighting_stop_lat?: number | null;
   alighting_stop_lng?: number | null;
+  vehicle_id?: string;
+  route_id?: string;
 }
 
 export interface RecommendationOption {
