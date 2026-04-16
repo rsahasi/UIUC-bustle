@@ -44,6 +44,8 @@ class _TTLCache:
 
 def _normalize_departure(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize a single departure from MTD API to our schema."""
+    from datetime import datetime, timezone
+
     route_info = raw.get("route") or {}
     route_short = route_info.get("route_short_name") or route_info.get("route_id") or ""
     headsign = raw.get("headsign") or ""
@@ -51,7 +53,6 @@ def _normalize_departure(raw: dict[str, Any]) -> dict[str, Any]:
     expected_mins = raw.get("expected_mins")
     if expected_mins is None and expected:
         try:
-            from datetime import datetime, timezone
             dt = datetime.fromisoformat(expected.replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
@@ -61,12 +62,41 @@ def _normalize_departure(raw: dict[str, Any]) -> dict[str, Any]:
             expected_mins = 0
     expected_time_iso = expected if isinstance(expected, str) else None
     is_realtime = raw.get("is_monitored", False) if isinstance(raw.get("is_monitored"), bool) else False
+
+    # Extract scheduled time and compute delay (MTD API may use either casing)
+    scheduled_raw = raw.get("scheduled") or raw.get("Scheduled")
+    scheduled_mins: int | None = None
+    delay_mins: int | None = None
+    delay_status: str | None = None
+
+    if scheduled_raw:
+        try:
+            scheduled_dt = datetime.fromisoformat(scheduled_raw.replace("Z", "+00:00"))
+            if scheduled_dt.tzinfo is None:
+                scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            scheduled_mins = int((scheduled_dt - now).total_seconds() / 60)
+        except Exception:
+            pass
+
+    if scheduled_mins is not None and expected_mins is not None:
+        delay_mins = expected_mins - scheduled_mins
+        if delay_mins >= 3:
+            delay_status = "delayed"
+        elif delay_mins <= -2:
+            delay_status = "early"
+        else:
+            delay_status = "on_time"
+
     return {
         "route": route_short,
         "headsign": headsign,
         "expected_mins": expected_mins if expected_mins is not None else 0,
         "expected_time_iso": expected_time_iso,
         "is_realtime": is_realtime,
+        "scheduled_mins": scheduled_mins,
+        "delay_mins": delay_mins,
+        "delay_status": delay_status,
     }
 
 
@@ -135,7 +165,8 @@ class MTDClient:
                 logger.warning("telemetry mtd_timeout attempt=%s stop_id=%s", attempt + 1, stop_id)
             except (httpx.HTTPError, ValueError) as e:
                 last_error = e
-                logger.warning("telemetry mtd_api_error attempt=%s stop_id=%s error=%s", attempt + 1, stop_id, str(e))
+                status = e.response.status_code if hasattr(e, "response") and e.response is not None else "unknown"
+                logger.warning("telemetry mtd_api_error attempt=%s stop_id=%s status=%s", attempt + 1, stop_id, status)
             if attempt < MTD_RETRY_ATTEMPTS - 1:
                 delay = min(MTD_RETRY_BASE_DELAY_SECONDS * (2**attempt), MTD_RETRY_MAX_DELAY_SECONDS)
                 await asyncio.sleep(delay)
@@ -167,7 +198,8 @@ class MTDClient:
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as e:
-            logger.warning("telemetry mtd_vehicles_error error=%s", str(e))
+            status = e.response.status_code if hasattr(e, "response") and e.response is not None else "unknown"
+            logger.warning("telemetry mtd_vehicles_error status=%s", status)
             return []
 
         raw_list = data.get("vehicles") or []

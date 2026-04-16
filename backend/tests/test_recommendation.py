@@ -159,49 +159,64 @@ def test_compute_recommendations_bus_option_steps_schema():
 
 def test_post_recommendation_building_not_found_returns_400():
     """POST /recommendation with unknown building_id returns 400."""
+    from unittest.mock import AsyncMock, MagicMock, patch
     import main
-    client = TestClient(main.app)
-    r = client.post(
-        "/recommendation",
-        json={
-            "lat": 40.11,
-            "lng": -88.22,
-            "destination_building_id": "nonexistent_building",
-            "arrive_by_iso": "2025-02-20T16:00:00Z",
-        },
-    )
+    from src.auth.jwt import get_current_user
+    from src.data.buildings_repo import BuildingRecord
+
+    mock_pool = MagicMock()
+    main.app.dependency_overrides[get_current_user] = lambda: "test-user-id"
+    try:
+        with patch("main.get_pool", return_value=mock_pool), \
+             patch("main.get_building", new=AsyncMock(return_value=None)):
+            client = TestClient(main.app)
+            r = client.post(
+                "/recommendation",
+                json={
+                    "lat": 40.11,
+                    "lng": -88.22,
+                    "destination_building_id": "nonexistent_building",
+                    "arrive_by_iso": "2025-02-20T16:00:00Z",
+                },
+            )
+    finally:
+        main.app.dependency_overrides.pop(get_current_user, None)
     assert r.status_code == 400
     assert "not found" in r.json().get("detail", "").lower()
 
 
 def test_post_recommendation_schema_and_stable(tmp_path):
     """POST /recommendation returns 200 and options with correct schema (stable)."""
-    import main
-    from src.data.buildings_repo import init_app_db
-    import sqlite3
+    from unittest.mock import AsyncMock, MagicMock, patch
     from datetime import datetime, timezone, timedelta
-    app_db = tmp_path / "app.db"
-    init_app_db(app_db)
-    with sqlite3.connect(app_db) as conn:
-        conn.execute(
-            "INSERT INTO buildings (building_id, name, lat, lng) VALUES (?, ?, ?, ?)",
-            ("test_bldg", "Test Building", 40.10, -88.22),
-        )
-        conn.commit()
-    main.APP_DB = app_db
+    import main
+    from src.auth.jwt import get_current_user
+    from src.data.buildings_repo import BuildingRecord
+
+    mock_pool = MagicMock()
+    test_building = BuildingRecord(building_id="test_bldg", name="Test Building", lat=40.10, lng=-88.22)
+
     # Use arrive_by 2 hours from now so walk option is valid
     arrive = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
-    client = TestClient(main.app)
-    r = client.post(
-        "/recommendation",
-        json={
-            "lat": 40.11,
-            "lng": -88.22,
-            "destination_building_id": "test_bldg",
-            "arrive_by_iso": arrive,
-            "max_options": 3,
-        },
-    )
+
+    main.app.dependency_overrides[get_current_user] = lambda: "test-user-id"
+    try:
+        with patch("main.get_pool", return_value=mock_pool), \
+             patch("main.get_building", new=AsyncMock(return_value=test_building)), \
+             patch("main.search_nearby", new=AsyncMock(return_value=[])):
+            client = TestClient(main.app)
+            r = client.post(
+                "/recommendation",
+                json={
+                    "lat": 40.11,
+                    "lng": -88.22,
+                    "destination_building_id": "test_bldg",
+                    "arrive_by_iso": arrive,
+                    "max_options": 3,
+                },
+            )
+    finally:
+        main.app.dependency_overrides.pop(get_current_user, None)
     assert r.status_code == 200
     data = r.json()
     assert "options" in data

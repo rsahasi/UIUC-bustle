@@ -17,6 +17,9 @@ export interface DepartureItem {
   expected_mins: number;
   expected_time_iso: string | null;
   is_realtime: boolean;
+  scheduled_mins?: number | null;
+  delay_mins?: number | null;
+  delay_status?: "on_time" | "delayed" | "early" | null;
 }
 
 export interface DeparturesResponse {
@@ -47,6 +50,19 @@ export interface ScheduleClass {
   destination_lng?: number | null;
   destination_name?: string | null;
   end_time_local?: string | null;
+}
+
+/** PATCH /schedule/classes/:id */
+export interface UpdateClassRequest {
+  title?: string;
+  location_name?: string;
+  building_id?: string;
+  days_of_week?: string[];
+  start_time_local?: string;
+  end_time_local?: string;
+  destination_lat?: number;
+  destination_lng?: number;
+  destination_name?: string;
 }
 
 /** GET /vehicles */

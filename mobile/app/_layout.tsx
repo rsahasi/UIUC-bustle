@@ -3,8 +3,10 @@ import "@/src/tasks/notificationRefresh"; // registers defineTask at module leve
 import { registerNotificationRefreshTask } from "@/src/tasks/notificationRefresh";
 import { AUTO_WALK_TASK_NAME } from '@/src/utils/autoWalkDetect';
 import { refreshWidgetData } from '@/src/tasks/widgetRefresh';
+import { supabase } from "@/src/auth/supabaseClient";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
+import * as ExpoLinking from 'expo-linking';
 import {
   DMSans_400Regular,
   DMSans_500Medium,
@@ -13,11 +15,23 @@ import {
 } from "@expo-google-fonts/dm-sans";
 import { DMSerifDisplay_400Regular } from "@expo-google-fonts/dm-serif-display";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
+import { Redirect, Stack, useSegments } from "expo-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useAuth } from "@/src/auth/useAuth";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as TaskManager from 'expo-task-manager';
 import { useEffect } from "react";
+import * as Sentry from "@sentry/react-native";
+import { PostHogProvider, usePostHog } from "posthog-react-native";
+
+// Sentry — init before anything else; no-ops silently when DSN is absent
+if (process.env.NODE_ENV !== "test" && process.env.EXPO_PUBLIC_SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
+    tracesSampleRate: 0.1,
+  });
+}
 
 TaskManager.defineTask(AUTO_WALK_TASK_NAME, async ({ data, error }: any) => {
   if (error || !data?.locations?.length) return;
@@ -51,7 +65,31 @@ TaskManager.defineTask(AUTO_WALK_TASK_NAME, async ({ data, error }: any) => {
   }
 });
 
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      gcTime: 300_000,
+      retry: 1,
+    },
+  },
+});
+
 SplashScreen.preventAutoHideAsync();
+
+/** Identifies the user in both Sentry and PostHog once auth is established. */
+function AnalyticsIdentifier({ userId }: { userId: string | undefined }) {
+  const posthog = usePostHog();
+  useEffect(() => {
+    if (userId) {
+      posthog?.identify(userId);
+      if (process.env.EXPO_PUBLIC_SENTRY_DSN) {
+        Sentry.setUser({ id: userId });
+      }
+    }
+  }, [posthog, userId]);
+  return null;
+}
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -61,6 +99,9 @@ export default function RootLayout() {
     DMSans_600SemiBold,
     DMSans_700Bold,
   });
+
+  const { session, user, loading: authLoading } = useAuth();
+  const segments = useSegments();
 
   useEffect(() => {
     registerNotificationRefreshTask();
@@ -73,27 +114,67 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    if (fontsLoaded) {
+    if (fontsLoaded && !authLoading) {
       SplashScreen.hideAsync();
     }
-  }, [fontsLoaded]);
+  }, [fontsLoaded, authLoading]);
 
-  if (!fontsLoaded) {
-    return null;
+  useEffect(() => {
+    // Handle deep links (magic link callback)
+    const handleUrl = async ({ url }: { url: string }) => {
+      if (url.includes('auth/callback')) {
+        const { error } = await supabase.auth.exchangeCodeForSession(url);
+        if (error) console.warn('Magic link exchange error:', error.message);
+      }
+    };
+
+    // Handle the case where the app was opened from a cold start via the link
+    ExpoLinking.getInitialURL().then((url) => {
+      if (url) handleUrl({ url });
+    });
+
+    // Handle the case where the app was already open (foreground)
+    const sub = ExpoLinking.addEventListener('url', handleUrl);
+    return () => sub.remove();
+  }, []);
+
+  if (!fontsLoaded || authLoading) {
+    return null; // SplashScreen still showing
+  }
+  if (!session && segments[0] !== "sign-in") {
+    return <Redirect href="/sign-in" />;
+  }
+  if (session && segments[0] === "sign-in") {
+    return <Redirect href="/" />;
   }
 
+  const posthogKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY;
+
   return (
-    <>
-      <StatusBar style="light" />
-      <NotificationRedirect />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />
-        <Stack.Screen name="report-issue" options={{ headerShown: true, title: "Report issue", headerBackTitle: "Back" }} />
-        <Stack.Screen name="walk-nav" options={{ headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
-        <Stack.Screen name="after-class-planner" options={{ headerShown: true, title: "Plan my evening", headerBackTitle: "Back", presentation: "modal" }} />
-        <Stack.Screen name="route-tracker" options={{ headerShown: true, title: "Route", headerBackTitle: "Back" }} />
-      </Stack>
-    </>
+    <QueryClientProvider client={queryClient}>
+      <PostHogProvider
+        apiKey={posthogKey || "placeholder"}
+        options={{
+          host: "https://us.i.posthog.com",
+          disabled: !posthogKey || process.env.NODE_ENV === "test",
+          captureScreenViews: false,
+        }}
+      >
+        <AnalyticsIdentifier userId={user?.id} />
+        <>
+          <StatusBar style="light" />
+          <NotificationRedirect />
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="sign-in" options={{ headerShown: false }} />
+            <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />
+            <Stack.Screen name="report-issue" options={{ headerShown: true, title: "Report issue", headerBackTitle: "Back" }} />
+            <Stack.Screen name="walk-nav" options={{ headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
+            <Stack.Screen name="after-class-planner" options={{ headerShown: true, title: "Plan my evening", headerBackTitle: "Back", presentation: "modal" }} />
+            <Stack.Screen name="route-tracker" options={{ headerShown: true, title: "Route", headerBackTitle: "Back" }} />
+          </Stack>
+        </>
+      </PostHogProvider>
+    </QueryClientProvider>
   );
 }

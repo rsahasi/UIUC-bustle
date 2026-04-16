@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -13,8 +13,13 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from settings import get_settings
-from src.data.buildings_repo import create_class, delete_class, init_app_db, list_buildings, list_classes, search_buildings, search_buildings_fts
+from src.data.db import init_pool, close_pool, get_pool
+from src.data.buildings_repo import (
+    list_buildings, get_building, search_buildings,
+    create_class, delete_class, list_classes, update_class, BuildingRecord, ClassRecord
+)
 from src.data.stops_repo import search_nearby
+from src.auth.jwt import get_current_user
 from src.middleware import OptionalAPIKeyMiddleware, RequestLoggingMiddleware, get_valid_api_keys
 from src.monitoring import get_metrics
 from src.mtd.client import MTDClient
@@ -28,7 +33,7 @@ from src.share.models import (
     ShareTripStatusResponse,
     VALID_PHASES,
 )
-from src.share.repo import create_shared_trip, get_shared_trip_status, patch_shared_trip
+from src.share.repo import create_shared_trip, get_shared_trip_status, patch_shared_trip, init_share_schema, SHARE_DB_PATH
 from src.share.page import build_share_page
 from src.schedule.models import (
     BuildingsListResponse,
@@ -36,12 +41,34 @@ from src.schedule.models import (
     ClassResponse,
     ClassesListResponse,
     CreateClassRequest,
+    UpdateClassRequest,
 )
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+
 settings = get_settings()
+
+def _sentry_traces_sampler(sampling_context: dict) -> float:
+    """Exclude health/metrics endpoints from performance tracing.
+    Uses .get() defensively — asgi_scope is absent for non-HTTP contexts (e.g. startup tasks).
+    """
+    path = (sampling_context.get("asgi_scope") or {}).get("path", "")
+    if path in ("/health", "/metrics"):
+        return 0.0
+    return 0.1
+
+
+if settings.sentry_dsn:
+    # Guard ensures sentry_dsn is non-empty before init; empty string raises BadDsn.
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        integrations=[FastApiIntegration()],
+        traces_sampler=_sentry_traces_sampler,
+        send_default_pii=False,
+    )
+
 BACKEND_ROOT = Path(__file__).resolve().parent
-STOPS_DB = BACKEND_ROOT / settings.stops_db_path
-APP_DB = BACKEND_ROOT / settings.app_db_path
 GTFS_DB = BACKEND_ROOT / "data" / "gtfs.db"
 
 # Structured logging: include module and level; handlers can add JSON later
@@ -69,12 +96,44 @@ def _validate_lat_lng(lat: float, lng: float) -> None:
         raise HTTPException(status_code=400, detail=f"lng must be between {LNG_MIN} and {LNG_MAX}")
 
 
+# Geo-fence: reject coordinates more than ~150 km from UIUC campus centre.
+# Prevents wasted Nominatim/OSRM quota and protects against out-of-region abuse.
+_UIUC_LAT, _UIUC_LNG = 40.1020, -88.2272
+_GEO_FENCE_DEG = 1.35  # ~150 km at this latitude
+
+
+def _validate_uiuc_region(lat: float, lng: float) -> None:
+    if abs(lat - _UIUC_LAT) > _GEO_FENCE_DEG or abs(lng - _UIUC_LNG) > _GEO_FENCE_DEG:
+        raise HTTPException(status_code=400, detail="Coordinates are outside the supported region.")
+
+
+# Bounded cache helper — evict oldest entry when cap is reached.
+_CACHE_MAX = 1000
+
+
+def _cache_put(cache: dict, key: str, value: object) -> None:
+    if len(cache) >= _CACHE_MAX:
+        try:
+            del cache[next(iter(cache))]
+        except StopIteration:
+            pass
+    cache[key] = value
+
+
+# Allowed characters for Google Place IDs (alphanumeric + hyphen + underscore).
+_PLACE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{10,250}$")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_app_db(APP_DB)
+    if settings.database_url:
+        await init_pool(settings.database_url)
+    init_share_schema()
     app.state.mtd_client = MTDClient(api_key=settings.mtd_api_key) if settings.mtd_api_key else None
     yield
     app.state.mtd_client = None
+    if settings.database_url:
+        await close_pool()
 
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
@@ -102,12 +161,16 @@ app.add_middleware(
     api_key_required=settings.api_key_required,
     api_keys=get_valid_api_keys(settings.api_keys),
 )
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+if not _cors_origins and settings.debug:
+    # In debug/dev mode with no explicit origins configured, allow localhost only
+    _cors_origins = ["http://localhost:8081", "http://localhost:3000", "http://localhost:19006"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,  # credentials=True + wildcard origin is a CORS misconfiguration
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 
@@ -213,21 +276,47 @@ async def _nominatim_lookup(query: str) -> dict:
     return result
 
 
+_nominatim_quick_cache: dict[str, tuple[float, list]] = {}
+_NOMINATIM_QUICK_TTL = 300  # 5 minutes
+
+
 async def _nominatim_quick(query: str, limit: int = 3) -> list[dict]:
-    """Nominatim search for autocomplete — short timeout, no rate-limit semaphore."""
+    """Nominatim search for autocomplete — short timeout, 5-min cache, 1 req/sec rate limit."""
     import httpx
+
+    # Fix 4: Nominatim is useless for very short queries; skip below 4 chars
+    if len(query) < 4:
+        return []
+
+    cache_key = query.lower()
+    now = time.time()
+    if cache_key in _nominatim_quick_cache:
+        expires_at, cached_results = _nominatim_quick_cache[cache_key]
+        if now < expires_at:
+            return cached_results[:limit]
+
     contextual = query if any(h in query.lower() for h in _LOCATION_HINTS) else f"{query}, Champaign, IL"
     try:
-        async with httpx.AsyncClient(timeout=3.0, headers={"User-Agent": GEOCODE_USER_AGENT}) as client:
-            r = await client.get(
-                NOMINATIM_URL,
-                params={"q": contextual, "format": "json", "limit": limit,
-                        "viewbox": NOMINATIM_VIEWBOX, "bounded": "1"},
-            )
-            r.raise_for_status()
-            data = r.json()
+        async with _nominatim_semaphore:
+            # Double-check cache inside semaphore
+            if cache_key in _nominatim_quick_cache:
+                expires_at, cached_results = _nominatim_quick_cache[cache_key]
+                if now < expires_at:
+                    return cached_results[:limit]
+
+            async with httpx.AsyncClient(timeout=3.0, headers={"User-Agent": GEOCODE_USER_AGENT}) as client:
+                r = await client.get(
+                    NOMINATIM_URL,
+                    params={"q": contextual, "format": "json", "limit": limit,
+                            "viewbox": NOMINATIM_VIEWBOX, "bounded": "1"},
+                )
+                r.raise_for_status()
+                data = r.json()
+            # Rate-limit: wait 1.05s before releasing semaphore
+            await asyncio.sleep(1.05)
     except Exception:
         return []
+
     results = []
     for item in data[:limit]:
         display = item.get("display_name", "")
@@ -239,7 +328,9 @@ async def _nominatim_quick(query: str, limit: int = 3) -> list[dict]:
             "lat": float(item.get("lat", 0)),
             "lng": float(item.get("lon", 0)),
         })
-    return results
+
+    _cache_put(_nominatim_quick_cache, cache_key, (now + _NOMINATIM_QUICK_TTL, results))
+    return results[:limit]
 
 
 async def _overpass_poi_search(query: str, limit: int = 5) -> list[dict]:
@@ -337,7 +428,11 @@ async def autocomplete(request: Request, q: str = "", limit: int = 8):
         return {"results": []}
 
     # Parallel: buildings + Google Places (or Overpass POI + Nominatim fallback)
-    buildings_task = asyncio.create_task(asyncio.to_thread(search_buildings_fts, APP_DB, query, min(5, limit)))
+    try:
+        pool = get_pool()
+        buildings_task = asyncio.create_task(search_buildings(pool, query, min(5, limit)))
+    except RuntimeError:
+        buildings_task = asyncio.create_task(asyncio.sleep(0))
     google_key = getattr(settings, "google_places_api_key", "")
     if google_key:
         places_task = asyncio.create_task(_google_places_quick(query, limit=4))
@@ -360,21 +455,33 @@ async def autocomplete(request: Request, q: str = "", limit: int = 8):
 
     buildings_raw, places_raw = await asyncio.gather(buildings_task, places_task)
 
-    results: list[dict] = []
+    # Fix 3: Score-based interleaving — smarter ranking than buildings-always-first
+    scored: list[tuple[float, dict]] = []
     seen_names: set[str] = set()
-    for b in buildings_raw:
+    query_lower = query.lower()
+
+    for b in (buildings_raw or []):
         key = b.name.lower()
-        if key not in seen_names:
-            seen_names.add(key)
-            results.append({"type": "building", "name": b.name, "lat": b.lat, "lng": b.lng, "building_id": b.building_id})
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        # Base score 0.4 for buildings + prefix bonus
+        score = 0.4 + (0.3 if key.startswith(query_lower) else 0.0)
+        scored.append((score, {"type": "building", "name": b.name, "lat": b.lat, "lng": b.lng, "building_id": b.building_id}))
 
-    remaining = limit - len(results)
-    for item in places_raw[:remaining]:
-        if item["name"].lower() not in seen_names:
-            seen_names.add(item["name"].lower())
-            results.append(item)
+    for item in (places_raw or []):
+        key = item["name"].lower()
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        # Base score 0.5 for Places (geo-filtered by Google) + prefix bonus
+        score = 0.5 + (0.3 if key.startswith(query_lower) else 0.0)
+        scored.append((score, item))
 
-    return {"results": results[:limit]}
+    scored.sort(key=lambda x: x[0], reverse=True)
+    results = [item for _, item in scored[:limit]]
+
+    return {"results": results}
 
 
 @app.get("/geocode")
@@ -387,6 +494,8 @@ async def geocode(request: Request, q: str = ""):
     query = (q or "").strip()
     if not query or len(query) < 2:
         raise HTTPException(status_code=400, detail="Provide a search query (e.g. McDonald's Champaign, or an address).")
+    if len(query) > 200:
+        raise HTTPException(status_code=400, detail="Query too long")
     try:
         result = await _nominatim_lookup(query)
     except LookupError as e:
@@ -398,15 +507,20 @@ async def geocode(request: Request, q: str = ""):
 
 
 @app.get("/stops/nearby", response_model=NearbyStopsResponse)
-def stops_nearby(request: Request, lat: float = 0.0, lng: float = 0.0, radius_m: int = 800):
+async def stops_nearby(request: Request, lat: float = 0.0, lng: float = 0.0, radius_m: int = 800):
     _validate_lat_lng(lat, lng)
+    _validate_uiuc_region(lat, lng)
     if not (RADIUS_M_MIN <= radius_m <= RADIUS_M_MAX):
         raise HTTPException(
             status_code=400,
             detail=f"radius_m must be between {RADIUS_M_MIN} and {RADIUS_M_MAX}",
         )
     logger.info("telemetry route=stops_nearby radius_m=%s", radius_m)
-    stops = search_nearby(STOPS_DB, lat, lng, radius_m, limit=10)
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    stops = await search_nearby(pool, lat, lng, radius_m, limit=10)
     return NearbyStopsResponse(
         stops=[StopInfo(stop_id=s.stop_id, stop_name=s.stop_name, lat=s.lat, lng=s.lng) for s in stops]
     )
@@ -470,9 +584,13 @@ async def get_vehicles(request: Request, route_id: str = ""):
 
 
 @app.get("/buildings", response_model=BuildingsListResponse)
-def get_buildings(request: Request):
+async def get_buildings(request: Request):
     """List all buildings. Seed data with scripts/seed_buildings.py first."""
-    buildings = list_buildings(APP_DB)
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    buildings = await list_buildings(pool)
     return BuildingsListResponse(
         buildings=[
             BuildingResponse(building_id=b.building_id, name=b.name, lat=b.lat, lng=b.lng)
@@ -482,14 +600,18 @@ def get_buildings(request: Request):
 
 
 @app.get("/buildings/search", response_model=BuildingsListResponse)
-def search_buildings_endpoint(request: Request, q: str = "", limit: int = 6):
-    """Search buildings by name (case-insensitive contains). Returns up to `limit` results ranked by relevance."""
+async def search_buildings_endpoint(request: Request, q: str = "", limit: int = 6):
+    """Search buildings by name (pg_trgm). Returns up to `limit` results ranked by relevance."""
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
     query = (q or "").strip()
     if not query or len(query) < 2:
         return BuildingsListResponse(buildings=[])
     if not (1 <= limit <= 20):
         limit = 6
-    results = search_buildings(APP_DB, query, limit=limit)
+    results = await search_buildings(pool, query, limit=limit)
     return BuildingsListResponse(
         buildings=[
             BuildingResponse(building_id=b.building_id, name=b.name, lat=b.lat, lng=b.lng)
@@ -499,11 +621,16 @@ def search_buildings_endpoint(request: Request, q: str = "", limit: int = 6):
 
 
 @app.post("/schedule/classes", response_model=ClassResponse, status_code=201)
-def post_schedule_class(request: Request, body: CreateClassRequest):
-    """Create a class for the default user. Use building_id or destination_lat/lng/name (from address search)."""
+async def post_schedule_class(request: Request, body: CreateClassRequest, user_id: str = Depends(get_current_user)):
+    """Create a class for the authenticated user."""
     try:
-        rec = create_class(
-            APP_DB,
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    try:
+        rec = await create_class(
+            pool,
             title=body.title,
             days_of_week=body.days_of_week,
             start_time_local=body.start_time_local,
@@ -512,6 +639,7 @@ def post_schedule_class(request: Request, body: CreateClassRequest):
             destination_lng=body.destination_lng,
             destination_name=body.destination_name,
             end_time_local=body.end_time_local,
+            user_id=user_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -529,17 +657,55 @@ def post_schedule_class(request: Request, body: CreateClassRequest):
 
 
 @app.delete("/schedule/classes/{class_id}", status_code=204)
-def delete_schedule_class(request: Request, class_id: str):
-    """Delete a class for the default user."""
-    deleted = delete_class(APP_DB, class_id)
+async def delete_schedule_class(request: Request, class_id: str, user_id: str = Depends(get_current_user)):
+    """Delete a class belonging to the authenticated user."""
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    deleted = await delete_class(pool, class_id, user_id=user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Class not found.")
 
 
+@app.patch("/schedule/classes/{class_id}", response_model=ClassResponse)
+async def patch_schedule_class(request: Request, class_id: str, body: UpdateClassRequest, user_id: str = Depends(get_current_user)):
+    """Update fields on a class belonging to the authenticated user."""
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    updates = body.model_dump(exclude_none=True)
+    try:
+        rec = await update_class(pool, class_id, user_id=user_id, updates=updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Class not found.")
+    return ClassResponse(
+        class_id=rec.class_id,
+        title=rec.title,
+        days_of_week=rec.days_of_week,
+        start_time_local=rec.start_time_local,
+        building_id=rec.building_id,
+        destination_lat=rec.destination_lat,
+        destination_lng=rec.destination_lng,
+        destination_name=rec.destination_name,
+        end_time_local=rec.end_time_local,
+    )
+
+
 @app.get("/schedule/classes", response_model=ClassesListResponse)
-def get_schedule_classes(request: Request):
-    """List classes for the default user."""
-    classes = list_classes(APP_DB)
+async def get_schedule_classes(request: Request, user_id: str = Depends(get_current_user)):
+    """List classes for the authenticated user."""
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    classes = await list_classes(pool, user_id=user_id)
     return ClassesListResponse(
         classes=[
             ClassResponse(
@@ -559,19 +725,6 @@ def get_schedule_classes(request: Request):
 
 
 # --- Recommendation (user location -> destination building) ---
-
-
-def _get_building_for_recommendation(building_id: str) -> tuple[float, float, str] | None:
-    from src.data.buildings_repo import get_building
-    b = get_building(APP_DB, building_id)
-    if b is None:
-        return None
-    return (b.lat, b.lng, b.name)
-
-
-def _search_nearby_for_recommendation(lat: float, lng: float, radius_m: float, limit: int) -> list[tuple[str, str, float, float]]:
-    stops = search_nearby(STOPS_DB, lat, lng, radius_m, limit=limit)
-    return [(s.stop_id, s.stop_name, s.lat, s.lng) for s in stops]
 
 
 def _get_departures_for_recommendation(stop_id: str) -> list[dict]:
@@ -600,27 +753,50 @@ def _find_exit_stop_for_recommendation(route_id: str, from_stop_id: str, dest_la
 
 
 @app.post("/recommendation", response_model=RecommendationResponse)
-def post_recommendation(request: Request, body: RecommendationRequest):
+async def post_recommendation(request: Request, body: RecommendationRequest, user=Depends(get_current_user)):
     """Return 2–3 options (WALK + BUS) from user location to destination (building or custom lat/lng)."""
+    _validate_lat_lng(body.lat, body.lng)
+    _validate_uiuc_region(body.lat, body.lng)
+
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    loop = asyncio.get_running_loop()
+
     if body.destination_lat is not None and body.destination_lng is not None:
         dest_lat, dest_lng = body.destination_lat, body.destination_lng
         dest_name = body.destination_name or "Destination"
         destination_building_id = "custom"
-        logger.info("telemetry route=recommendation custom_destination lat=%s lng=%s", dest_lat, dest_lng)
+        logger.info("telemetry route=recommendation custom_destination")
     elif body.destination_building_id:
-        building = _get_building_for_recommendation(body.destination_building_id)
+        building = await get_building(pool, body.destination_building_id)
         if building is None:
             raise HTTPException(
                 status_code=400,
                 detail=f"Building not found: {body.destination_building_id}.",
             )
-        dest_lat, dest_lng, dest_name = building
+        dest_lat, dest_lng, dest_name = building.lat, building.lng, building.name
         destination_building_id = body.destination_building_id
         logger.info("telemetry route=recommendation building_id=%s", destination_building_id)
     else:
         raise HTTPException(status_code=400, detail="Provide destination_building_id or destination_lat and destination_lng.")
+
+    # Sync callbacks for compute_recommendations — submit coroutines to the running event loop
+    def _get_building_cb(building_id: str):
+        b = asyncio.run_coroutine_threadsafe(get_building(pool, building_id), loop).result()
+        return (b.lat, b.lng, b.name) if b else None
+
+    def _search_nearby_cb(lat: float, lng: float, radius_m: float, limit: int):
+        stops = asyncio.run_coroutine_threadsafe(
+            search_nearby(pool, lat, lng, radius_m, limit=limit), loop
+        ).result()
+        return [(s.stop_id, s.stop_name, s.lat, s.lng) for s in stops]
+
     try:
-        options = compute_recommendations(
+        options = await asyncio.to_thread(
+            compute_recommendations,
             lat=body.lat,
             lng=body.lng,
             destination_building_id=destination_building_id,
@@ -633,8 +809,8 @@ def post_recommendation(request: Request, body: RecommendationRequest):
             max_options=body.max_options,
             prefer_bus=body.prefer_bus,
             now=None,
-            get_building=_get_building_for_recommendation,
-            search_nearby_stops=_search_nearby_for_recommendation,
+            get_building=_get_building_cb,
+            search_nearby_stops=_search_nearby_cb,
             get_departures=_get_departures_for_recommendation,
             find_exit_stop_fn=_find_exit_stop_for_recommendation,
         )
@@ -651,6 +827,7 @@ def post_recommendation(request: Request, body: RecommendationRequest):
             status_code=503,
             detail="Route computation failed. Please try again in a moment.",
         ) from e
+
     option_objects = [RecommendationOption(**o) for o in options]
 
     # AI ranking: if Claude key configured, rank and annotate options
@@ -723,7 +900,7 @@ async def directions_walk(request: Request, orig_lat: float, orig_lng: float, de
         logger.warning("telemetry osrm_error error=%s", str(e))
         result = fallback
 
-    _walk_directions_cache[cache_key] = (result, now + WALK_DIRECTIONS_CACHE_TTL)
+    _cache_put(_walk_directions_cache, cache_key, (result, now + WALK_DIRECTIONS_CACHE_TTL))
     return result
 
 
@@ -768,31 +945,32 @@ def gtfs_all_stops_for_route(request: Request, route_id: str = ""):
     return {"stops": stops}
 
 
-from pydantic import BaseModel as _BaseModel
+from pydantic import BaseModel as _BaseModel, Field as _Field
 
 
 class AfterClassPlanRequest(_BaseModel):
-    freetext_plan: str = ""
+    freetext_plan: str = _Field("", max_length=500)
     lat: float = 0.0
     lng: float = 0.0
 
 
 class EodReportRequest(_BaseModel):
-    entries: list[dict] = []
+    entries: list[dict] = _Field([], max_length=50)
     total_steps: int = 0
     total_calories: float = 0.0
     total_distance_m: float = 0.0
 
 
 class WalkCompleteRequest(_BaseModel):
-    mode: str = "walk"
+    mode: str = _Field("walk", max_length=50)
     distance_m: float = 0.0
     calories: float = 0.0
-    dest_name: str = ""
+    dest_name: str = _Field("", max_length=200)
 
 
 @app.post("/ai/after-class-plan")
-def post_after_class_plan(request: Request, body: AfterClassPlanRequest):
+@limiter.limit("10/minute")
+def post_after_class_plan(request: Request, body: AfterClassPlanRequest, user=Depends(get_current_user)):
     """Return a chained trip plan for after the last class. Phase 2: heuristic; Phase 3: Claude."""
     from src.ai.planner import heuristic_after_class_plan
     if not body.freetext_plan.strip():
@@ -816,7 +994,8 @@ def post_after_class_plan(request: Request, body: AfterClassPlanRequest):
 
 
 @app.post("/ai/eod-report")
-def post_eod_report(request: Request, body: EodReportRequest):
+@limiter.limit("10/minute")
+def post_eod_report(request: Request, body: EodReportRequest, user=Depends(get_current_user)):
     """Return an AI end-of-day activity report. Requires CLAUDE_API_KEY."""
     claude_key = getattr(settings, "claude_api_key", "")
     if not claude_key:
@@ -874,6 +1053,8 @@ async def places_autocomplete(request: Request, body: PlacesAutocompleteRequest)
     query = (body.q or "").strip()
     if not api_key or not query or len(query) < 2:
         return {"predictions": []}
+    if len(query) > 200:
+        raise HTTPException(status_code=400, detail="Query too long (max 200 characters).")
 
     cache_key = query.lower()
     now = time.time()
@@ -927,7 +1108,7 @@ async def places_autocomplete(request: Request, body: PlacesAutocompleteRequest)
             })
 
     result = {"predictions": predictions}
-    _places_autocomplete_cache[cache_key] = (result, now + PLACES_AUTOCOMPLETE_TTL)
+    _cache_put(_places_autocomplete_cache, cache_key, (result, now + PLACES_AUTOCOMPLETE_TTL))
     return result
 
 
@@ -939,6 +1120,8 @@ async def places_details(request: Request, place_id: str = ""):
     api_key = getattr(settings, "google_places_api_key", "")
     if not api_key or not place_id:
         raise HTTPException(status_code=400, detail="place_id required and GOOGLE_PLACES_API_KEY must be set.")
+    if not _PLACE_ID_RE.match(place_id):
+        raise HTTPException(status_code=400, detail="Invalid place_id format.")
 
     now = time.time()
     if place_id in _places_details_cache:
@@ -968,7 +1151,7 @@ async def places_details(request: Request, place_id: str = ""):
         "lng": float(loc.get("longitude") or 0),
         "display_name": display,
     }
-    _places_details_cache[place_id] = (result, now + PLACES_DETAILS_TTL)
+    _cache_put(_places_details_cache, place_id, (result, now + PLACES_DETAILS_TTL))
     return result
 
 
@@ -987,7 +1170,7 @@ async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
         if now < expires_at:
             preds = result.get("predictions", [])[:limit]
             return [{"type": "google_place", "name": p["main_text"], "secondary_text": p.get("secondary_text", ""),
-                     "lat": 0.0, "lng": 0.0, "place_id": p["place_id"]} for p in preds]
+                     "lat": p.get("lat", 0.0), "lng": p.get("lng", 0.0), "place_id": p["place_id"]} for p in preds]
 
     try:
         payload = {
@@ -1005,7 +1188,7 @@ async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
                 json=payload,
                 headers={
                     "X-Goog-Api-Key": api_key,
-                    "X-Goog-FieldMask": "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat",
+                    "X-Goog-FieldMask": "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat,suggestions.placePrediction.place.location",
                 },
             )
             r.raise_for_status()
@@ -1020,22 +1203,29 @@ async def _google_places_quick(query: str, limit: int = 3) -> list[dict]:
         sf = pp.get("structuredFormat") or {}
         main_text = (sf.get("mainText") or {}).get("text") or (pp.get("text") or {}).get("text") or ""
         secondary_text = (sf.get("secondaryText") or {}).get("text") or ""
+        # Extract location coordinates if available
+        place_loc = (pp.get("place") or {}).get("location") or {}
+        lat = float(place_loc.get("latitude") or 0.0)
+        lng = float(place_loc.get("longitude") or 0.0)
         if place_id and main_text:
             predictions.append({
                 "place_id": place_id,
                 "main_text": main_text,
                 "secondary_text": secondary_text,
                 "description": f"{main_text}, {secondary_text}".strip(", "),
+                "lat": lat,
+                "lng": lng,
             })
 
     cached_result = {"predictions": predictions}
     _places_autocomplete_cache[cache_key] = (cached_result, now + PLACES_AUTOCOMPLETE_TTL)
     return [{"type": "google_place", "name": p["main_text"], "secondary_text": p.get("secondary_text", ""),
-             "lat": 0.0, "lng": 0.0, "place_id": p["place_id"]} for p in predictions[:limit]]
+             "lat": p.get("lat", 0.0), "lng": p.get("lng", 0.0), "place_id": p["place_id"]} for p in predictions[:limit]]
 
 
 @app.post("/ai/walk-complete")
-def post_walk_complete(request: Request, body: WalkCompleteRequest):
+@limiter.limit("10/minute")
+def post_walk_complete(request: Request, body: WalkCompleteRequest, user=Depends(get_current_user)):
     """Return a short encouragement message after completing a walk."""
     claude_key = getattr(settings, "claude_api_key", "")
     if not claude_key:
@@ -1063,7 +1253,7 @@ def post_share_trip(request: Request, body: CreateShareTripRequest):
     if body.phase not in VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"phase must be one of {sorted(VALID_PHASES)}")
     token = create_shared_trip(
-        db_path=APP_DB,
+        db_path=SHARE_DB_PATH,
         destination=body.destination[:200],
         route_id=body.route_id,
         route_name=body.route_name,
@@ -1082,7 +1272,7 @@ def patch_share_trip(request: Request, token: str, body: PatchShareTripRequest):
     """Update phase and/or eta for a shared trip. Returns 404 if expired or not found."""
     if body.phase is not None and body.phase not in VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"phase must be one of {sorted(VALID_PHASES)}")
-    updated = patch_shared_trip(APP_DB, token, body.phase, body.eta_epoch)
+    updated = patch_shared_trip(SHARE_DB_PATH, token, body.phase, body.eta_epoch)
     if not updated:
         raise HTTPException(status_code=404, detail="Trip not found or has expired")
     return {"ok": True}
@@ -1092,7 +1282,7 @@ def patch_share_trip(request: Request, token: str, body: PatchShareTripRequest):
 @limiter.exempt
 def get_share_trip_status(request: Request, token: str):
     """Poll current state of a shared trip."""
-    status = get_shared_trip_status(APP_DB, token)
+    status = get_shared_trip_status(SHARE_DB_PATH, token)
     if status is None:
         return ShareTripStatusResponse(expired=True)
     return ShareTripStatusResponse(**status)

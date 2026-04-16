@@ -1,26 +1,38 @@
 # backend/tests/test_share.py
 """Tests for share trip endpoints and repo."""
+import sqlite3
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 import main
-from src.data.buildings_repo import init_app_db
-from src.share.repo import create_shared_trip, get_shared_trip_status, patch_shared_trip
+from src.share.repo import (
+    create_shared_trip, get_shared_trip_status, patch_shared_trip, init_share_schema,
+)
 
 
 @pytest.fixture
 def share_db(tmp_path):
     db = tmp_path / "app.db"
-    init_app_db(db)
+    init_share_schema(db)
     return db
 
 
 @pytest.fixture
 def client(share_db):
-    original_db = main.APP_DB
-    main.APP_DB = share_db
-    yield TestClient(main.app)
-    main.APP_DB = original_db
+    with patch.object(main, "SHARE_DB_PATH", share_db):
+        yield TestClient(main.app)
+
+
+# ── Schema test ────────────────────────────────────────────────────────────────
+
+def test_shared_trips_table_created(tmp_path):
+    """init_share_schema must create the shared_trips table."""
+    db = tmp_path / "app.db"
+    init_share_schema(db)
+    with sqlite3.connect(db) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "shared_trips" in tables
 
 
 # ── Repo unit tests ────────────────────────────────────────────────────────────

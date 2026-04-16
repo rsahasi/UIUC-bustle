@@ -1,4 +1,4 @@
-"""Optional API key auth: when API_KEY_REQUIRED=true, require X-API-Key or Authorization: Bearer <key>."""
+"""Optional API key auth: when API_KEY_REQUIRED=true, require X-API-Key header."""
 import logging
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -14,14 +14,10 @@ def get_valid_api_keys(api_keys_str: str) -> set[str]:
 
 
 def extract_api_key(request: Request) -> str | None:
-    # X-API-Key header
+    # Only accept explicit X-API-Key header, never treat Bearer JWTs as API keys
     key = request.headers.get("X-API-Key")
     if key:
         return key.strip()
-    # Authorization: Bearer <key>
-    auth = request.headers.get("Authorization")
-    if auth and auth.startswith("Bearer "):
-        return auth[7:].strip()
     return None
 
 
@@ -43,6 +39,6 @@ class OptionalAPIKeyMiddleware(BaseHTTPMiddleware):
             logger.warning("telemetry auth_failed path=%s", request.url.path)
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Invalid or missing API key. Provide X-API-Key or Authorization: Bearer <key>."},
+                content={"detail": "Invalid or missing API key. Provide X-API-Key header."},
             )
         return await call_next(request)

@@ -1,13 +1,16 @@
-import { fetchAutocomplete, fetchBusRouteStops, fetchDepartures, fetchNearbyStops, fetchRecommendation, fetchVehicles, fetchWalkingRoute } from "@/src/api/client";
+import { fetchAutocomplete, fetchBusRouteStops, fetchPlaceDetails, fetchRecommendation, fetchWalkingRoute } from "@/src/api/client";
 import type { AutocompleteResult } from "@/src/api/client";
-import type { DepartureItem, RecommendationOption, StopInfo, VehicleInfo } from "@/src/api/types";
+import type { RecommendationOption, StopInfo } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAnalytics } from "@/src/hooks/useAnalytics";
 import React from "react";
+import { useVehicles } from "@/src/queries/map";
+import { useDepartures, useNearbyStops } from "@/src/queries/departures";
 import {
   ActivityIndicator,
   Animated,
@@ -23,7 +26,7 @@ import {
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { theme } from "@/src/constants/theme";
-import { MapPin, Search, X } from "lucide-react-native";
+import { Bus, Footprints, MapPin, Search, X } from "lucide-react-native";
 
 function MapLiveBadge({ count }: { count: number }) {
   const opacity = useRef(new Animated.Value(1)).current;
@@ -43,10 +46,8 @@ function MapLiveBadge({ count }: { count: number }) {
   );
 }
 
-const MAP_RADIUS_M = 1200;
 const INITIAL_DELTA = 0.008;
 const UIUC_FALLBACK = { lat: 40.1020, lng: -88.2272 };
-const VEHICLE_POLL_MS = 15_000;
 
 type StopWithDistance = StopInfo & { distance_m: number };
 
@@ -54,14 +55,41 @@ export default function MapScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const { walkingModeId, walkingSpeedMps, bufferMinutes } = useRecommendationSettings();
   const router = useRouter();
+  const { capture } = useAnalytics();
+
+  useFocusEffect(
+    useCallback(() => {
+      capture("map_viewed");
+    }, [capture])
+  );
   const [status, setStatus] = useState<"loading" | "denied" | "error" | "ready">("loading");
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(UIUC_FALLBACK);
-  const [stops, setStops] = useState<StopWithDistance[]>([]);
   const [selectedStop, setSelectedStop] = useState<StopWithDistance | null>(null);
-  const [departures, setDepartures] = useState<DepartureItem[]>([]);
-  const [departuresLoading, setDeparturesLoading] = useState(false);
-  const [vehicles, setVehicles] = useState<VehicleInfo[]>([]);
   const [useUiucArea, setUseUiucArea] = useState(false);
+
+  // TanStack Query: vehicles (15s polling)
+  const { data: vehiclesData } = useVehicles();
+  const vehicles = vehiclesData?.vehicles ?? [];
+
+  // TanStack Query: nearby stops (reactive on location)
+  const { data: nearbyStopsData } = useNearbyStops(
+    location?.lat ?? 0,
+    location?.lng ?? 0,
+    { enabled: !!location && status === "ready" }
+  );
+  const stops: StopWithDistance[] = (nearbyStopsData?.stops ?? [])
+    .map((s) => ({
+      ...s,
+      distance_m: Math.round(haversineMeters(location?.lat ?? 0, location?.lng ?? 0, s.lat, s.lng)),
+    }))
+    .sort((a, b) => a.distance_m - b.distance_m);
+
+  // TanStack Query: departures for selected stop
+  const { data: departuresData, isLoading: departuresLoading } = useDepartures(
+    selectedStop?.stop_id ?? "",
+    { enabled: !!selectedStop }
+  );
+  const departures = departuresData?.departures ?? [];
 
   // Place search state
   const [mapSearch, setMapSearch] = useState("");
@@ -88,7 +116,6 @@ export default function MapScreen() {
   }, [emptyStateOpacity]);
 
   const mapRef = useRef<MapView | null>(null);
-  const vehiclePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentRegionRef = useRef({
     latitude: UIUC_FALLBACK.lat,
     longitude: UIUC_FALLBACK.lng,
@@ -125,15 +152,6 @@ export default function MapScreen() {
     }, 500);
   }, [location]);
 
-  const pollVehicles = useCallback(async () => {
-    try {
-      const res = await fetchVehicles(apiBaseUrl, undefined, { apiKey: apiKey ?? undefined });
-      setVehicles(res.vehicles ?? []);
-    } catch {
-      // Silently fail — vehicles are optional
-    }
-  }, [apiBaseUrl, apiKey]);
-
   const loadStops = useCallback(async () => {
     setStatus("loading");
     let latitude: number;
@@ -168,39 +186,12 @@ export default function MapScreen() {
       }
     }
 
-    try {
-      const data = await fetchNearbyStops(apiBaseUrl, latitude, longitude, MAP_RADIUS_M, { apiKey: apiKey ?? undefined });
-      const withDist = data.stops
-        .map((s) => ({
-          ...s,
-          distance_m: Math.round(haversineMeters(latitude, longitude, s.lat, s.lng)),
-        }))
-        .sort((a, b) => a.distance_m - b.distance_m);
-      setStops(withDist);
-      setStatus("ready");
-    } catch {
-      setStatus("error");
-      setStops([]);
-      setLocation(null);
-    }
-  }, [apiBaseUrl, apiKey, useUiucArea]);
+    setStatus("ready");
+  }, [useUiucArea]);
 
   useEffect(() => {
     loadStops();
   }, [loadStops]);
-
-  // Poll vehicles every 15s while map is visible
-  useEffect(() => {
-    if (status !== "ready") return;
-    pollVehicles();
-    vehiclePollRef.current = setInterval(pollVehicles, VEHICLE_POLL_MS);
-    return () => {
-      if (vehiclePollRef.current) {
-        clearInterval(vehiclePollRef.current);
-        vehiclePollRef.current = null;
-      }
-    };
-  }, [status, pollVehicles]);
 
   // Debounced autocomplete for place search
   useEffect(() => {
@@ -369,20 +360,39 @@ export default function MapScreen() {
     return () => { cancelled = true; };
   }, [placeRoutes, selectedRouteIdx, location, selectedPlace, apiBaseUrl, apiKey]);
 
-  const onSelectSuggestion = useCallback((result: AutocompleteResult) => {
+  const onSelectSuggestion = useCallback(async (result: AutocompleteResult) => {
     Keyboard.dismiss();
     setMapSearch(result.name);
     setSuggestions([]);
     setSelectedStop(null);
-    setSelectedPlace({ lat: result.lat, lng: result.lng, name: result.display_name ?? result.name, building_id: result.building_id });
     fadeOutEmptyState();
+
+    let lat = result.lat;
+    let lng = result.lng;
+    let name = result.display_name ?? result.name;
+
+    if (lat !== 0 && lng !== 0) {
+      // Coords already embedded — use directly
+    } else if (result.type === "google_place" && result.place_id) {
+      // Fallback: resolve via /places/details when backend didn't embed coords
+      try {
+        const details = await fetchPlaceDetails(apiBaseUrl, result.place_id, { apiKey: apiKey ?? undefined });
+        lat = details.lat;
+        lng = details.lng;
+        if (details.display_name) name = details.display_name;
+      } catch {
+        // Leave lat/lng as 0 — setSelectedPlace will still be set but map won't animate meaningfully
+      }
+    }
+
+    setSelectedPlace({ lat, lng, name, building_id: result.building_id });
     mapRef.current?.animateToRegion({
-      latitude: result.lat,
-      longitude: result.lng,
+      latitude: lat,
+      longitude: lng,
       latitudeDelta: INITIAL_DELTA,
       longitudeDelta: INITIAL_DELTA,
     }, 500);
-  }, []);
+  }, [apiBaseUrl, apiKey, fadeOutEmptyState]);
 
   const clearSearch = useCallback(() => {
     setMapSearch("");
@@ -431,24 +441,14 @@ export default function MapScreen() {
   }, [selectedPlace, walkingModeId, router]);
 
   const onMarkerPress = useCallback(
-    async (stop: StopWithDistance) => {
+    (stop: StopWithDistance) => {
       setSelectedStop(stop);
       setSelectedPlace(null);
       setPlaceRoutes([]);
       setMapSearch("");
       setSuggestions([]);
-      setDepartures([]);
-      setDeparturesLoading(true);
-      try {
-        const res = await fetchDepartures(apiBaseUrl, stop.stop_id, 60, { apiKey: apiKey ?? undefined });
-        setDepartures(res.departures ?? []);
-      } catch {
-        setDepartures([]);
-      } finally {
-        setDeparturesLoading(false);
-      }
     },
-    [apiBaseUrl, apiKey]
+    []
   );
 
   const onOpenTrip = useCallback(
@@ -469,15 +469,6 @@ export default function MapScreen() {
           The map is not available on web. Use the iOS or Android app.
         </Text>
         <Text style={styles.fallbackHint}>See docs for adding Google Maps API keys on native.</Text>
-      </View>
-    );
-  }
-
-  if (status === "loading") {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={theme.colors.navy} />
-        <Text style={styles.centeredText}>Getting location and nearby stops…</Text>
       </View>
     );
   }
@@ -552,8 +543,25 @@ export default function MapScreen() {
           <Marker
             coordinate={{ latitude: selectedPlace.lat, longitude: selectedPlace.lng }}
             title={selectedPlace.name}
-            pinColor={theme.colors.success}
-          />
+            anchor={{ x: 0.5, y: 1.0 }}
+            key="dest"
+          >
+            <View style={{ alignItems: 'center' }}>
+              <View style={{
+                width: 22, height: 22, borderRadius: 11,
+                backgroundColor: theme.colors.navy,
+                borderWidth: 2.5, borderColor: theme.colors.surface,
+                shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.3, shadowRadius: 3, elevation: 4,
+                justifyContent: 'center', alignItems: 'center',
+              }}>
+                <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: theme.colors.surface }} />
+              </View>
+              <View style={{ width: 0, height: 0, borderLeftWidth: 5, borderRightWidth: 5, borderTopWidth: 7,
+                borderLeftColor: 'transparent', borderRightColor: 'transparent',
+                borderTopColor: theme.colors.navy, marginTop: -1 }} />
+            </View>
+          </Marker>
         )}
         {vehicles.map((v) => (
           <Marker
@@ -565,27 +573,57 @@ export default function MapScreen() {
           />
         ))}
         {walkPolylines.map((coords, i) => (
-          <Polyline
-            key={`walk-${selectedRouteIdx}-${i}`}
-            coordinates={coords}
-            strokeColor="rgba(29, 111, 240, 1)"
-            strokeWidth={2}
-            lineDashPattern={[6, 4]}
-            zIndex={10}
-          />
+          <React.Fragment key={`walk-frag-${selectedRouteIdx}-${i}`}>
+            <Polyline
+              key={`walk-outline-${selectedRouteIdx}-${i}`}
+              coordinates={coords}
+              strokeColor="rgba(255,255,255,0.85)"
+              strokeWidth={6}
+              lineDashPattern={[8, 6]}
+              zIndex={8}
+              lineCap={"round" as any}
+            />
+            <Polyline
+              key={`walk-main-${selectedRouteIdx}-${i}`}
+              coordinates={coords}
+              strokeColor={theme.colors.navy}
+              strokeWidth={3}
+              lineDashPattern={[8, 6]}
+              zIndex={9}
+              lineCap={"round" as any}
+            />
+          </React.Fragment>
         ))}
         {busPolylines.map((coords, i) => (
-          <Polyline
-            key={`bus-${selectedRouteIdx}-${i}`}
-            coordinates={coords}
-            strokeColor="rgba(29, 111, 240, 1)"
-            strokeWidth={5}
-            zIndex={11}
-          />
+          <React.Fragment key={`bus-frag-${selectedRouteIdx}-${i}`}>
+            <Polyline
+              key={`bus-shadow-${selectedRouteIdx}-${i}`}
+              coordinates={coords}
+              strokeColor="rgba(19,41,75,0.25)"
+              strokeWidth={9}
+              zIndex={10}
+              lineCap={"round" as any}
+              lineJoin={"round" as any}
+            />
+            <Polyline
+              key={`bus-main-${selectedRouteIdx}-${i}`}
+              coordinates={coords}
+              strokeColor={theme.colors.orange}
+              strokeWidth={5}
+              zIndex={11}
+              lineCap={"round" as any}
+              lineJoin={"round" as any}
+            />
+          </React.Fragment>
         ))}
       </MapView>
 
       {/* Search bar */}
+      {status === "loading" && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="small" color={theme.colors.navy} />
+        </View>
+      )}
       <View style={styles.searchContainer}>
         <View style={styles.searchRow}>
           <Search size={16} color={theme.colors.textMuted} style={{ marginLeft: 12, marginRight: 4 }} />
@@ -678,6 +716,30 @@ export default function MapScreen() {
                         ? `Leave now · ${opt.eta_minutes} min total`
                         : `Leave in ${opt.depart_in_minutes} min · ${opt.eta_minutes} min total`}
                     </Text>
+                    <View style={{ flexDirection: 'row', gap: 4, marginTop: 5, flexWrap: 'wrap' }}>
+                      {opt.steps
+                        .filter(s => s.type === 'WALK_TO_STOP' || s.type === 'RIDE' || s.type === 'WALK_TO_DEST')
+                        .map((step, si) => (
+                          <View key={si} style={{
+                            flexDirection: 'row', alignItems: 'center', gap: 3,
+                            backgroundColor: step.type === 'RIDE' ? 'rgba(232,74,39,0.10)' : 'rgba(19,41,75,0.07)',
+                            paddingHorizontal: 7, paddingVertical: 3,
+                            borderRadius: 99,
+                          }}>
+                            {step.type === 'RIDE'
+                              ? <Bus size={10} color={theme.colors.orange} />
+                              : <Footprints size={10} color={theme.colors.navy} />}
+                            <Text style={{
+                              fontSize: 11, fontFamily: 'DMSans_500Medium',
+                              color: step.type === 'RIDE' ? theme.colors.orange : theme.colors.navy,
+                            }}>
+                              {step.type === 'RIDE'
+                                ? (step.route_short_name || step.route || 'Bus')
+                                : `${Math.round((step.walk_distance_m || 0) / 80)}m`}
+                            </Text>
+                          </View>
+                        ))}
+                    </View>
                   </View>
                   <Pressable style={styles.startBtn} onPress={() => onStartNavigation(opt)}>
                     <Text style={styles.startBtnText}>Go</Text>
@@ -737,6 +799,15 @@ const styles = StyleSheet.create({
   retryBtnSecondary: { backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.navy, marginTop: 8 },
   retryBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_600SemiBold" },
   retryBtnSecondaryText: { color: theme.colors.navy, fontFamily: "DMSans_600SemiBold" },
+  loadingOverlay: {
+    position: "absolute",
+    top: 70,
+    alignSelf: "center",
+    backgroundColor: "rgba(255,255,255,0.85)",
+    borderRadius: 20,
+    padding: 8,
+    zIndex: 10,
+  },
   searchContainer: {
     position: "absolute",
     top: 16,
@@ -800,12 +871,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    zIndex: 20,
   },
   uiucBannerText: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary },
   uiucBannerLink: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
   vehicleLegend: {
     position: "absolute",
-    top: 72,
+    top: 116,
     left: 16,
     backgroundColor: "rgba(255,255,255,0.9)",
     paddingVertical: 4,
@@ -814,6 +886,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+    zIndex: 19,
   },
   fallbackTitle: { fontSize: 20, fontFamily: "DMSans_700Bold", color: theme.colors.navy, marginBottom: 8 },
   fallbackText: { fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.text, textAlign: "center" },
@@ -895,9 +968,9 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.sm,
   },
   routeRowSelected: {
-    backgroundColor: "#EEF3FF",
+    backgroundColor: "rgba(232, 74, 39, 0.06)",
     borderLeftWidth: 3,
-    borderLeftColor: "#2563EB",
+    borderLeftColor: theme.colors.orange,
   },
   routeInfo: { flex: 1, marginRight: 12 },
   routeLabel: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },

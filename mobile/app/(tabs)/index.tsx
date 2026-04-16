@@ -4,6 +4,7 @@ import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { useLeaveBy } from "@/src/hooks/useLeaveBy";
+import { useAnalytics } from "@/src/hooks/useAnalytics";
 import type { DepartureItem, RecommendationOption, RecommendationStep, ShareTripRequest, StopInfo } from "@/src/api/types";
 import { cancelClassReminder, cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
 import { scheduleLeaveNowAlert, cancelLeaveNowAlert, cancelAllLeaveNowAlerts, buildLeaveNowBody } from "@/src/notifications/leaveNow";
@@ -15,13 +16,19 @@ import type { ClassRouteData } from "@/src/storage/classSummaryCache";
 import { buildRouteSummary, formatOptionLabel } from "@/src/utils/routeFormatting";
 import { markClassAsWalkedToday } from "@/src/storage/walkedClassToday";
 import { addRecentSearch, clearRecentSearches, getRecentSearches, type RecentSearch } from "@/src/storage/recentSearches";
-import { log } from "@/src/telemetry/logBuffer";
+import { Badge } from "@/src/components/ui/Badge";
+import { DepartureRow } from "@/src/components/ui/DepartureRow";
 import { arriveByIsoToday } from "@/src/utils/arriveBy";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import { getNextClassToday } from "@/src/utils/nextClass";
 import * as Location from "expo-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useClasses } from "@/src/queries/schedule";
+import { useNearbyStops } from "@/src/queries/departures";
+import { useRecommendation } from "@/src/queries/recommendation";
+import { useAutocomplete } from "@/src/queries/places";
 function newSessionToken(): string {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 }
@@ -45,9 +52,7 @@ import { ArrowRight, ChevronRight, Clock, MapPin, Search, Star, X } from "lucide
 import * as Haptics from "expo-haptics";
 
 const TOP_STOPS = 3;
-const NEXT_DEPARTURES = 3;
 const UIUC_FALLBACK = { lat: 40.102, lng: -88.2272 };
-const LIVE_REFRESH_MS = 30_000;
 
 function getGreeting(): string {
   const h = new Date().getHours();
@@ -142,15 +147,13 @@ export default function HomeScreen() {
   const { enabled: classNotificationsEnabled } = useClassNotificationsEnabled();
   const { walkingModeId, walkingSpeedMps, bufferMinutes, rainMode } = useRecommendationSettings();
   const leaveBy = useLeaveBy();
+  const { capture } = useAnalytics();
   const router = useRouter();
   const params = useLocalSearchParams<{ highlight?: string; focus?: string }>();
+  const queryClient = useQueryClient();
   const [status, setStatus] = useState<"loading" | "error" | "denied" | "ready">("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(UIUC_FALLBACK);
-  const [stops, setStops] = useState<StopWithDistance[]>([]);
-  const [departuresByStop, setDeparturesByStop] = useState<Record<string, DepartureItem[]>>({});
-  const [scheduleClasses, setScheduleClasses] = useState<{ class_id: string; title: string; days_of_week: string[]; start_time_local: string; building_id: string }[]>([]);
-  const [recommendations, setRecommendations] = useState<RecommendationOption[]>([]);
   const [afterLastClassPlace, setAfterLastClassPlace] = useState<SavedPlace | null>(null);
   const [afterLastClassRecs, setAfterLastClassRecs] = useState<RecommendationOption[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -163,7 +166,6 @@ export default function HomeScreen() {
   const [searchDestinationName, setSearchDestinationName] = useState<string | null>(null);
   const [recentSearches, setRecentSearches] = useState<RecentSearch[]>([]);
   const [lastSearchGeo, setLastSearchGeo] = useState<{ lat: number; lng: number; displayName: string } | null>(null);
-  const [autocompleteSuggestions, setAutocompleteSuggestions] = useState<AutocompleteResult[]>([]);
   const [useUiucArea, setUseUiucArea] = useState(false);
   // Feature: Save from suggestions + post-search save button
   const [savedPlaceNames, setSavedPlaceNames] = useState<Set<string>>(new Set());
@@ -179,20 +181,88 @@ export default function HomeScreen() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const recommendationsY = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const liveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Keep latest stops ref for live refresh without re-running location
-  const stopsRef = useRef<StopWithDistance[]>([]);
-  // Keep latest location + classes refs for recommendation refresh
+  // Keep latest location ref for callbacks
   const locationRef = useRef<{ lat: number; lng: number } | null>(null);
-  const classesRef = useRef<typeof scheduleClasses>([]);
   // Google Places session token — reset after each selection for billing grouping
   const sessionTokenRef = useRef<string>(newSessionToken());
   // Notification dedupe: only reschedule if classes changed or >10 min elapsed
   const lastNotifScheduleRef = useRef<{ key: string; at: number } | null>(null);
 
+  // Cached home data for placeholders during cold start
+  const [cachedHomeData, setCachedHomeData] = useState<import("@/src/storage/lastKnownHome").LastKnownHomeData | null>(null);
+  useEffect(() => {
+    getLastKnownHomeData().then(data => setCachedHomeData(data));
+  }, []);
+
+  // ── TanStack Query hooks ──────────────────────────────────────────────
+
+  // Classes — shared TQ cache (same key as useLeaveBy — zero duplicate requests)
+  const { data: classesData } = useClasses();
+  const scheduleClasses = classesData?.classes ?? [];
+
   const nextUp = getNextClassToday(scheduleClasses);
+
+  // Nearby stops — depends on location
+  const { data: nearbyStopsData } = useNearbyStops(
+    location?.lat ?? 0,
+    location?.lng ?? 0,
+    {
+      enabled: !!location && location.lat !== 0,
+      placeholderData: cachedHomeData ? { stops: cachedHomeData.stops } : undefined,
+    }
+  );
+  const stops = (nearbyStopsData?.stops ?? []).slice(0, TOP_STOPS) as StopWithDistance[];
+
+  // Departures — one query per stop, all in parallel
+  const departureQueries = useQueries({
+    queries: stops.map((stop) => ({
+      queryKey: ["departures", stop.stop_id],
+      queryFn: () => fetchDepartures(apiBaseUrl, stop.stop_id, 60, { apiKey }),
+      staleTime: 30_000,
+      refetchInterval: 30_000,
+      enabled: !!apiBaseUrl && !!stop.stop_id,
+    })),
+  });
+
+  // Build departuresByStop map from query results
+  const departuresByStop: Record<string, DepartureItem[]> = {};
+  departureQueries.forEach((q, i) => {
+    const stop = stops[i];
+    if (stop) departuresByStop[stop.stop_id] = q.data?.departures ?? [];
+  });
+
+  // Recommendation params
+  const recParams = useMemo(() => {
+    const nextClass = getNextClassToday(scheduleClasses);
+    if (!nextClass) return null;
+    const hasCustomDest =
+      nextClass.destination_lat != null && nextClass.destination_lng != null;
+    return {
+      lat: location?.lat ?? UIUC_FALLBACK.lat,
+      lng: location?.lng ?? UIUC_FALLBACK.lng,
+      ...(hasCustomDest
+        ? {
+            destination_lat: nextClass.destination_lat!,
+            destination_lng: nextClass.destination_lng!,
+            destination_name: nextClass.destination_name ?? undefined,
+          }
+        : { destination_building_id: nextClass.building_id }),
+      arrive_by_iso: arriveByIsoToday(nextClass.start_time_local),
+      walking_speed_mps: walkingSpeedMps,
+      buffer_minutes: bufferMinutes,
+      max_options: 4,
+      prefer_bus: rainMode,
+    } as import("@/src/api/types").RecommendationRequest;
+  }, [scheduleClasses, location, walkingSpeedMps, bufferMinutes, rainMode]);
+
+  const { data: recData } = useRecommendation(recParams);
+  const recommendations = recData?.options ?? [];
+
+  // Autocomplete — replaces the debounced fetchAutocomplete useEffect
+  const [suppressAutocomplete, setSuppressAutocomplete] = useState(false);
+  const { data: autocompleteData } = useAutocomplete(searchQuery.trim());
+  const autocompleteSuggestions = suppressAutocomplete ? [] : (autocompleteData?.results ?? []);
 
   // Load recent searches, saved places, and home place on mount
   useEffect(() => {
@@ -209,21 +279,149 @@ export default function HomeScreen() {
     })();
   }, []);
 
-  // Debounced two-tier autocomplete: backend (buildings + Google Places) as user types
+  // ── Location detection ─────────────────────────────────────────────
   useEffect(() => {
-    const q = searchQuery.trim();
-    if (q.length < 2) { setAutocompleteSuggestions([]); return; }
-    const timer = setTimeout(async () => {
+    (async () => {
       try {
-        // Backend /autocomplete already merges buildings + Google Places in parallel
-        const res = await fetchAutocomplete(apiBaseUrl, q, { apiKey: apiKey ?? undefined });
-        setAutocompleteSuggestions(res.results ?? []);
-      } catch {
-        setAutocompleteSuggestions([]);
+        const { status: perm } = await Location.requestForegroundPermissionsAsync();
+        if (perm !== "granted") {
+          setStatus("denied");
+          return;
+        }
+        const loc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        let { latitude, longitude } = loc.coords;
+        const distToUiuc = haversineMeters(latitude, longitude, UIUC_FALLBACK.lat, UIUC_FALLBACK.lng);
+        if (distToUiuc > 100_000) {
+          latitude = UIUC_FALLBACK.lat;
+          longitude = UIUC_FALLBACK.lng;
+        }
+        setLocation({ lat: latitude, lng: longitude });
+        locationRef.current = { lat: latitude, lng: longitude };
+        setStatus("ready");
+      } catch (e) {
+        const isAbort = e instanceof Error && e.name === "AbortError";
+        if (!isAbort) {
+          setStatus("error");
+          setErrorMessage(e instanceof Error ? e.message : "Something went wrong");
+        }
       }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery, apiBaseUrl, apiKey]);
+    })();
+  }, []);
+
+  // ── Class notification scheduling ─────────────────────────────────
+  useEffect(() => {
+    if (!classNotificationsEnabled || scheduleClasses.length === 0 || !apiBaseUrl) return;
+    const classKey = scheduleClasses.map((c) => c.class_id).sort().join(",");
+    if (
+      lastNotifScheduleRef.current &&
+      lastNotifScheduleRef.current.key === classKey &&
+      Date.now() - lastNotifScheduleRef.current.at < 10 * 60 * 1000
+    ) return;
+    lastNotifScheduleRef.current = { key: classKey, at: Date.now() };
+    (async () => {
+      try {
+        await cancelAllClassReminders();
+        await cancelAllLeaveNowAlerts();
+        const buildingsRes = await fetchBuildings(apiBaseUrl, { apiKey: apiKey ?? undefined }).catch(() => ({ buildings: [] }));
+        const buildingMap: Record<string, string> = {};
+        for (const b of buildingsRes.buildings ?? []) buildingMap[b.building_id] = b.name;
+        await scheduleClassReminders(scheduleClasses, buildingMap, walkingSpeedMps, bufferMinutes);
+      } catch (_) {
+        await scheduleClassReminders(scheduleClasses, {}, walkingSpeedMps, bufferMinutes);
+      }
+    })();
+  }, [scheduleClasses, classNotificationsEnabled, apiBaseUrl, apiKey, walkingSpeedMps, bufferMinutes]);
+
+  // ── Cache home data for offline cold start ────────────────────────
+  useEffect(() => {
+    if (!location || stops.length === 0) return;
+    setLastKnownHomeData({
+      stops,
+      departuresByStop,
+      scheduleClasses,
+      recommendations,
+      location,
+    }).catch(() => {});
+  }, [stops, departuresByStop, scheduleClasses, recommendations, location]);
+
+  // ── Recommendation analytics + classSummaryCache ──────────────────
+  useEffect(() => {
+    if (recommendations.length === 0) return;
+    const nextClass = getNextClassToday(scheduleClasses);
+    capture("route_viewed", {
+      route_count: recommendations.length,
+      next_class_minutes: nextClass
+        ? Math.round((new Date(arriveByIsoToday(nextClass.start_time_local)).getTime() - Date.now()) / 60000)
+        : undefined,
+    });
+    if (nextClass) {
+      const summary = buildRouteSummary(recommendations);
+      if (summary) setClassSummary(nextClass.class_id, summary).catch(() => {});
+      const routeData: ClassRouteData = {
+        summary,
+        bestDepartInMinutes: Math.min(...recommendations.map((o) => o.depart_in_minutes)),
+        etaMinutes: recommendations[0]?.eta_minutes ?? 0,
+        options: recommendations.map((o) => ({ label: formatOptionLabel(o), departInMinutes: o.depart_in_minutes })),
+      };
+      setClassRouteData(nextClass.class_id, routeData).catch(() => {});
+    }
+  }, [recommendations, scheduleClasses]);
+
+  // ── Leave Now banner ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!classNotificationsEnabled || recommendations.length === 0) return;
+    const nextClass = getNextClassToday(scheduleClasses);
+    if (!nextClass) return;
+    const best = recommendations[0];
+    scheduleLeaveNowAlert(nextClass.class_id, nextClass.title, best).catch(() => {});
+    setLeaveNowBanner(best.depart_in_minutes <= 2 ? { option: best, classTitle: nextClass.title } : null);
+  }, [recommendations, classNotificationsEnabled, scheduleClasses]);
+
+  // ── Departures timestamp tracking ─────────────────────────────────
+  useEffect(() => {
+    if (departureQueries.some(q => q.isSuccess)) {
+      setDeparturesFetchedAt(Date.now());
+    }
+  }, [departureQueries]);
+
+  // ── Offline banner ────────────────────────────────────────────────
+  useEffect(() => {
+    const anyError = departureQueries.some(q => q.isError);
+    const hasNoData = departureQueries.every(q => q.data === undefined);
+    setOfflineBanner(anyError && hasNoData);
+  }, [departureQueries]);
+
+  // ── After-last-class place recommendations ────────────────────────
+  useEffect(() => {
+    const nextClass = getNextClassToday(scheduleClasses);
+    if (nextClass || !location || !apiBaseUrl) return;
+    (async () => {
+      const placeId = await getAfterLastClassPlaceId();
+      const places = await getFavoritePlaces();
+      const place = places.find((p) => p.id === placeId) ?? null;
+      setAfterLastClassPlace(place);
+      if (!place) { setAfterLastClassRecs([]); return; }
+      try {
+        const arriveBy = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+        const rec = await fetchRecommendation(apiBaseUrl, {
+          lat: location.lat,
+          lng: location.lng,
+          destination_lat: place.lat,
+          destination_lng: place.lng,
+          destination_name: place.name,
+          arrive_by_iso: arriveBy,
+          max_options: 3,
+          walking_speed_mps: walkingSpeedMps,
+          buffer_minutes: bufferMinutes,
+        }, { apiKey: apiKey ?? undefined });
+        setAfterLastClassRecs(rec.options ?? []);
+      } catch {
+        setAfterLastClassRecs([]);
+      }
+    })();
+  }, [scheduleClasses, location, apiBaseUrl]);
 
   useEffect(() => {
     if (params.highlight === "walk") setHighlightWalk(true);
@@ -240,307 +438,17 @@ export default function HomeScreen() {
     return () => clearTimeout(t);
   }, [params.focus]);
 
-  /** Refresh recommendations for the next class using cached location. */
-  const refreshRecommendations = useCallback(async () => {
-    const loc = locationRef.current;
-    if (!loc) return;
-    const nextClass = getNextClassToday(classesRef.current);
-    if (!nextClass) return;
-    try {
-      const hasCustomDest = nextClass.destination_lat != null && nextClass.destination_lng != null;
-      const rec = await fetchRecommendation(apiBaseUrl, {
-        lat: loc.lat,
-        lng: loc.lng,
-        ...(hasCustomDest
-          ? {
-              destination_lat: nextClass.destination_lat!,
-              destination_lng: nextClass.destination_lng!,
-              destination_name: nextClass.destination_name ?? "Class",
-            }
-          : { destination_building_id: nextClass.building_id }),
-        arrive_by_iso: arriveByIsoToday(nextClass.start_time_local),
-        max_options: 3,
-        walking_speed_mps: walkingSpeedMps,
-        buffer_minutes: bufferMinutes + (rainMode ? 5 : 0),
-        prefer_bus: rainMode || undefined,
-      }, { apiKey: apiKey ?? undefined });
-      const opts = rec.options ?? [];
-      setRecommendations(opts);
-      if (classNotificationsEnabled && opts.length > 0) {
-        const best = opts[0];
-        setLeaveNowBanner(best.depart_in_minutes <= 2 ? { option: best, classTitle: nextClass.title } : null);
-      }
-    } catch {}
-  }, [apiBaseUrl, apiKey, walkingSpeedMps, bufferMinutes, classNotificationsEnabled]);
-
-  /** Lightweight refresh of departures only — no location or recommendation re-computation. */
-  const refreshDepartures = useCallback(async () => {
-    const currentStops = stopsRef.current;
-    if (!currentStops.length) return;
-    const depMap: Record<string, DepartureItem[]> = {};
-    await Promise.all(
-      currentStops.map(async (s) => {
-        try {
-          const res = await fetchDepartures(apiBaseUrl, s.stop_id, 60, { apiKey: apiKey ?? undefined });
-          depMap[s.stop_id] = (res.departures || []).slice(0, NEXT_DEPARTURES);
-        } catch {
-          depMap[s.stop_id] = [];
-        }
-      })
-    );
-    setDeparturesByStop(depMap);
-    setDeparturesFetchedAt(Date.now());
-  }, [apiBaseUrl, apiKey]);
-
-  const load = useCallback(
-    async (signal?: AbortSignal) => {
-      setErrorMessage(null);
-      setOfflineBanner(false);
-      try {
-        const { status: perm } = await Location.requestForegroundPermissionsAsync();
-        if (perm !== "granted") {
-          setStatus("denied");
-          setStops([]);
-          stopsRef.current = [];
-          setDeparturesByStop({});
-          return;
-        }
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        if (signal?.aborted) return;
-        let { latitude, longitude } = loc.coords;
-        // Snap to UIUC if GPS is far away (e.g. simulator default = San Francisco)
-        const distToUiuc = haversineMeters(latitude, longitude, UIUC_FALLBACK.lat, UIUC_FALLBACK.lng);
-        if (distToUiuc > 100_000) {
-          latitude = UIUC_FALLBACK.lat;
-          longitude = UIUC_FALLBACK.lng;
-        }
-        setLocation({ lat: latitude, lng: longitude });
-        locationRef.current = { lat: latitude, lng: longitude };
-
-        const [stopsData, classesData] = await Promise.all([
-          fetchNearbyStops(apiBaseUrl, latitude, longitude, 800, { signal, apiKey: apiKey ?? undefined }),
-          fetchClasses(apiBaseUrl, { signal, apiKey: apiKey ?? undefined }).catch(() => ({ classes: [] })),
-        ]);
-        if (signal?.aborted) return;
-        const classes = classesData.classes ?? [];
-        setScheduleClasses(classes);
-        classesRef.current = classes;
-        const data = stopsData;
-        const withDist = data.stops
-          .map((s) => ({
-            ...s,
-            distance_m: Math.round(haversineMeters(latitude, longitude, s.lat, s.lng)),
-          }))
-          .sort((a, b) => a.distance_m - b.distance_m)
-          .slice(0, TOP_STOPS);
-        setStops(withDist);
-        stopsRef.current = withDist;
-
-        const depMap: Record<string, DepartureItem[]> = {};
-        await Promise.all(
-          withDist.map(async (s) => {
-            try {
-              const res = await fetchDepartures(apiBaseUrl, s.stop_id, 60, { signal, apiKey: apiKey ?? undefined });
-              depMap[s.stop_id] = (res.departures || []).slice(0, NEXT_DEPARTURES);
-            } catch {
-              depMap[s.stop_id] = [];
-            }
-          })
-        );
-        if (signal?.aborted) return;
-        setDeparturesByStop(depMap);
-        setDeparturesFetchedAt(Date.now());
-
-        let recommendationsList: RecommendationOption[] = [];
-        const nextClass = getNextClassToday(classes);
-        if (nextClass) {
-          try {
-            const hasCustomDest = nextClass.destination_lat != null && nextClass.destination_lng != null;
-            const rec = await fetchRecommendation(apiBaseUrl, {
-              lat: latitude,
-              lng: longitude,
-              ...(hasCustomDest
-                ? {
-                    destination_lat: nextClass.destination_lat!,
-                    destination_lng: nextClass.destination_lng!,
-                    destination_name: nextClass.destination_name ?? "Class",
-                  }
-                : { destination_building_id: nextClass.building_id }),
-              arrive_by_iso: arriveByIsoToday(nextClass.start_time_local),
-              max_options: 3,
-              walking_speed_mps: walkingSpeedMps,
-              buffer_minutes: bufferMinutes,
-            }, { signal, apiKey: apiKey ?? undefined });
-            recommendationsList = rec.options ?? [];
-            setRecommendations(recommendationsList);
-            setAfterLastClassPlace(null);
-            setAfterLastClassRecs([]);
-            // Cache route summary for notification
-            if (recommendationsList.length > 0) {
-              const summary = buildRouteSummary(recommendationsList);
-              if (summary) await setClassSummary(nextClass.class_id, summary);
-              const routeData: ClassRouteData = {
-                summary,
-                bestDepartInMinutes: Math.min(...recommendationsList.map((o) => o.depart_in_minutes)),
-                etaMinutes: recommendationsList[0]?.eta_minutes ?? 0,
-                options: recommendationsList.map((o) => ({ label: formatOptionLabel(o), departInMinutes: o.depart_in_minutes })),
-              };
-              await setClassRouteData(nextClass.class_id, routeData);
-            }
-            // Schedule / re-schedule live "Leave Now" push notification
-            if (classNotificationsEnabled && recommendationsList.length > 0) {
-              const best = recommendationsList[0];
-              try { await scheduleLeaveNowAlert(nextClass.class_id, nextClass.title, best); } catch (_) {}
-              setLeaveNowBanner(best.depart_in_minutes <= 2 ? { option: best, classTitle: nextClass.title } : null);
-            }
-          } catch {
-            setRecommendations([]);
-          }
-        } else {
-          setRecommendations([]);
-          const placeId = await getAfterLastClassPlaceId();
-          const places = await getFavoritePlaces();
-          const place = places.find((p) => p.id === placeId) ?? null;
-          setAfterLastClassPlace(place);
-          if (place && !signal?.aborted) {
-            try {
-              const arriveBy = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
-              const rec = await fetchRecommendation(apiBaseUrl, {
-                lat: latitude,
-                lng: longitude,
-                destination_lat: place.lat,
-                destination_lng: place.lng,
-                destination_name: place.name,
-                arrive_by_iso: arriveBy,
-                max_options: 3,
-                walking_speed_mps: walkingSpeedMps,
-                buffer_minutes: bufferMinutes,
-              }, { signal, apiKey: apiKey ?? undefined });
-              if (!signal?.aborted) setAfterLastClassRecs(rec.options ?? []);
-            } catch {
-              setAfterLastClassRecs([]);
-            }
-          } else {
-            setAfterLastClassRecs([]);
-          }
-        }
-
-        if (signal?.aborted) return;
-        if (classNotificationsEnabled) {
-          const classKey = classes.map((c) => c.class_id).sort().join(",");
-          const shouldReschedule =
-            !lastNotifScheduleRef.current ||
-            lastNotifScheduleRef.current.key !== classKey ||
-            Date.now() - lastNotifScheduleRef.current.at > 10 * 60 * 1000;
-          if (shouldReschedule) {
-            lastNotifScheduleRef.current = { key: classKey, at: Date.now() };
-            try {
-              await cancelAllClassReminders();
-              await cancelAllLeaveNowAlerts();
-              const buildingsRes = await fetchBuildings(apiBaseUrl, { signal, apiKey: apiKey ?? undefined }).catch(() => ({ buildings: [] }));
-              const buildingMap: Record<string, string> = {};
-              for (const b of buildingsRes.buildings ?? []) buildingMap[b.building_id] = b.name;
-              await scheduleClassReminders(classes, buildingMap, walkingSpeedMps, bufferMinutes);
-            } catch (_) {
-              await scheduleClassReminders(classes, {}, walkingSpeedMps, bufferMinutes);
-            }
-          }
-        }
-
-        setStatus("ready");
-        await setLastKnownHomeData({
-          stops: withDist,
-          departuresByStop: depMap,
-          scheduleClasses: classes,
-          recommendations: recommendationsList,
-          location: { lat: latitude, lng: longitude },
-        });
-      } catch (e) {
-        const isAbort = e instanceof Error && e.name === "AbortError";
-        if (isAbort) {
-          log.info("home_load_aborted");
-          return;
-        }
-        const lastKnown = await getLastKnownHomeData();
-        if (lastKnown && (lastKnown.stops.length > 0 || lastKnown.scheduleClasses.length > 0)) {
-          setStops(lastKnown.stops);
-          stopsRef.current = lastKnown.stops;
-          setDeparturesByStop((lastKnown.departuresByStop ?? {}) as Record<string, DepartureItem[]>);
-          setScheduleClasses(lastKnown.scheduleClasses);
-          setRecommendations((lastKnown.recommendations ?? []) as RecommendationOption[]);
-          setAfterLastClassPlace(null);
-          setAfterLastClassRecs([]);
-          setStatus("ready");
-          setOfflineBanner(true);
-          log.warn("home_offline_using_cache", { savedAt: lastKnown.savedAt });
-        } else {
-          setStatus("error");
-          setErrorMessage(e instanceof Error ? e.message : "Something went wrong");
-          setStops([]);
-          stopsRef.current = [];
-          setDeparturesByStop({});
-          setRecommendations([]);
-        }
-      } finally {
-        setRefreshing(false);
-      }
-    },
-    [apiBaseUrl, classNotificationsEnabled, walkingSpeedMps, bufferMinutes, useUiucArea]
-  );
-
-  useEffect(() => {
-    let mounted = true;
-    abortRef.current = new AbortController();
-    const signal = abortRef.current.signal;
-
-    (async () => {
-      const lastKnown = await getLastKnownHomeData();
-      if (lastKnown && lastKnown.stops.length > 0) {
-        setStops(lastKnown.stops);
-        stopsRef.current = lastKnown.stops;
-        setDeparturesByStop((lastKnown.departuresByStop ?? {}) as Record<string, DepartureItem[]>);
-        setScheduleClasses(lastKnown.scheduleClasses);
-        setRecommendations((lastKnown.recommendations ?? []) as RecommendationOption[]);
-        setAfterLastClassPlace(null);
-        setAfterLastClassRecs([]);
-        if (mounted) setStatus("ready");
-      }
-      if (mounted) load(signal);
-    })();
-
-    // Live departure + recommendation refresh every 30 seconds
-    liveIntervalRef.current = setInterval(() => {
-      refreshDepartures();
-      refreshRecommendations();
-    }, LIVE_REFRESH_MS);
-
-    return () => {
-      mounted = false;
-      if (refreshTimeoutRef.current) {
-        clearTimeout(refreshTimeoutRef.current);
-        refreshTimeoutRef.current = null;
-      }
-      if (liveIntervalRef.current) {
-        clearInterval(liveIntervalRef.current);
-        liveIntervalRef.current = null;
-      }
-      abortRef.current?.abort();
-      abortRef.current = null;
-    };
-  }, [load, refreshDepartures, refreshRecommendations]);
-
-  const onRefresh = useCallback(() => {
-    if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+  // ── Pull-to-refresh via TQ invalidation ────────────────────────────
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    refreshTimeoutRef.current = setTimeout(() => {
-      refreshTimeoutRef.current = null;
-      abortRef.current?.abort();
-      abortRef.current = new AbortController();
-      load(abortRef.current.signal);
-    }, 400);
-  }, [load]);
+    await Promise.all([
+      queryClient.refetchQueries({ queryKey: ["classes"] }),
+      queryClient.refetchQueries({ queryKey: ["nearby-stops"] }),
+      queryClient.refetchQueries({ queryKey: ["departures"] }),
+      queryClient.refetchQueries({ queryKey: ["recommendation"] }),
+    ]);
+    setRefreshing(false);
+  }, [queryClient]);
 
   const onStartWalk = useCallback((opt: RecommendationOption, destNameOverride?: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -637,7 +545,7 @@ export default function HomeScreen() {
     setSearchDestinationName(null);
     setSearchDestSaved(false);
     setSearchError(null);
-    setAutocompleteSuggestions([]);
+    setSuppressAutocomplete(true);
     try {
       await _fetchRoutesTo(homePlace.lat, homePlace.lng, homePlace.name, homePlace.name);
     } catch (e) {
@@ -651,7 +559,7 @@ export default function HomeScreen() {
   const onSelectSuggestion = useCallback(async (item: AutocompleteResult) => {
     const displayName = item.display_name?.split(",")[0]?.trim() || item.name;
     setSearchQuery(displayName);
-    setAutocompleteSuggestions([]);
+    setSuppressAutocomplete(true);
     setSearchError(null);
     setSearchResults([]);
     setSearchDestinationName(null);
@@ -662,8 +570,10 @@ export default function HomeScreen() {
       let lat = item.lat;
       let lng = item.lng;
       let resolvedName = item.display_name || item.name;
-      // For Google Places results (lat=0, place_id set): resolve via /places/details
-      if (item.type === "google_place" && item.place_id && (lat === 0 || lng === 0)) {
+      if (lat !== 0 && lng !== 0) {
+        // Coords already embedded — use directly, no extra network call needed
+      } else if (item.type === "google_place" && item.place_id) {
+        // Fallback: resolve coords via /places/details (lat=0 means backend didn't embed them)
         const details = await fetchPlaceDetails(apiBaseUrl, item.place_id, { apiKey: apiKey ?? undefined });
         lat = details.lat;
         lng = details.lng;
@@ -685,7 +595,7 @@ export default function HomeScreen() {
     setSearchError(null);
     setSearchResults([]);
     setSearchDestinationName(null);
-    setAutocompleteSuggestions([]);
+    setSuppressAutocomplete(true);
     setSearchLoading(true);
     try {
       // Use the autocomplete endpoint to resolve: tries buildings first, then Nominatim
@@ -744,12 +654,12 @@ export default function HomeScreen() {
         <Pressable
           accessibilityLabel="Retry loading"
           accessibilityRole="button"
-          onPress={() => { setRefreshing(true); load(); }}
+          onPress={() => { onRefresh(); }}
           style={styles.retryBtn}
         >
           <Text style={styles.retryBtnText}>Retry</Text>
         </Pressable>
-        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => { setUseUiucArea(true); setRefreshing(true); abortRef.current?.abort(); abortRef.current = new AbortController(); load(abortRef.current.signal); }}>
+        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => { setUseUiucArea(true); onRefresh(); }}>
           <Text style={styles.retryBtnSecondaryText}>Use UIUC area (test MTD)</Text>
         </Pressable>
       </View>
@@ -993,7 +903,7 @@ export default function HomeScreen() {
                   setSearchDestinationName(null);
                   setSearchDestSaved(false);
                   setSearchError(null);
-                  setAutocompleteSuggestions([]);
+                  setSuppressAutocomplete(true);
                   try {
                     await _fetchRoutesTo(pin.destLat, pin.destLng, pin.destName, pin.destName);
                   } catch (e) {
@@ -1024,12 +934,12 @@ export default function HomeScreen() {
             placeholder="e.g. Siebel, Illini Union, or an address"
             placeholderTextColor={theme.colors.textMuted}
             value={searchQuery}
-            onChangeText={(t) => { setSearchQuery(t); setSearchError(null); if (!t.trim()) setAutocompleteSuggestions([]); }}
+            onChangeText={(t) => { setSearchQuery(t); setSearchError(null); setSuppressAutocomplete(false); }}
             onSubmitEditing={onSearchDestination}
             editable={!searchLoading}
           />
           {searchQuery.length > 0 && (
-            <Pressable onPress={() => { setSearchQuery(""); setAutocompleteSuggestions([]); setSearchError(null); }}>
+            <Pressable onPress={() => { setSearchQuery(""); setSuppressAutocomplete(true); setSearchError(null); }}>
               <X size={16} color={theme.colors.textMuted} />
             </Pressable>
           )}
@@ -1261,6 +1171,13 @@ export default function HomeScreen() {
         </View>
       )}
 
+      {/* Section divider — separates search results from class schedule block */}
+      <View style={styles.scheduleSectionDivider}>
+        <View style={styles.scheduleSectionLine} />
+        <Text style={styles.scheduleSectionLabel}>Your schedule</Text>
+        <View style={styles.scheduleSectionLine} />
+      </View>
+
       {/* Next up card */}
       <View style={styles.nextUpCard}>
         <View style={styles.nextUpLabelRow}>
@@ -1269,11 +1186,24 @@ export default function HomeScreen() {
         </View>
         {nextUp ? (
           <>
-            <Text style={styles.nextUpText}>{nextUp.title}</Text>
-            <Text style={styles.nextUpTime}>{nextUp.start_time_local}</Text>
-            <Pressable style={styles.walkingToClassBtn} onPress={onWalkingToClass}>
-              <Text style={styles.walkingToClassBtnText}>I'm walking to this class</Text>
-            </Pressable>
+            <View style={styles.nextUpBodyRow}>
+              <View style={styles.nextUpClassInfo}>
+                <Text style={styles.nextUpText}>{nextUp.title}</Text>
+                <Text style={styles.nextUpTime}>{nextUp.start_time_local}</Text>
+                <Pressable
+                  style={styles.walkingToClassBtn}
+                  onPress={() => scrollRef.current?.scrollTo({ y: recommendationsY.current, animated: true })}
+                >
+                  <Text style={styles.walkingToClassBtnText}>How are you getting there? →</Text>
+                </Pressable>
+              </View>
+              {recommendations.length > 0 && (
+                <View style={styles.nextUpWalkBadge}>
+                  <Text style={styles.nextUpWalkBadgeNum}>{sumWalkingMinutes(recommendations[0].steps)}</Text>
+                  <Text style={styles.nextUpWalkBadgeUnit}>min{"\n"}walking</Text>
+                </View>
+              )}
+            </View>
           </>
         ) : (
           <>
@@ -1287,16 +1217,6 @@ export default function HomeScreen() {
           </>
         )}
       </View>
-
-      {/* Activity row */}
-      {nextUp && recommendations.length > 0 && (
-        <View style={styles.activityRow}>
-          <Text style={styles.activityLabel}>Activity</Text>
-          <Text style={styles.activityText}>
-            ~{sumWalkingMinutes(recommendations[0].steps)} min walking (this trip)
-          </Text>
-        </View>
-      )}
 
       {nextUp && recommendations.length === 0 && (
         <View style={styles.recommendationsUnavailable}>
@@ -1335,8 +1255,8 @@ export default function HomeScreen() {
             recommendationsY.current = e.nativeEvent.layout.y;
           }}
         >
-          <View style={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg }}>
-            <Text style={[styles.sectionTitle, { marginBottom: 0, paddingHorizontal: 0, paddingTop: 0 }]}>Get there</Text>
+          <View style={styles.getThereHeader}>
+            <Text style={styles.getThereTitle}>Get there</Text>
             <Text style={styles.sectionSubtitle}>{nextUp.title}</Text>
           </View>
           {/* Sort toggle for class recommendations */}
@@ -1418,7 +1338,7 @@ export default function HomeScreen() {
       <Text style={styles.stopsSectionTitle}>Nearby stops</Text>
       {stops.length > 0 && Object.keys(departuresByStop).every((id) => (departuresByStop[id]?.length ?? 0) === 0) && (
         <View style={styles.mtdHint}>
-          <Text style={styles.mtdHintText}>Live bus times need MTD_API_KEY on the server. Set it in the backend .env to see departures.</Text>
+          <Text style={styles.mtdHintText}>No upcoming departures at nearby stops. Buses may not be running at this time.</Text>
         </View>
       )}
       {stops.length === 0 ? (
@@ -1442,25 +1362,34 @@ export default function HomeScreen() {
               {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
                 <Text style={styles.depText}>No departures</Text>
               ) : (
-                (departuresByStop[stop.stop_id] ?? []).map((d, i) => (
-                  <View key={i} style={styles.depRow}>
-                    <Pressable
-                      onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
-                      accessibilityLabel={`Track route ${d.route}`}
-                    >
-                      <View style={styles.depRouteBadge}>
-                        <Text style={styles.depRouteBadgeText}>{d.route}</Text>
-                      </View>
-                    </Pressable>
-                    <Text style={styles.depHeadsign} numberOfLines={1}>{d.headsign || "—"}</Text>
-                    <Text style={styles.depCountdown}>{d.expected_mins} min</Text>
-                    {d.is_realtime && (
-                      departuresFetchedAt != null && Date.now() - departuresFetchedAt > 2 * 60 * 1000
-                        ? <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>
-                        : <LiveBadge />
-                    )}
-                  </View>
-                ))
+                (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
+                  const isStale = d.is_realtime && departuresFetchedAt != null && Date.now() - departuresFetchedAt > 2 * 60 * 1000;
+                  const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
+                  const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
+                  const hasExtras = isStale || showDelayed || showEarly;
+                  return (
+                    <View key={i}>
+                      <Pressable
+                        onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
+                        accessibilityLabel={`Track route ${d.route}`}
+                      >
+                        <DepartureRow
+                          route={d.route}
+                          headsign={d.headsign || "—"}
+                          expectedMins={d.expected_mins}
+                          isRealtime={d.is_realtime && !isStale}
+                        />
+                      </Pressable>
+                      {hasExtras && (
+                        <View style={styles.depExtrasRow}>
+                          {isStale && <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>}
+                          {showDelayed && <Badge label={`+${d.delay_mins}m`} variant="delayed" size="sm" />}
+                          {showEarly && <Badge label={`${Math.abs(d.delay_mins!)}m early`} variant="early" size="sm" />}
+                        </View>
+                      )}
+                    </View>
+                  );
+                })
               )}
             </View>
           </View>
@@ -1479,7 +1408,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceAlt,
   },
   centeredText: { marginTop: 12, fontFamily: "DMSans_400Regular", fontSize: 15, color: theme.colors.textSecondary },
-  scrollContent: { paddingBottom: 40, backgroundColor: "#F0F2F5" },
+  scrollContent: { paddingBottom: 40, backgroundColor: theme.colors.surfaceAlt },
   greetingBlock: { backgroundColor: theme.colors.surface, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
   greeting: { fontSize: 26, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy, letterSpacing: -0.3 },
   greetingDate: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 3 },
@@ -1498,13 +1427,13 @@ const styles = StyleSheet.create({
   searchInputWrapper: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F0F2F5",
-    borderRadius: 14,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.md,
     height: 52,
     paddingHorizontal: 14,
     marginBottom: 10,
     borderWidth: 1.5,
-    borderColor: "#E4E8EF",
+    borderColor: theme.colors.border,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
@@ -1526,52 +1455,71 @@ const styles = StyleSheet.create({
   searchBtnText: { color: "#fff", fontFamily: "DMSans_600SemiBold", fontSize: 16 },
   searchError: { color: theme.colors.error, fontFamily: "DMSans_400Regular", fontSize: 13, marginTop: 8 },
 
+  // Schedule section divider (separates search results from class block)
+  scheduleSectionDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: 20,
+    marginTop: 28,
+    marginBottom: 20,
+    gap: 10,
+  },
+  scheduleSectionLine: { flex: 1, height: 1, backgroundColor: theme.colors.border },
+  scheduleSectionLabel: {
+    fontFamily: "DMSans_600SemiBold",
+    fontSize: 10,
+    letterSpacing: 1.2,
+    textTransform: "uppercase" as const,
+    color: theme.colors.textMuted,
+  },
+
   // Next up card
-  nextUpLabelRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 },
+  nextUpLabelRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
   nextUpCard: {
     backgroundColor: theme.colors.surface,
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     marginHorizontal: 16,
-    marginTop: 14,
-    marginBottom: 4,
-    padding: 16,
+    marginTop: 0,
+    marginBottom: 0,
+    padding: 18,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 3,
     borderLeftWidth: 4,
     borderLeftColor: theme.colors.orange,
   },
-  nextUpLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 10, letterSpacing: 1, textTransform: "uppercase" as const, color: theme.colors.orange },
-  nextUpText: { fontFamily: "DMSans_700Bold", fontSize: 17, color: theme.colors.navy },
-  nextUpTime: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.textSecondary, marginTop: 1 },
-  walkingToClassBtn: { marginTop: 8, alignSelf: "flex-start" },
+  nextUpLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 10, letterSpacing: 1.2, textTransform: "uppercase" as const, color: theme.colors.orange },
+  nextUpBodyRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  nextUpClassInfo: { flex: 1 },
+  nextUpText: { fontFamily: "DMSans_700Bold", fontSize: 18, color: theme.colors.navy },
+  nextUpTime: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.textSecondary, marginTop: 2 },
+  walkingToClassBtn: { marginTop: 10, alignSelf: "flex-start" },
   walkingToClassBtnText: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange },
-
-  // Activity row
-  activityRow: {
-    backgroundColor: theme.colors.surface,
-    padding: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    flexDirection: "row",
+  nextUpWalkBadge: {
+    backgroundColor: "#FFF3EE",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
+    minWidth: 64,
   },
-  activityLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 11, letterSpacing: 0.8, textTransform: "uppercase" as const, color: theme.colors.textMuted },
-  activityText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary },
+  nextUpWalkBadgeNum: { fontFamily: "DMSans_700Bold", fontSize: 24, color: theme.colors.orange, lineHeight: 26 },
+  nextUpWalkBadgeUnit: { fontFamily: "DMSans_400Regular", fontSize: 10, color: theme.colors.textMuted, textAlign: "center" as const, lineHeight: 13, marginTop: 2 },
 
   // Recommendations section
   recommendationsSection: { marginBottom: 0 },
   sectionTitle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 20, color: theme.colors.navy, marginBottom: 2, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg },
   sectionSubtitle: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, paddingHorizontal: theme.spacing.lg, marginBottom: 6 },
+  getThereHeader: { paddingHorizontal: theme.spacing.lg, paddingTop: 32, paddingBottom: 2 },
+  getThereTitle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 22, color: theme.colors.navy, marginBottom: 2 },
 
   // Option card — transit board redesign
   optionCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     marginHorizontal: 16,
     marginBottom: 10,
     marginTop: 0,
@@ -1615,7 +1563,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.orange,
     paddingHorizontal: 18,
     paddingVertical: 9,
-    borderRadius: 20,
+    borderRadius: theme.radius.md,
   },
   startBtnInlineText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff" },
 
@@ -1634,7 +1582,7 @@ const styles = StyleSheet.create({
   stopsSectionTitle: { fontFamily: "DMSans_700Bold", fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginBottom: 0, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 10 },
   card: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     marginHorizontal: 16,
     marginBottom: 10,
     overflow: "hidden",
@@ -1650,18 +1598,7 @@ const styles = StyleSheet.create({
   favoriteStopBtnText: { fontFamily: "DMSans_500Medium", fontSize: 16, color: "rgba(255,255,255,0.6)" },
   distance: { fontFamily: "DMSans_400Regular", fontSize: 11, color: "rgba(255,255,255,0.55)", marginTop: 0 },
   departures: { paddingHorizontal: 14, paddingVertical: 4 },
-  depRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: "#F3F4F6" },
-  depRouteBadge: {
-    backgroundColor: theme.colors.navy,
-    borderRadius: 6,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    minWidth: 38,
-    alignItems: "center",
-  },
-  depRouteBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 12, color: "#fff" },
-  depHeadsign: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.text, flex: 1 },
-  depCountdown: { fontFamily: "DMSans_700Bold", fontSize: 15, color: theme.colors.navy },
+  depExtrasRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: theme.spacing.lg, paddingBottom: 6 },
   depText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, padding: 14 },
   liveBadge: {
     backgroundColor: theme.colors.orange,
@@ -1749,7 +1686,7 @@ const styles = StyleSheet.create({
   // Leave By smart card
   leaveByCard: {
     backgroundColor: theme.colors.navy,
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     marginHorizontal: 16,
     marginVertical: 10,
     padding: 16,

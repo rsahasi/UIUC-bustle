@@ -7,6 +7,7 @@ import { getPendingAutoWalk, clearPendingAutoWalk } from "@/src/utils/autoWalkDe
 import { type ActivityEntry, addActivityEntry, calcStreak, dateStringForOffset, getActivityForDate, getActivityLog, todayDateString, WEEKLY_STEP_GOAL, getWeeklyStepGoal, setWeeklyStepGoal } from "@/src/storage/activityLog";
 import { computeAllInsights, getDismissedInsights, dismissInsight, type PatternInsights } from "@/src/utils/patternEngine";
 import PatternInsightCards from "@/src/components/PatternInsightCards";
+import { useMutation } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -50,9 +51,16 @@ export default function ActivityScreen() {
   const [topDestination, setTopDestination] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [reportLoading, setReportLoading] = useState(false);
-  const [reportText, setReportText] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
+  const {
+    mutate: generateReport,
+    isPending: reportLoading,
+    data: reportData,
+  } = useMutation({
+    mutationFn: (payload: Parameters<typeof fetchEodReport>[1]) =>
+      fetchEodReport(apiBaseUrl, payload, { apiKey: apiKey ?? undefined }),
+  });
+  const reportText = reportData?.report ?? null;
   const [pendingWalk, setPendingWalk] = useState<any>(null);
   const [patternInsights, setPatternInsights] = useState<PatternInsights | null>(null);
   const [dismissedInsightKeys, setDismissedInsightKeys] = useState<string[]>([]);
@@ -127,30 +135,24 @@ export default function ActivityScreen() {
     loadData();
   }, [loadData]);
 
-  const doGetReport = useCallback(async () => {
+  const doGetReport = useCallback(() => {
     setShowAiDisclosure(false);
-    setReportLoading(true);
-    setReportText(null);
     setReportError(null);
-    try {
-      const data = await fetchEodReport(
-        apiBaseUrl,
-        {
-          entries: todayEntries,
-          total_steps: todayEntries.reduce((s, e) => s + e.stepCount, 0),
-          total_calories: todayEntries.reduce((s, e) => s + e.caloriesBurned, 0),
-          total_distance_m: todayEntries.reduce((s, e) => s + e.distanceM, 0),
-        },
-        { apiKey: apiKey ?? undefined }
-      );
-      setReportText(data.report ?? "No report generated.");
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (e) {
-      setReportError(e instanceof Error ? e.message : "Failed to get report.");
-    } finally {
-      setReportLoading(false);
-    }
-  }, [apiBaseUrl, apiKey, todayEntries]);
+    const payload = {
+      entries: todayEntries,
+      total_steps: todayEntries.reduce((s, e) => s + e.stepCount, 0),
+      total_calories: todayEntries.reduce((s, e) => s + e.caloriesBurned, 0),
+      total_distance_m: todayEntries.reduce((s, e) => s + e.distanceM, 0),
+    };
+    generateReport(payload, {
+      onSuccess: () => {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      },
+      onError: (e) => {
+        setReportError(e instanceof Error ? e.message : "Failed to get report.");
+      },
+    });
+  }, [todayEntries, generateReport]);
 
   const onGetReport = useCallback(async () => {
     const consented = await AsyncStorage.getItem(AI_DISCLOSURE_KEY);
@@ -512,7 +514,7 @@ const styles = StyleSheet.create({
   empty: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 16 },
   entryCard: {
     backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.sm,
+    borderRadius: theme.radius.md,
     padding: 12,
     marginBottom: 8,
     borderWidth: 1,
@@ -545,7 +547,7 @@ const styles = StyleSheet.create({
   },
   reportBtnDisabled: { opacity: 0.7 },
   reportBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_700Bold" },
-  reportError: { backgroundColor: "#fff0f0", borderRadius: theme.radius.md, padding: 12, marginBottom: 12 },
+  reportError: { backgroundColor: "rgba(220, 38, 38, 0.08)", borderRadius: theme.radius.md, padding: 12, marginBottom: 12 },
   reportErrorText: { color: theme.colors.error, fontSize: 14, fontFamily: "DMSans_400Regular" },
   reportCard: {
     backgroundColor: theme.colors.surfaceAlt,
@@ -558,7 +560,7 @@ const styles = StyleSheet.create({
   reportBody: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.text, lineHeight: 22 },
 
   // Auto-walk prompt
-  autoWalkPrompt: { backgroundColor: '#FFF8F6', borderLeftWidth: 4, borderLeftColor: theme.colors.orange, padding: 14, marginBottom: 12, borderRadius: theme.radius.md },
+  autoWalkPrompt: { backgroundColor: "rgba(232, 74, 39, 0.08)", borderLeftWidth: 4, borderLeftColor: theme.colors.orange, padding: 14, marginBottom: 12, borderRadius: theme.radius.md },
   autoWalkPromptTitle: { fontSize: 15, fontFamily: 'DMSans_600SemiBold', color: theme.colors.navy, marginBottom: 2 },
   autoWalkPromptBody: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.textSecondary, marginBottom: 10 },
   autoWalkPromptRow: { flexDirection: 'row', gap: 10 },
@@ -570,11 +572,11 @@ const styles = StyleSheet.create({
   // Money saved card
   moneySavedCard: { backgroundColor: theme.colors.navy, borderRadius: theme.radius.md, padding: 16, marginBottom: 16, alignItems: 'center' },
   moneySavedLabel: { fontSize: 12, fontFamily: 'DMSans_500Medium', color: 'rgba(255,255,255,0.7)', marginBottom: 4 },
-  moneySavedAmount: { fontSize: 40, fontFamily: 'DMSerifDisplay_400Regular', color: theme.colors.orange, lineHeight: 46 },
+  moneySavedAmount: { fontSize: 40, fontFamily: 'DMSans_700Bold', color: theme.colors.orange, lineHeight: 46 },
   moneySavedSub: { fontSize: 12, fontFamily: 'DMSans_400Regular', color: 'rgba(255,255,255,0.6)', marginTop: 4 },
 
   // Goal suggestion
-  goalSuggestion: { backgroundColor: '#F0FFF4', borderRadius: theme.radius.md, padding: 12, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: theme.colors.success },
+  goalSuggestion: { backgroundColor: "rgba(22, 163, 74, 0.08)", borderRadius: theme.radius.md, padding: 12, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: theme.colors.success },
   goalSuggestionText: { fontSize: 13, fontFamily: 'DMSans_400Regular', color: theme.colors.success },
 
   // AI disclosure card

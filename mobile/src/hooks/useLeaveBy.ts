@@ -1,15 +1,16 @@
 // src/hooks/useLeaveBy.ts
 // Returns live departure status for the next upcoming class
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import * as Location from "expo-location";
-import { fetchClasses, fetchRecommendation } from "@/src/api/client";
 import type { RecommendationOption, RecommendationStep, ScheduleClass } from "@/src/api/types";
-import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
+import type { RecommendationRequest } from "@/src/api/types";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { getNextClassToday } from "@/src/utils/nextClass";
 import { arriveByIsoToday } from "@/src/utils/arriveBy";
 import { getWeatherForLocation, getWalkMultiplier, WeatherData } from "@/src/utils/weatherEngine";
+import { useClasses } from "@/src/queries/schedule";
+import { useRecommendation } from "@/src/queries/recommendation";
 
 export interface LeaveByOption {
   routeId: string;
@@ -36,7 +37,6 @@ export interface LeaveByState {
   weather: WeatherData | null;
 }
 
-const REFRESH_INTERVAL_MS = 30_000;
 const UIUC_FALLBACK = { lat: 40.102, lng: -88.2272 };
 const LOOKAHEAD_HOURS = 3;
 
@@ -115,197 +115,167 @@ function mapOptionToLeaveByOption(
 }
 
 export function useLeaveBy(): LeaveByState {
-  const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const { walkingSpeedMps, bufferMinutes, rainMode } = useRecommendationSettings();
 
-  const [classes, setClasses] = useState<ScheduleClass[]>([]);
-  const [state, setState] = useState<LeaveByState>({
-    nextClass: null,
-    options: [],
-    walkOnlyMins: null,
-    isLoading: true,
-    lastUpdated: null,
-    noViableBus: false,
-    weather: null,
-  });
-
   const locationRef = useRef<{ lat: number; lng: number }>(UIUC_FALLBACK);
-  const classesRef = useRef<ScheduleClass[]>([]);
-  const weatherRef = useRef<WeatherData | null>(null);
+  const [weather, setWeather] = useState<WeatherData | null>(null);
 
-  // Load location and weather on mount
+  // Load location on mount, then refresh every 60s so recParams stays fresh as user walks
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    const fetchLocation = async () => {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         if (status === "granted") {
-          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          locationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          if (!cancelled) {
+            locationRef.current = {
+              lat: loc.coords.latitude,
+              lng: loc.coords.longitude,
+            };
+          }
         }
       } catch {
         // fall through to UIUC_FALLBACK
       }
-      const { lat, lng } = locationRef.current;
-      weatherRef.current = await getWeatherForLocation(lat, lng);
-      setState((prev) => ({ ...prev, weather: weatherRef.current }));
-    })();
-  }, []);
+    };
 
-  // Load classes on mount
-  useEffect(() => {
+    // Initial fetch + weather
     (async () => {
-      try {
-        const res = await fetchClasses(apiBaseUrl, { apiKey: apiKey ?? undefined });
-        setClasses(res.classes ?? []);
-        classesRef.current = res.classes ?? [];
-      } catch {
-        // leave classes empty
+      await fetchLocation();
+      if (!cancelled) {
+        const { lat, lng } = locationRef.current;
+        const w = await getWeatherForLocation(lat, lng);
+        if (!cancelled) setWeather(w);
       }
     })();
-  }, [apiBaseUrl, apiKey]);
 
-  // Keep classesRef in sync
-  useEffect(() => {
-    classesRef.current = classes;
-  }, [classes]);
+    const interval = setInterval(fetchLocation, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
-  const refresh = async () => {
+  // Classes from shared TQ cache — no more fetchClasses or setInterval needed
+  const { data: classesData, isLoading: classesLoading } = useClasses();
+  const allClasses = classesData?.classes ?? [];
+
+  // Compute next class and recommendation params in render
+  const recParams = useMemo<RecommendationRequest | null>(() => {
     const now = new Date();
     const nowMins = minutesSinceMidnight(now);
-    const allClasses = classesRef.current;
     const nextClass = getNextClassToday(allClasses, now);
 
-    if (!nextClass) {
-      setState((prev) => ({
-        ...prev,
-        nextClass: null,
-        options: [],
-        walkOnlyMins: null,
-        isLoading: false,
-        lastUpdated: now,
-        noViableBus: false,
-      }));
-      return;
-    }
+    if (!nextClass) return null;
 
-    // Only fetch for classes within the next LOOKAHEAD_HOURS
     const [ch, cm] = nextClass.start_time_local.split(":").map(Number);
     const classStartMins = (ch ?? 0) * 60 + (cm ?? 0);
     const minsUntilClass = classStartMins - nowMins;
-    if (minsUntilClass > LOOKAHEAD_HOURS * 60 || minsUntilClass < 0) {
-      setState((prev) => ({
-        ...prev,
-        nextClass,
+
+    if (minsUntilClass > LOOKAHEAD_HOURS * 60 || minsUntilClass < 0) return null;
+
+    const hasCustomDest =
+      nextClass.destination_lat != null && nextClass.destination_lng != null;
+    const weatherMult = weather ? getWalkMultiplier(weather) : 1.0;
+    const effectiveWalkingSpeedMps = walkingSpeedMps / weatherMult;
+    const weatherCondition = weather?.condition;
+    const autoRainMode =
+      weatherCondition === "RAIN" ||
+      weatherCondition === "HEAVY_RAIN" ||
+      weatherCondition === "STORM";
+
+    return {
+      lat: locationRef.current.lat,
+      lng: locationRef.current.lng,
+      ...(hasCustomDest
+        ? {
+            destination_lat: nextClass.destination_lat!,
+            destination_lng: nextClass.destination_lng!,
+            destination_name: nextClass.destination_name ?? undefined,
+          }
+        : { destination_building_id: nextClass.building_id }),
+      arrive_by_iso: arriveByIsoToday(nextClass.start_time_local),
+      walking_speed_mps: effectiveWalkingSpeedMps,
+      buffer_minutes: bufferMinutes,
+      max_options: 4,
+      prefer_bus: rainMode || autoRainMode,
+    };
+  }, [allClasses, walkingSpeedMps, bufferMinutes, rainMode, weather]);
+
+  // Recommendation from shared TQ cache — refetchInterval: 30_000 replaces setInterval
+  const { data: recData, isLoading: recLoading } = useRecommendation(recParams);
+
+  // Derive LeaveByState from TQ query results
+  return useMemo<LeaveByState>(() => {
+    const now = new Date();
+    const nextClass = getNextClassToday(allClasses, now);
+
+    if (classesLoading) {
+      return {
+        nextClass: null,
+        options: [],
+        walkOnlyMins: null,
+        isLoading: true,
+        lastUpdated: null,
+        noViableBus: false,
+        weather,
+      };
+    }
+
+    if (!nextClass || !recParams) {
+      return {
+        nextClass: nextClass ?? null,
         options: [],
         walkOnlyMins: null,
         isLoading: false,
         lastUpdated: now,
         noViableBus: false,
-      }));
-      return;
+        weather,
+      };
     }
 
-    setState((prev) => ({ ...prev, isLoading: true }));
-
-    try {
-      const loc = locationRef.current;
-      const hasCustomDest =
-        nextClass.destination_lat != null && nextClass.destination_lng != null;
-
-      // Apply weather multiplier: divide speed so backend computes longer walk time
-      const weatherMult = weatherRef.current ? getWalkMultiplier(weatherRef.current) : 1.0;
-      const effectiveWalkingSpeedMps = walkingSpeedMps / weatherMult;
-
-      // Auto rain mode: force prefer_bus if currently raining or stormy
-      const weatherCondition = weatherRef.current?.condition;
-      const autoRainMode =
-        weatherCondition === "RAIN" ||
-        weatherCondition === "HEAVY_RAIN" ||
-        weatherCondition === "STORM";
-
-      const rec = await fetchRecommendation(
-        apiBaseUrl,
-        {
-          lat: loc.lat,
-          lng: loc.lng,
-          ...(hasCustomDest
-            ? {
-                destination_lat: nextClass.destination_lat!,
-                destination_lng: nextClass.destination_lng!,
-                destination_name: nextClass.destination_name ?? undefined,
-              }
-            : { destination_building_id: nextClass.building_id }),
-          arrive_by_iso: arriveByIsoToday(nextClass.start_time_local),
-          walking_speed_mps: effectiveWalkingSpeedMps,
-          buffer_minutes: bufferMinutes,
-          max_options: 4,
-          prefer_bus: rainMode || autoRainMode,
-        },
-        { apiKey: apiKey ?? undefined }
-      );
-
-      const rawOptions = rec.options ?? [];
-
-      // Separate walk-only and bus options
-      const walkOption = rawOptions.find((o) => o.type === "WALK");
-      const busOptions = rawOptions.filter((o) => o.type !== "WALK");
-
-      const mappedBusOptions: LeaveByOption[] = busOptions
-        .map((opt) => mapOptionToLeaveByOption(opt, classStartMins, now))
-        .sort((a, b) => b.marginMins - a.marginMins);
-
-      const walkOnlyMins =
-        walkOption && walkOption.eta_minutes < 30 ? walkOption.eta_minutes : null;
-
-      const noViableBus =
-        mappedBusOptions.length > 0 &&
-        mappedBusOptions.every((o) => o.status === "late") &&
-        walkOnlyMins == null;
-
-      setState({
+    if (recLoading) {
+      return {
         nextClass,
-        options: mappedBusOptions,
-        walkOnlyMins,
-        isLoading: false,
-        lastUpdated: now,
-        noViableBus,
-        weather: weatherRef.current,
-      });
-    } catch {
-      setState((prev) => ({
-        ...prev,
-        nextClass,
-        isLoading: false,
-        lastUpdated: now,
-      }));
+        options: [],
+        walkOnlyMins: null,
+        isLoading: true,
+        lastUpdated: null,
+        noViableBus: false,
+        weather,
+      };
     }
-  };
 
-  // Initial fetch + 30s interval
-  useEffect(() => {
-    // Wait for classes to load before first refresh (slight delay)
-    const initialTimer = setTimeout(() => {
-      refresh();
-    }, 500);
+    const [ch, cm] = nextClass.start_time_local.split(":").map(Number);
+    const classStartMins = (ch ?? 0) * 60 + (cm ?? 0);
+    const rawOptions = recData?.options ?? [];
 
-    const interval = setInterval(refresh, REFRESH_INTERVAL_MS);
+    const walkOption = rawOptions.find((o) => o.type === "WALK");
+    const busOptions = rawOptions.filter((o) => o.type !== "WALK");
 
-    return () => {
-      clearTimeout(initialTimer);
-      clearInterval(interval);
+    const mappedBusOptions: LeaveByOption[] = busOptions
+      .map((opt) => mapOptionToLeaveByOption(opt, classStartMins, now))
+      .sort((a, b) => b.marginMins - a.marginMins);
+
+    const walkOnlyMins =
+      walkOption && walkOption.eta_minutes < 30 ? walkOption.eta_minutes : null;
+
+    const noViableBus =
+      mappedBusOptions.length > 0 &&
+      mappedBusOptions.every((o) => o.status === "late") &&
+      walkOnlyMins == null;
+
+    return {
+      nextClass,
+      options: mappedBusOptions,
+      walkOnlyMins,
+      isLoading: false,
+      lastUpdated: now,
+      noViableBus,
+      weather,
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBaseUrl, apiKey, walkingSpeedMps, bufferMinutes, rainMode]);
-
-  // Re-run refresh when classes are first loaded
-  useEffect(() => {
-    if (classes.length > 0) {
-      refresh();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classes]);
-
-  return state;
+  }, [classesLoading, allClasses, recParams, recLoading, recData, weather]);
 }
 
 export default useLeaveBy;

@@ -9,6 +9,9 @@ class DepartureItem(BaseModel):
     expected_mins: int
     expected_time_iso: str | None
     is_realtime: bool
+    scheduled_mins: int | None = None
+    delay_mins: int | None = None
+    delay_status: str | None = None  # "on_time" | "delayed" | "early"
 
 
 class DeparturesResponse(BaseModel):

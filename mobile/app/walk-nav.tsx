@@ -1,8 +1,10 @@
+import React from "react";
 import { createShareTrip, fetchBusRouteStops, fetchVehicles, fetchWalkingRoute, patchShareTrip } from "@/src/api/client";
 import type { BusStop, VehicleInfo } from "@/src/api/client";
 import type { ShareTripRequest } from "@/src/api/types";
 import { getMpsForMode, WALKING_MODES } from "@/src/constants/walkingMode";
 import type { WalkingModeId } from "@/src/constants/walkingMode";
+import { useAnalytics } from "@/src/hooks/useAnalytics";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { addActivityEntry, todayDateString } from "@/src/storage/activityLog";
@@ -58,6 +60,7 @@ type NavPhase = "walking" | "bus";
 export default function WalkNavScreen() {
   const router = useRouter();
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
+  const { capture } = useAnalytics();
   const { weightKg } = useRecommendationSettings();
   const params = useLocalSearchParams<{
     dest_lat: string;
@@ -169,6 +172,12 @@ export default function WalkNavScreen() {
   const walkingRouteCoordsRef = useRef<{ latitude: number; longitude: number }[]>([]);
   const offRouteRefetchRef = useRef(false);
 
+  // Fire once on mount — intentional empty deps to fire exactly once regardless of re-renders
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    capture("walk_started", { walking_mode: modeId });
+  }, []);
+
   // Keep navPhaseRef in sync
   useEffect(() => {
     navPhaseRef.current = navPhase;
@@ -180,7 +189,10 @@ export default function WalkNavScreen() {
     if (navPhase === "bus" && shareTokenRef.current) {
       patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "on_bus" }, { apiKey: apiKey ?? undefined });
     }
-  }, [navPhase, apiBaseUrl, apiKey]);
+    if (navPhase === "bus") {
+      capture("bus_phase_entered");
+    }
+  }, [navPhase, apiBaseUrl, apiKey, capture]);
 
   // Keep walkingRouteCoordsRef in sync
   useEffect(() => {
@@ -415,6 +427,7 @@ export default function WalkNavScreen() {
   useEffect(() => {
     if (arrived) {
       if (showCompletion) return; // already handled
+      capture("trip_completed");
       if (timerRef.current) clearInterval(timerRef.current);
       if (shareTokenRef.current) {
         patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "arrived" }, { apiKey: apiKey ?? undefined });
@@ -443,7 +456,7 @@ export default function WalkNavScreen() {
         } catch {}
       })();
     }
-  }, [arrived, showCompletion, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
+  }, [arrived, showCompletion, capture, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
 
   const finishWalk = useCallback(async () => {
     await addActivityEntry({
@@ -521,14 +534,19 @@ export default function WalkNavScreen() {
             longitudeDelta: zoomDelta,
           }}
         >
-          {/* User location — blue dot using snapped coords so it shows on UIUC map */}
+          {/* User location — navy dot with pulse ring using snapped coords so it shows on UIUC map */}
           {userLocation && (
             <Marker
               coordinate={{ latitude: userLocation.lat, longitude: userLocation.lng }}
               anchor={{ x: 0.5, y: 0.5 }}
               tracksViewChanges={false}
             >
-              <View style={styles.userDot} />
+              <View style={{ alignItems: "center", justifyContent: "center" }}>
+                <View style={{ width: 32, height: 32, borderRadius: 16,
+                  backgroundColor: 'rgba(19,41,75,0.15)', position: 'absolute',
+                  top: -7, left: -7 }} />
+                <View style={styles.userDot} />
+              </View>
             </Marker>
           )}
 
@@ -566,56 +584,130 @@ export default function WalkNavScreen() {
 
           {/* Dashed walk from alighting stop to final destination */}
           {walkFromBusCoords.length > 1 && (
-            <Polyline
-              coordinates={walkFromBusCoords}
-              strokeColor="rgba(29, 111, 240, 1)"
-              strokeWidth={2}
-              lineDashPattern={[6, 4]}
-              zIndex={10}
-            />
+            <React.Fragment>
+              <Polyline
+                coordinates={walkFromBusCoords}
+                strokeColor="rgba(255,255,255,0.85)"
+                strokeWidth={6}
+                lineDashPattern={[8, 6]}
+                lineCap={"round" as any}
+                zIndex={8}
+              />
+              <Polyline
+                coordinates={walkFromBusCoords}
+                strokeColor={theme.colors.navy}
+                strokeWidth={3}
+                lineDashPattern={[8, 6]}
+                lineCap={"round" as any}
+                zIndex={9}
+              />
+            </React.Fragment>
           )}
 
           {/* Walking phase: fetched OSRM route or straight-line fallback */}
           {navPhase === "walking" && walkingRouteCoords.length > 1 && (
-            <Polyline
-              coordinates={walkingRouteCoords}
-              strokeColor="rgba(29, 111, 240, 1)"
-              strokeWidth={2}
-              lineDashPattern={[6, 4]}
-              zIndex={10}
-            />
+            <React.Fragment>
+              <Polyline
+                coordinates={walkingRouteCoords}
+                strokeColor="rgba(255,255,255,0.85)"
+                strokeWidth={6}
+                lineDashPattern={[8, 6]}
+                lineCap={"round" as any}
+                zIndex={8}
+              />
+              <Polyline
+                key="walking-route"
+                coordinates={walkingRouteCoords}
+                strokeColor={theme.colors.navy}
+                strokeWidth={3}
+                lineDashPattern={[8, 6]}
+                lineCap={"round" as any}
+                zIndex={9}
+              />
+            </React.Fragment>
           )}
           {navPhase === "walking" && walkingRouteCoords.length <= 1 && userLocation && (
-            <Polyline
-              coordinates={[
-                { latitude: userLocation.lat, longitude: userLocation.lng },
-                { latitude: destLat, longitude: destLng },
-              ]}
-              strokeColor="rgba(29, 111, 240, 1)"
-              strokeWidth={2}
-              lineDashPattern={[6, 4]}
-              zIndex={10}
-            />
+            <React.Fragment>
+              <Polyline
+                coordinates={[
+                  { latitude: userLocation.lat, longitude: userLocation.lng },
+                  { latitude: destLat, longitude: destLng },
+                ]}
+                strokeColor="rgba(255,255,255,0.85)"
+                strokeWidth={6}
+                lineDashPattern={[8, 6]}
+                lineCap={"round" as any}
+                zIndex={8}
+              />
+              <Polyline
+                key="walking-fallback"
+                coordinates={[
+                  { latitude: userLocation.lat, longitude: userLocation.lng },
+                  { latitude: destLat, longitude: destLng },
+                ]}
+                strokeColor={theme.colors.navy}
+                strokeWidth={3}
+                lineDashPattern={[8, 6]}
+                lineCap={"round" as any}
+                zIndex={9}
+              />
+            </React.Fragment>
           )}
 
           {/* Bus route shape — visible in BOTH walking and bus phases */}
           {isBusMode && busShapeCoords.length > 1 && (
-            <Polyline
-              coordinates={busShapeCoords}
-              strokeColor="rgba(29, 111, 240, 1)"
-              strokeWidth={4}
-              zIndex={10}
-            />
+            <React.Fragment>
+              <Polyline
+                coordinates={busShapeCoords}
+                strokeColor="rgba(19,41,75,0.25)"
+                strokeWidth={9}
+                lineCap={"round" as any}
+                lineJoin={"round" as any}
+                zIndex={10}
+              />
+              <Polyline
+                key="bus-shape"
+                coordinates={busShapeCoords}
+                strokeColor={theme.colors.orange}
+                strokeWidth={5}
+                lineCap={"round" as any}
+                lineJoin={"round" as any}
+                zIndex={11}
+              />
+            </React.Fragment>
           )}
 
           {/* Bus phase: stop markers */}
           {navPhase === "bus" && busStops.map((s) => (
-            <Marker
-              key={s.stop_id}
-              coordinate={{ latitude: s.lat, longitude: s.lng }}
-              title={s.stop_name}
-              pinColor={s.stop_id === alightingStopId ? theme.colors.error : theme.colors.navy}
-            />
+            s.stop_id === alightingStopId ? (
+              <Marker
+                key={s.stop_id}
+                coordinate={{ latitude: s.lat, longitude: s.lng }}
+                title={s.stop_name}
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <View style={{
+                  width: 22, height: 22, borderRadius: 11,
+                  backgroundColor: theme.colors.surface,
+                  borderWidth: 3, borderColor: theme.colors.error,
+                  shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+                  shadowOpacity: 0.3, shadowRadius: 2, elevation: 3,
+                }} />
+              </Marker>
+            ) : (
+              <Marker
+                key={s.stop_id}
+                coordinate={{ latitude: s.lat, longitude: s.lng }}
+                title={s.stop_name}
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <View style={{
+                  width: 14, height: 14, borderRadius: 7,
+                  backgroundColor: theme.colors.surface,
+                  borderWidth: 2, borderColor: theme.colors.navy,
+                }} />
+              </Marker>
+            )
           ))}
 
           {/* Live bus vehicles — navy circle with white Bus icon */}
@@ -767,7 +859,7 @@ export default function WalkNavScreen() {
 
       <Pressable style={[styles.cancelBtn, { flexDirection: "row", alignItems: "center", gap: 4 }]} onPress={onCancel}>
         <X size={14} color="#fff" />
-        <Text style={styles.cancelBtnText}>Cancel walk</Text>
+        <Text style={styles.cancelBtnText}>{isBusMode ? "Cancel Route" : "Cancel Walk"}</Text>
       </Pressable>
 
       {/* Completion modal */}
@@ -816,7 +908,7 @@ const styles = StyleSheet.create({
     width: 18,
     height: 18,
     borderRadius: 9,
-    backgroundColor: "#2196F3",
+    backgroundColor: theme.colors.navy,
     borderWidth: 3,
     borderColor: "#fff",
     shadowColor: "#000",
@@ -880,9 +972,9 @@ const styles = StyleSheet.create({
   },
   hudRow: { flexDirection: "row", justifyContent: "space-around", marginBottom: 8 },
   hudCell: { alignItems: "center" },
-  hudLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", marginBottom: 2 },
+  hudLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", marginBottom: 2 },
   hudValue: { fontSize: 20, fontFamily: "DMSans_700Bold", color: "#fff" },
-  hudMode: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.8)", textAlign: "center", marginBottom: 4 },
+  hudMode: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", textAlign: "center", marginBottom: 4 },
   hudDest: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange, textAlign: "center" },
   cancelBtn: {
     position: "absolute",
@@ -938,9 +1030,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   modalBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_700Bold" },
-  entranceNotice: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", marginTop: 2, textAlign: "center" },
+  entranceNotice: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.55)", marginTop: 2, textAlign: "center" },
   paceWarning: { fontSize: 12, fontFamily: "DMSans_600SemiBold", color: theme.colors.error, backgroundColor: "rgba(220,38,38,0.15)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, marginTop: 4, textAlign: "center" },
-  paceAhead: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.6)", marginTop: 2, textAlign: "center" },
+  paceAhead: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", marginTop: 2, textAlign: "center" },
   pinWrapper: { alignItems: "center" },
   pinBulb: {
     width: 20,

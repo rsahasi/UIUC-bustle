@@ -2,8 +2,12 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 pydantic-settings==2.6.1
 httpx==0.28.1
+sentry-sdk[fastapi]
 slowapi==0.1.9
 pytest==8.3.4
+pytest-asyncio==0.25.3
 anthropic>=0.40.0
-aiosqlite
-aiosqlite
+PyJWT==2.10.1
+asyncpg==0.30.0
+alembic==1.14.0
+psycopg2-binary==2.9.10

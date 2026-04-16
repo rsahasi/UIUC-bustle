@@ -1,12 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import {
-  createClass,
-  deleteClass,
-  fetchAutocomplete,
-  fetchBuildings,
-  fetchClasses,
   fetchPlaceDetails,
-  fetchPlacesAutocomplete,
 } from "@/src/api/client";
 import { cancelClassReminder } from "@/src/notifications/classReminders";
 import { disableClassNotif, enableClassNotif, getDisabledClassIds } from "@/src/storage/classNotifPrefs";
@@ -15,12 +9,14 @@ import type { AutocompleteResult } from "@/src/api/client";
 import type { Building, ScheduleClass } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { theme } from "@/src/constants/theme";
-import { Bell, BellOff, Trash2 } from "lucide-react-native";
+import { Bell, BellOff, CalendarDays, Pencil, Trash2 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
+import { useAnalytics } from "@/src/hooks/useAnalytics";
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -29,6 +25,8 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useClasses, useBuildings, useDeleteClass, useCreateClass, useUpdateClass, useBuildingSearch } from "@/src/queries/schedule";
+import { usePlacesAutocomplete } from "@/src/queries/places";
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_LABELS: Record<string, string> = {
@@ -67,23 +65,33 @@ function getTransitStatusColor(startTime: string, departInMins: number): string 
 export default function ScheduleScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const router = useRouter();
-  const [classes, setClasses] = useState<ScheduleClass[]>([]);
-  const [buildings, setBuildings] = useState<Building[]>([]);
+  const { capture } = useAnalytics();
+
+  const { data: classesData, isLoading, refetch: refetchClasses } = useClasses();
+  const { data: buildingsData } = useBuildings();
+  const classes = classesData?.classes ?? [];
+  const buildings = buildingsData?.buildings ?? [];
+  const refreshing = false; // TQ handles background refresh; keep for RefreshControl compat
+
+  const { mutate: deleteClassMutation } = useDeleteClass();
+  const { mutate: createClassMutation } = useCreateClass();
+  const { mutate: updateClassMutation } = useUpdateClass();
+
+  const [editingClass, setEditingClass] = useState<ScheduleClass | null>(null);
+  const [showForm, setShowForm] = useState(false);
+
   const [classRouteDatas, setClassRouteDatas] = useState<Record<string, ClassRouteData | null>>({});
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [days, setDays] = useState<string[]>([]);
   const [time, setTime] = useState("09:00");
   const [endTime, setEndTime] = useState("");
   const [locationQuery, setLocationQuery] = useState("");
+  const [debouncedLocationQuery, setDebouncedLocationQuery] = useState("");
   const [locationSearching, setLocationSearching] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [locationDisplay, setLocationDisplay] = useState<string | null>(null);
   const [locationLat, setLocationLat] = useState<number | null>(null);
   const [locationLng, setLocationLng] = useState<number | null>(null);
-  const [locationSuggestions, setLocationSuggestions] = useState<AutocompleteResult[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [disabledNotifIds, setDisabledNotifIds] = useState<string[]>([]);
@@ -95,35 +103,94 @@ export default function ScheduleScreen() {
   const [viewMode, setViewMode] = useState<"list" | "week">("list");
   const [selectedWeekDay, setSelectedWeekDay] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const [classesRes, buildingsRes] = await Promise.all([
-        fetchClasses(apiBaseUrl, { apiKey: apiKey ?? undefined }),
-        fetchBuildings(apiBaseUrl, { apiKey: apiKey ?? undefined }),
-      ]);
-      const loadedClasses = classesRes.classes ?? [];
-      setClasses(loadedClasses);
-      setBuildings(buildingsRes.buildings ?? []);
-      setDisabledNotifIds(await getDisabledClassIds());
-      // Load route data for each class
-      const routeEntries = await Promise.all(
-        loadedClasses.map(async (c) => [c.class_id, await getClassRouteData(c.class_id)] as [string, ClassRouteData | null])
-      );
-      setClassRouteDatas(Object.fromEntries(routeEntries));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load");
-      setClasses([]);
-      setBuildings([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [apiBaseUrl]);
+  useFocusEffect(
+    useCallback(() => {
+      capture("schedule_viewed");
+    }, [capture])
+  );
+
+  // Load disabled notif IDs and class route data whenever classes update
+  useEffect(() => {
+    getDisabledClassIds().then(setDisabledNotifIds);
+  }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (classes.length === 0) return;
+    Promise.all(
+      classes.map(async (c) => [c.class_id, await getClassRouteData(c.class_id)] as [string, ClassRouteData | null])
+    ).then((entries) => setClassRouteDatas(Object.fromEntries(entries)));
+  }, [classes]);
+
+  // Debounce the location query for TQ hooks
+  useEffect(() => {
+    if (locationDebounceRef.current) clearTimeout(locationDebounceRef.current);
+    locationDebounceRef.current = setTimeout(() => {
+      setDebouncedLocationQuery(locationQuery.trim());
+    }, 300);
+    return () => {
+      if (locationDebounceRef.current) clearTimeout(locationDebounceRef.current);
+    };
+  }, [locationQuery]);
+
+  // TQ-powered autocomplete queries
+  const { data: buildingSearchData } = useBuildingSearch(debouncedLocationQuery);
+  const { data: placesData } = usePlacesAutocomplete(debouncedLocationQuery, locationSessionRef.current);
+
+  // Combine building + places results into locationSuggestions
+  const locationSuggestions: AutocompleteResult[] = (() => {
+    if (debouncedLocationQuery.length < 2) return [];
+    const buildingResults: AutocompleteResult[] = (buildingSearchData?.buildings ?? []).slice(0, 4).map((b) => ({
+      type: "building" as const,
+      name: b.name,
+      display_name: b.name,
+      lat: b.lat,
+      lng: b.lng,
+      building_id: b.building_id,
+      place_id: "",
+    }));
+    const placesResults = (placesData?.predictions ?? []).slice(0, Math.max(0, 6 - buildingResults.length)).map((p) => ({
+      type: "google_place" as const,
+      name: p.main_text,
+      display_name: p.description,
+      lat: 0,
+      lng: 0,
+      building_id: "",
+      place_id: p.place_id,
+      secondary_text: p.secondary_text,
+    }));
+    return [...buildingResults, ...placesResults];
+  })();
+
+  const resetForm = useCallback(() => {
+    setTitle("");
+    setDays([]);
+    setTime("09:00");
+    setEndTime("");
+    setLocationQuery("");
+    setDebouncedLocationQuery("");
+    setLocationDisplay(null);
+    setLocationLat(null);
+    setLocationLng(null);
+    setLocationError(null);
+    setEditingClass(null);
+    setShowForm(false);
+  }, []);
+
+  const onEditClass = useCallback((c: ScheduleClass) => {
+    setEditingClass(c);
+    setTitle(c.title);
+    setDays([...c.days_of_week]);
+    setTime(c.start_time_local);
+    setEndTime(c.end_time_local ?? "");
+    const locName = c.destination_name ?? "";
+    setLocationQuery(locName);
+    setDebouncedLocationQuery("");
+    setLocationDisplay(locName || null);
+    setLocationLat(c.destination_lat ?? null);
+    setLocationLng(c.destination_lng ?? null);
+    setLocationError(null);
+    setShowForm(true);
+  }, []);
 
   const toggleDay = (d: string) => {
     setDays((prev) =>
@@ -191,6 +258,8 @@ export default function ScheduleScreen() {
     const newEnd = endTrimmed ? toMinutes(endTrimmed) : newStart + 75; // assume 75min if no end
     const conflicts: ScheduleClass[] = [];
     for (const cls of classes) {
+      // When editing, skip conflict check against the class being edited
+      if (editingClass && cls.class_id === editingClass.class_id) continue;
       if (!days.some((d) => cls.days_of_week.includes(d))) continue;
       const clsStart = toMinutes(cls.start_time_local);
       const clsEnd = cls.end_time_local ? toMinutes(cls.end_time_local) : clsStart + 75;
@@ -201,10 +270,10 @@ export default function ScheduleScreen() {
       const proceed = await new Promise<boolean>((resolve) => {
         Alert.alert(
           "Schedule conflict",
-          `This overlaps with ${msg}. Add anyway?`,
+          `This overlaps with ${msg}. ${editingClass ? "Save anyway?" : "Add anyway?"}`,
           [
             { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-            { text: "Add anyway", style: "destructive", onPress: () => resolve(true) },
+            { text: editingClass ? "Save anyway" : "Add anyway", style: "destructive", onPress: () => resolve(true) },
           ]
         );
       });
@@ -212,34 +281,61 @@ export default function ScheduleScreen() {
     }
 
     setSubmitting(true);
-    try {
-      await createClass(apiBaseUrl, {
+
+    if (editingClass) {
+      // Edit mode: PATCH the existing class
+      const updates = {
         title: t,
         days_of_week: days,
         start_time_local: time.trim(),
-        destination_lat: locationLat,
-        destination_lng: locationLng,
+        destination_lat: locationLat ?? undefined,
+        destination_lng: locationLng ?? undefined,
         destination_name: locationDisplay ?? (locationQuery.trim() || undefined),
         end_time_local: endTrimmed || undefined,
-      }, { apiKey: apiKey ?? undefined });
-      setTitle("");
-      setDays([]);
-      setTime("09:00");
-      setEndTime("");
-      setLocationQuery("");
-      setLocationDisplay(null);
-      setLocationLat(null);
-      setLocationLng(null);
-      setLocationError(null);
-      await load();
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setSuccessToast("Class added ✓");
-      setTimeout(() => setSuccessToast(null), 2500);
-    } catch (e) {
-      Alert.alert("Error", e instanceof Error ? e.message : "Failed to add class");
-    } finally {
-      setSubmitting(false);
+      };
+      updateClassMutation({ classId: editingClass.class_id, updates }, {
+        onSuccess: () => {
+          resetForm();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          capture("class_edited", { class_id: editingClass.class_id });
+          setSuccessToast("Class saved ✓");
+          setTimeout(() => setSuccessToast(null), 2500);
+          setSubmitting(false);
+        },
+        onError: (e) => {
+          Alert.alert("Error", e instanceof Error ? e.message : "Failed to save class");
+          setSubmitting(false);
+        },
+      });
+      return;
     }
+
+    const body = {
+      title: t,
+      days_of_week: days,
+      start_time_local: time.trim(),
+      destination_lat: locationLat,
+      destination_lng: locationLng,
+      destination_name: locationDisplay ?? (locationQuery.trim() || undefined),
+      end_time_local: endTrimmed || undefined,
+    };
+    createClassMutation(body, {
+      onSuccess: () => {
+        resetForm();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        capture("class_added", {
+          has_building: false,  // schedule.tsx only uses custom destinations (destination_lat/lng)
+          has_custom_dest: locationLat !== null && locationLng !== null,
+        });
+        setSuccessToast("Class added ✓");
+        setTimeout(() => setSuccessToast(null), 2500);
+        setSubmitting(false);
+      },
+      onError: (e) => {
+        Alert.alert("Error", e instanceof Error ? e.message : "Failed to add class");
+        setSubmitting(false);
+      },
+    });
   };
 
   const onLocationQueryChange = useCallback((text: string) => {
@@ -248,38 +344,13 @@ export default function ScheduleScreen() {
     setLocationDisplay(null);
     setLocationLat(null);
     setLocationLng(null);
-    if (locationDebounceRef.current) clearTimeout(locationDebounceRef.current);
-    const q = text.trim();
-    if (q.length < 2) {
-      setLocationSuggestions([]);
-      return;
-    }
-    locationDebounceRef.current = setTimeout(async () => {
-      try {
-        const [buildingRes, placesRes] = await Promise.all([
-          fetchAutocomplete(apiBaseUrl, q, { apiKey: apiKey ?? undefined }),
-          fetchPlacesAutocomplete(apiBaseUrl, q, locationSessionRef.current, { apiKey: apiKey ?? undefined }),
-        ]);
-        const buildings = (buildingRes.results ?? []).slice(0, 4);
-        const places = (placesRes.predictions ?? []).slice(0, Math.max(0, 6 - buildings.length)).map((p) => ({
-          type: "google_place" as const,
-          name: p.main_text,
-          display_name: p.description,
-          lat: 0,
-          lng: 0,
-          building_id: "",
-          place_id: p.place_id,
-          secondary_text: p.secondary_text,
-        }));
-        setLocationSuggestions([...buildings, ...places]);
-      } catch {}
-    }, 300);
-  }, [apiBaseUrl, apiKey]);
+  }, []);
 
   const onSelectLocationSuggestion = useCallback(async (item: AutocompleteResult) => {
-    setLocationSuggestions([]);
     locationSessionRef.current = Math.random().toString(36).slice(2);
     setLocationSearching(true);
+    // Clear debounced query so suggestions disappear
+    setDebouncedLocationQuery("");
     try {
       if (item.type === "google_place" && item.place_id) {
         const details = await fetchPlaceDetails(apiBaseUrl, item.place_id, { apiKey: apiKey ?? undefined });
@@ -300,27 +371,26 @@ export default function ScheduleScreen() {
     }
   }, [apiBaseUrl, apiKey]);
 
-  const onDeleteClass = useCallback(async (c: ScheduleClass) => {
+  const onDeleteClass = useCallback((c: ScheduleClass) => {
     Alert.alert("Delete class", `Remove "${c.title}"?`, [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete",
         style: "destructive",
-        onPress: async () => {
-          try {
-            await deleteClass(apiBaseUrl, c.class_id, { apiKey: apiKey ?? undefined });
-            await load();
-          } catch (e) {
-            Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete");
-          }
+        onPress: () => {
+          deleteClassMutation(c.class_id, {
+            onError: (e) => {
+              Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete");
+            },
+          });
         },
       },
     ]);
-  }, [apiBaseUrl, apiKey, load]);
+  }, [deleteClassMutation]);
 
   function classLocationLabel(c: ScheduleClass): string {
     if (c.destination_name) return c.destination_name;
-    return buildings.find((b) => b.building_id === c.building_id)?.name ?? c.building_id;
+    return buildings.find((b: Building) => b.building_id === c.building_id)?.name ?? c.building_id;
   }
 
   const DAY_ORDER: Record<string, number> = { MON: 0, TUE: 1, WED: 2, THU: 3, FRI: 4, SAT: 5, SUN: 6 };
@@ -335,7 +405,7 @@ export default function ScheduleScreen() {
     return (a.start_time_local ?? "").localeCompare(b.start_time_local ?? "");
   });
 
-  if (loading && !refreshing) {
+  if (isLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={theme.colors.navy} />
@@ -344,10 +414,111 @@ export default function ScheduleScreen() {
   }
 
   return (
+    <View style={styles.screenWrapper}>
+      <Modal
+        visible={showForm}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={resetForm}
+      >
+        <ScrollView contentContainerStyle={styles.modalContainer} keyboardShouldPersistTaps="handled">
+          <View style={styles.modalHeader}>
+            <Pressable onPress={resetForm} accessibilityLabel="Cancel" accessibilityRole="button">
+              <Text style={styles.modalCancel}>Cancel</Text>
+            </Pressable>
+            <Text style={styles.modalTitle}>{editingClass ? "Edit Class" : "Add Class"}</Text>
+            <View style={{ width: 60 }} />
+          </View>
+          <View style={styles.formCard}><View style={styles.form}>
+            {editingClass && (
+              <View style={styles.editingBanner}>
+                <Text style={styles.editingBannerText}>Editing: {editingClass.title}</Text>
+              </View>
+            )}
+            <Text style={styles.label}>Title</Text>
+            <TextInput
+              style={styles.input}
+              value={title}
+              onChangeText={(text) => setTitle(text.slice(0, 60))}
+              maxLength={60}
+              placeholder="e.g. CS 101"
+            />
+            <Text style={styles.label}>Days</Text>
+            <View style={styles.dayRow}>
+              {DAYS.map((d) => (
+                <Pressable
+                  key={d}
+                  style={[styles.dayBtn, days.includes(d) && styles.dayBtnOn]}
+                  onPress={() => toggleDay(d)}
+                >
+                  <Text style={[styles.dayText, days.includes(d) && styles.dayTextOn]}>{d.slice(0, 1)}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={styles.label}>Start time (HH:MM)</Text>
+            <TextInput
+              style={styles.input}
+              value={time}
+              onChangeText={setTime}
+              placeholder="09:00"
+              keyboardType="numbers-and-punctuation"
+            />
+            <Text style={styles.label}>End time (HH:MM, optional)</Text>
+            <TextInput
+              style={styles.input}
+              value={endTime}
+              onChangeText={setEndTime}
+              placeholder="10:15"
+              keyboardType="numbers-and-punctuation"
+            />
+            <Text style={styles.label}>Class location (address or place)</Text>
+            <TextInput
+              style={styles.input}
+              value={locationQuery}
+              onChangeText={onLocationQueryChange}
+              placeholder="e.g. Lincoln Hall, Illini Union, 934 Lundy Lane"
+              autoCorrect={false}
+            />
+            {locationSearching && <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginTop: 6 }} />}
+            {locationSuggestions.length > 0 && (
+              <View style={styles.suggestionList}>
+                {locationSuggestions.map((item, i) => (
+                  <Pressable
+                    key={`${item.type}-${item.place_id ?? item.building_id}-${i}`}
+                    style={[styles.suggestionItem, i < locationSuggestions.length - 1 && styles.suggestionSep]}
+                    onPress={() => onSelectLocationSuggestion(item)}
+                  >
+                    <Text style={styles.suggestionName} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    {(item.secondary_text || item.display_name) ? (
+                      <Text style={styles.suggestionSub} numberOfLines={1}>
+                        {item.secondary_text ?? item.display_name}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            {locationError && <Text style={styles.locationError}>{locationError}</Text>}
+            {locationDisplay != null && (
+              <Text style={styles.locationConfirmed}>✓ {locationDisplay}</Text>
+            )}
+            <Pressable
+              style={[styles.submitBtn, submitting && styles.submitDisabled]}
+              onPress={submit}
+              disabled={submitting}
+            >
+              {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{editingClass ? "Save" : "Add class"}</Text>}
+            </Pressable>
+          </View></View>
+        </ScrollView>
+      </Modal>
+
     <ScrollView
       contentContainerStyle={styles.container}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={theme.colors.navy} />
+        <RefreshControl refreshing={refreshing} onRefresh={() => { refetchClasses(); }} tintColor={theme.colors.navy} />
       }
     >
       {successToast && (
@@ -355,86 +526,6 @@ export default function ScheduleScreen() {
           <Text style={styles.successToastText}>{successToast}</Text>
         </View>
       )}
-      {error && <Text style={styles.error}>{error}</Text>}
-
-      <View style={styles.formCard}><View style={styles.form}>
-        <Text style={styles.label}>Title</Text>
-        <TextInput
-          style={styles.input}
-          value={title}
-          onChangeText={(text) => setTitle(text.slice(0, 60))}
-          maxLength={60}
-          placeholder="e.g. CS 101"
-        />
-        <Text style={styles.label}>Days</Text>
-        <View style={styles.dayRow}>
-          {DAYS.map((d) => (
-            <Pressable
-              key={d}
-              style={[styles.dayBtn, days.includes(d) && styles.dayBtnOn]}
-              onPress={() => toggleDay(d)}
-            >
-              <Text style={[styles.dayText, days.includes(d) && styles.dayTextOn]}>{d.slice(0, 1)}</Text>
-            </Pressable>
-          ))}
-        </View>
-        <Text style={styles.label}>Start time (HH:MM)</Text>
-        <TextInput
-          style={styles.input}
-          value={time}
-          onChangeText={setTime}
-          placeholder="09:00"
-          keyboardType="numbers-and-punctuation"
-        />
-        <Text style={styles.label}>End time (HH:MM, optional)</Text>
-        <TextInput
-          style={styles.input}
-          value={endTime}
-          onChangeText={setEndTime}
-          placeholder="10:15"
-          keyboardType="numbers-and-punctuation"
-        />
-        <Text style={styles.label}>Class location (address or place)</Text>
-        <TextInput
-          style={styles.input}
-          value={locationQuery}
-          onChangeText={onLocationQueryChange}
-          placeholder="e.g. Lincoln Hall, Illini Union, 934 Lundy Lane"
-          autoCorrect={false}
-        />
-        {locationSearching && <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginTop: 6 }} />}
-        {locationSuggestions.length > 0 && (
-          <View style={styles.suggestionList}>
-            {locationSuggestions.map((item, i) => (
-              <Pressable
-                key={`${item.type}-${item.place_id ?? item.building_id}-${i}`}
-                style={[styles.suggestionItem, i < locationSuggestions.length - 1 && styles.suggestionSep]}
-                onPress={() => onSelectLocationSuggestion(item)}
-              >
-                <Text style={styles.suggestionName} numberOfLines={1}>
-                  {item.name}
-                </Text>
-                {(item.secondary_text || item.display_name) ? (
-                  <Text style={styles.suggestionSub} numberOfLines={1}>
-                    {item.secondary_text ?? item.display_name}
-                  </Text>
-                ) : null}
-              </Pressable>
-            ))}
-          </View>
-        )}
-        {locationError && <Text style={styles.locationError}>{locationError}</Text>}
-        {locationDisplay != null && (
-          <Text style={styles.locationConfirmed}>✓ {locationDisplay}</Text>
-        )}
-        <Pressable
-          style={[styles.submitBtn, submitting && styles.submitDisabled]}
-          onPress={submit}
-          disabled={submitting}
-        >
-          {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Add class</Text>}
-        </Pressable>
-      </View></View>
 
       {/* List / Week toggle */}
       <View style={styles.viewToggleRow}>
@@ -473,7 +564,7 @@ export default function ScheduleScreen() {
         <Text style={styles.empty}>
           {viewMode === "week" && selectedWeekDay
             ? `No classes on ${DAY_LABELS[selectedWeekDay]}.`
-            : "No classes yet. Fill in the form above to add your first class."}
+            : "No classes yet. Tap + to add your first class."}
         </Text>
       ) : (
         filteredClasses.map((c) => (
@@ -497,6 +588,13 @@ export default function ScheduleScreen() {
                   {disabledNotifIds.includes(c.class_id)
                     ? <BellOff size={18} color={theme.colors.textMuted} />
                     : <Bell size={18} color={theme.colors.navy} />}
+                </Pressable>
+                <Pressable
+                  style={styles.editBtn}
+                  onPress={() => onEditClass(c)}
+                  accessibilityLabel={`Edit ${c.title}`}
+                >
+                  <Pencil size={18} color={theme.colors.navy} />
                 </Pressable>
                 <Pressable
                   style={styles.deleteBtn}
@@ -528,16 +626,55 @@ export default function ScheduleScreen() {
         ))
       )}
       <Pressable style={styles.planWeekBtn} onPress={() => router.push('/after-class-planner')}>
+        <CalendarDays size={15} color={theme.colors.orange} />
         <Text style={styles.planWeekBtnText}>Plan my evening →</Text>
       </Pressable>
     </ScrollView>
+
+      {/* FAB — add class */}
+      <Pressable
+        style={styles.fab}
+        onPress={() => setShowForm(true)}
+        accessibilityLabel="Add class"
+        accessibilityRole="button"
+      >
+        <Text style={styles.fabText}>+</Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screenWrapper: { flex: 1 },
   centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surface },
-  container: { padding: 16, paddingBottom: 32 },
-  error: { color: theme.colors.error, fontFamily: "DMSans_400Regular", fontSize: 14, marginBottom: 12 },
+  container: { padding: 16, paddingBottom: 100 },
+  fab: {
+    position: "absolute",
+    bottom: 24,
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: theme.colors.navy,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  fabText: { fontSize: 28, color: "#fff", lineHeight: 32, fontFamily: "DMSans_400Regular" },
+  modalContainer: { padding: 16, paddingBottom: 40 },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  modalTitle: { fontSize: 18, fontFamily: "DMSans_700Bold", color: theme.colors.navy },
+  modalCancel: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, width: 60 },
   formCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, marginBottom: 16, padding: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
   form: { marginBottom: 0 },
   label: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, marginTop: 12, marginBottom: 4 },
@@ -628,20 +765,24 @@ const styles = StyleSheet.create({
   weekDayTextActive: { color: theme.colors.surface },
   listTitle: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, marginBottom: 8 },
   empty: { fontFamily: "DMSans_400Regular", fontSize: 14, color: theme.colors.textSecondary },
-  card: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, padding: 12, marginBottom: 8, borderLeftWidth: 4, borderLeftColor: theme.colors.navy, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
+  card: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, padding: 12, marginBottom: 8, borderLeftWidth: 4, borderLeftColor: theme.colors.orange, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   classTitle: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, flex: 1 },
   cardActions: { flexDirection: "row", alignItems: "center", gap: 4 },
   notifBtn: { padding: 4 },
   notifBtnText: { fontSize: 18 },
+  editBtn: { padding: 4 },
   deleteBtn: { padding: 4 },
   deleteBtnText: { fontSize: 18 },
+  editingBanner: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: theme.colors.navy, borderRadius: theme.radius.md, paddingVertical: 8, paddingHorizontal: 12, marginBottom: 8 },
+  editingBannerText: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.surface, flex: 1 },
+  editingBannerCancel: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange, marginLeft: 8 },
   classMeta: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
   notifMutedLabel: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.orange, marginTop: 4, fontStyle: "italic" },
   transitOverlay: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: theme.colors.border },
   transitOverlayText: { fontSize: 12, fontFamily: 'DMSans_500Medium', color: theme.colors.textSecondary },
   transitStatusDot: { width: 8, height: 8, borderRadius: 4 },
-  planWeekBtn: { marginTop: 20, padding: 14, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.orange, alignItems: 'center' },
+  planWeekBtn: { marginTop: 20, padding: 14, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.orange, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 },
   planWeekBtnText: { fontSize: 15, fontFamily: 'DMSans_600SemiBold', color: theme.colors.orange },
   successToast: { backgroundColor: theme.colors.success, borderRadius: theme.radius.md, padding: 12, marginBottom: 12, alignItems: 'center' },
   successToastText: { color: '#fff', fontSize: 14, fontFamily: 'DMSans_600SemiBold' },

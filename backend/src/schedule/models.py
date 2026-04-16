@@ -36,6 +36,8 @@ class CreateClassRequest(BaseModel):
         v = (v or "").strip()
         if not v:
             raise ValueError("Title must not be empty.")
+        if len(v) > 120:
+            raise ValueError("Title must be 120 characters or fewer.")
         return v
 
     @field_validator("days_of_week")
@@ -87,6 +89,66 @@ class CreateClassRequest(BaseModel):
         if has_building and has_dest:
             raise ValueError("Provide either building_id or destination coordinates, not both.")
         return self
+
+
+class UpdateClassRequest(BaseModel):
+    title: str | None = None
+    location_name: str | None = None
+    building_id: str | None = None
+    days_of_week: list[str] | None = None
+    start_time_local: str | None = None
+    end_time_local: str | None = None
+    destination_lat: float | None = None
+    destination_lng: float | None = None
+    destination_name: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def title_not_empty(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("Title must not be empty.")
+        if len(v) > 120:
+            raise ValueError("Title must be 120 characters or fewer.")
+        return v
+
+    @field_validator("days_of_week")
+    @classmethod
+    def days_valid(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if not isinstance(v, list):
+            raise ValueError("days_of_week must be a list of weekday codes.")
+        out = []
+        for d in v:
+            d = (d or "").strip().upper()
+            if d not in VALID_DAYS:
+                raise ValueError(
+                    f"Invalid day '{d}'. Use: MON, TUE, WED, THU, FRI, SAT, SUN."
+                )
+            out.append(d)
+        if not out:
+            raise ValueError("At least one day must be provided.")
+        return out
+
+    @field_validator("start_time_local")
+    @classmethod
+    def time_format(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = (v or "").strip()
+        if not TIME_LOCAL_PATTERN.match(v):
+            raise ValueError("start_time_local must be in HH:MM format (24-hour), e.g. 09:30 or 14:00.")
+        return v
+
+    @field_validator("destination_name", mode="before")
+    @classmethod
+    def destination_name_optional(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return (v or "").strip() or None
 
 
 class ClassResponse(BaseModel):

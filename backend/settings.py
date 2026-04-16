@@ -12,11 +12,11 @@ class Settings(BaseSettings):
     debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
-    # CORS: "*" for dev; in production set to comma-separated origins, e.g. "https://app.example.com,https://admin.example.com"
-    cors_origins: str = "*"
+    # CORS: empty string disallows all cross-origin requests by default; in production set to comma-separated origins,
+    # e.g. "https://app.example.com,https://admin.example.com". In dev, set to "http://localhost:8081,http://localhost:3000".
+    cors_origins: str = ""
     mtd_api_key: str = ""  # Champaign-Urbana MTD Developer API key (get at developer.cumtd.com)
-    stops_db_path: str = "data/stops.db"  # Path relative to backend root, or absolute
-    app_db_path: str = "data/app.db"  # Buildings + schedule (run scripts/seed_buildings.py first)
+    database_url: str = ""  # PostgreSQL connection URL (Railway sets DATABASE_URL automatically)
 
     # Optional API key auth (for production / multi-tenant). When enabled, requests must include X-API-Key or Authorization: Bearer <key>.
     api_key_required: bool = False
@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # Share trips: base URL for share links (e.g. http://192.168.1.5:8000).
     # Falls back to request Host header if unset.
     public_base_url: str = ""
+
+    # Supabase Auth — set SUPABASE_JWT_SECRET in Railway env vars (Settings → API → JWT Secret)
+    supabase_jwt_secret: str = ""
+
+    # Sentry error monitoring — set SENTRY_DSN in .env to enable
+    sentry_dsn: str = ""
 
 
 def get_settings() -> Settings:

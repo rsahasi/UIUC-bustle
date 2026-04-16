@@ -10,6 +10,31 @@ import sqlite3
 HARD_CAP_SECONDS = 7200        # 2 hours
 LAZY_DELETE_GRACE = 86400      # delete rows 24h past expiry on next read
 
+SHARE_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "app.db"
+
+_CREATE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS shared_trips (
+    id           TEXT PRIMARY KEY,
+    destination  TEXT NOT NULL,
+    route_id     TEXT,
+    route_name   TEXT,
+    stop_name    TEXT,
+    phase        TEXT NOT NULL DEFAULT 'walking',
+    eta_epoch    INTEGER,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL
+)
+"""
+
+
+def init_share_schema(db_path: str | Path = SHARE_DB_PATH) -> None:
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(_CREATE_TABLE_SQL)
+        conn.commit()
+
 
 def create_shared_trip(
     db_path: str | Path,

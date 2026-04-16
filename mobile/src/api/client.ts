@@ -1,4 +1,5 @@
 import { log } from "@/src/telemetry/logBuffer";
+import { supabase } from "@/src/auth/supabaseClient";
 import type {
   Building,
   BuildingsResponse,
@@ -11,6 +12,7 @@ import type {
   ScheduleClass,
   ShareTripRequest,
   ShareTripResponse,
+  UpdateClassRequest,
   VehiclesResponse,
 } from "./types";
 
@@ -28,9 +30,13 @@ export interface RequestOptions {
   apiKey?: string | null;
 }
 
-function mergeHeaders(init?: RequestInit, apiKey?: string | null): RequestInit["headers"] {
+async function mergeHeaders(init?: RequestInit, apiKey?: string | null): Promise<Headers> {
   const headers = init?.headers instanceof Headers ? new Headers(init.headers) : new Headers(init?.headers as HeadersInit);
   if (apiKey?.trim()) headers.set("X-API-Key", apiKey.trim());
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
   return headers;
 }
 
@@ -56,9 +62,10 @@ async function fetchWithRetry(
   init?: RequestInit & { signal?: AbortSignal; apiKey?: string | null }
 ): Promise<Response> {
   const { signal: userSignal, apiKey, ...rest } = init ?? {};
-  const headers = mergeHeaders(rest, apiKey);
-  const requestInit: RequestInit & { signal?: AbortSignal } = { ...rest, headers };
+  const headers = await mergeHeaders(rest, apiKey);
+  let requestInit: RequestInit & { signal?: AbortSignal } = { ...rest, headers };
   let lastError: unknown;
+  let refreshAttempted = false;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const timeoutController = new AbortController();
     const timeoutId = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS);
@@ -73,6 +80,19 @@ async function fetchWithRetry(
           const backoff = Math.min(RETRY_BASE_MS * Math.pow(2, attempt) + Math.random() * 300, RETRY_MAX_MS);
           await delay(backoff);
           continue;
+        }
+        if (res.status === 401) {
+          if (!refreshAttempted) {
+            refreshAttempted = true;
+            await supabase.auth.refreshSession();
+            const refreshedHeaders = await mergeHeaders(rest, apiKey);
+            requestInit = { ...requestInit, headers: refreshedHeaders };
+            continue; // retry with refreshed token
+          } else {
+            // Second 401 after refresh — session is truly invalid, sign out
+            await supabase.auth.signOut(); // AuthGate in _layout.tsx will redirect to /sign-in
+            return res;
+          }
         }
         return res;
       }
@@ -226,6 +246,37 @@ export async function fetchVehicles(
   const res = await fetchWithRetry(`${base}/vehicles${params}`, "/vehicles", options);
   if (!res.ok) throw new Error(`Vehicles: ${res.status}`);
   return safeJson(res, "/vehicles", { vehicles: [] });
+}
+
+/** PATCH /schedule/classes/:id */
+export async function updateClass(
+  baseUrl: string,
+  classId: string,
+  body: UpdateClassRequest,
+  options?: RequestOptions
+): Promise<ScheduleClass> {
+  const base = baseUrl.replace(/\/$/, "");
+  const res = await fetchWithRetry(
+    `${base}/schedule/classes/${encodeURIComponent(classId)}`,
+    "PATCH /schedule/classes/:id",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      apiKey: options?.apiKey,
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Update class: ${res.status}`);
+  }
+  try {
+    return (await res.json()) as ScheduleClass;
+  } catch {
+    log.warn("api_json_parse_failed path=PATCH /schedule/classes/:id", {});
+    throw new Error("Invalid response from server");
+  }
 }
 
 /** DELETE /schedule/classes/:id */
