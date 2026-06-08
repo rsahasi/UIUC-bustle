@@ -97,7 +97,9 @@ export default function ActivityScreen() {
     const weekEntries = log.filter((e) => {
       const d = new Date(e.date + "T12:00:00");
       const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - 7);
+      // Window of 7 calendar days (today + 6 prior), matching the 7-day chart above.
+      cutoff.setDate(cutoff.getDate() - 6);
+      cutoff.setHours(0, 0, 0, 0);
       return d >= cutoff;
     });
     setWeeklyWalks(weekEntries.length);

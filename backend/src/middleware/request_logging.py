@@ -1,4 +1,5 @@
 """Request logging middleware: log method, path, status_code, duration_ms, client_ip for every request."""
+import ipaddress
 import logging
 import time
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -12,17 +13,19 @@ logger = logging.getLogger(__name__)
 def _anonymize_ip(ip: str) -> str:
     """Return a privacy-safe version of an IP address.
     IPv4: zero the last octet (e.g. 1.2.3.4 → 1.2.3.0).
-    IPv6: keep only the first 3 groups (e.g. 2001:db8:1::1 → 2001:db8:1::).
+    IPv6: mask to the /48 network prefix (e.g. 2001:db8:1::1 → 2001:db8:1::).
     """
     if not ip:
         return ""
-    if ":" in ip:
-        parts = ip.split(":")
-        return ":".join(parts[:3]) + "::"
-    parts = ip.split(".")
-    if len(parts) == 4:
-        return f"{parts[0]}.{parts[1]}.{parts[2]}.0"
-    return ip
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 4:
+        network = ipaddress.ip_network(f"{ip}/24", strict=False)
+    else:
+        network = ipaddress.ip_network(f"{ip}/48", strict=False)
+    return str(network.network_address)
 
 
 def _client_ip(request: Request) -> str:

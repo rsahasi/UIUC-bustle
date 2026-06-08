@@ -223,7 +223,7 @@ def find_best_exit_stop_for_route(
                 SELECT st.trip_id, st.stop_sequence AS from_seq, st.departure_time
                 FROM gtfs_stop_times st
                 JOIN gtfs_trips t ON t.trip_id = st.trip_id
-                WHERE t.route_id = ? AND st.stop_id = ? AND st.departure_time >= ?
+                WHERE t.route_id = ? AND st.stop_id LIKE ? || '%' AND st.departure_time >= ?
                 ORDER BY st.departure_time
                 LIMIT 1
                 """,
@@ -259,7 +259,11 @@ def find_best_exit_stop_for_route(
                 slng = float(s["stop_lon"] or 0)
                 if slat == 0.0 and slng == 0.0:
                     continue
-                dist = math.sqrt((slat - dest_lat) ** 2 + (slng - dest_lng) ** 2) * 111_000
+                # Scale longitude by cos(latitude) so east-west degrees aren't
+                # overstated (~23% error at UIUC's latitude otherwise).
+                dlat = slat - dest_lat
+                dlng = (slng - dest_lng) * math.cos(math.radians(dest_lat))
+                dist = math.sqrt(dlat ** 2 + dlng ** 2) * 111_000
                 if dist < best_dist:
                     best_dist = dist
                     arr_min = _time_to_minutes(s["arrival_time"] or "")

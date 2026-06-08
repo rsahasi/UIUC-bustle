@@ -18,7 +18,7 @@ import { getStoredBufferMinutes, getStoredWalkingMode } from '@/src/storage/reco
 import { getMpsForMode } from '@/src/constants/walkingMode';
 import { fetchRecommendation, fetchClasses } from '@/src/api/client';
 import { arriveByIsoToday } from '@/src/utils/arriveBy';
-import { getNextClassToday } from '@/src/utils/nextClass';
+import { getNextClassToday, getTodayCode } from '@/src/utils/nextClass';
 import type { ScheduleClass } from '@/src/api/types';
 import { writeWidgetData, type WidgetData, type WidgetTodayClass } from '@/src/utils/widgetDataWriter';
 
@@ -79,7 +79,7 @@ export async function refreshWidgetData(): Promise<void> {
     const nextClass = getNextClassToday(classes, now);
 
     // Today's class list (all classes today, sorted by start time)
-    const today_day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][now.getDay()] ?? '';
+    const today_day = getTodayCode(now);
     const todayClasses = classes
       .filter((c) => c.days_of_week.includes(today_day))
       .sort((a, b) => a.start_time_local.localeCompare(b.start_time_local));

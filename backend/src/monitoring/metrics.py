@@ -11,6 +11,8 @@ _lock = Lock()
 def record_request(status_code: int) -> None:
     if 200 <= status_code < 300:
         bucket = "2xx"
+    elif 300 <= status_code < 400:
+        bucket = "3xx"
     elif 400 <= status_code < 500:
         bucket = "4xx"
     elif status_code >= 500:
@@ -28,6 +30,7 @@ def get_metrics() -> dict:
     return {
         "requests_total": sum(counts.values()),
         "requests_2xx": counts.get("2xx", 0),
+        "requests_3xx": counts.get("3xx", 0),
         "requests_4xx": counts.get("4xx", 0),
         "requests_5xx": counts.get("5xx", 0),
         "uptime_seconds": round(uptime_seconds, 1),

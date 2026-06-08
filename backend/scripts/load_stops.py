@@ -69,7 +69,7 @@ def main() -> int:
             else:
                 print(f"Error: CSV must have stop_id, stop_name, and lat/lng (or stop_lat/stop_lon). Got: {fieldnames}", file=sys.stderr)
                 return 1
-        name_col = "stop_name" if "stop_name" in fieldnames else "stop_name"
+        name_col = "stop_name"
 
     count = 0
     with sqlite3.connect(args.db) as conn:

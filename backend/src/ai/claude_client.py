@@ -84,6 +84,7 @@ class ClaudeClient:
         user = (
             f"Student's plan: \"{freetext_plan}\"\n"
             f"Classes completed today: {json.dumps(completed_classes)}\n"
+            f"Available routes: {json.dumps(available_routes)}\n"
             f"Activity today: {json.dumps(activity_today)}"
         )
         try:
