@@ -14,12 +14,6 @@ USER_STOP_RADIUS_M = 800
 DEST_STOP_RADIUS_M = 500
 
 
-def _minutes_now(now: datetime) -> float:
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    return now.hour * 60 + now.minute + now.second / 60.0
-
-
 def _parse_arrive_by(arrive_by_iso: str) -> datetime | None:
     try:
         t = datetime.fromisoformat(arrive_by_iso.replace("Z", "+00:00"))

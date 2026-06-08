@@ -77,7 +77,7 @@ export default function AfterClassPlannerScreen() {
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, apiKey, freeText, selectedDest, walkingSpeedMps, bufferMinutes]);
+  }, [apiBaseUrl, apiKey, freeText, selectedDest]);
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
