@@ -575,8 +575,13 @@ async def get_departures(request: Request, stop_id: str, minutes: int = 60):
         data = await client.get_departures_by_stop(stop_id=stop_id, minutes=minutes)
         return DeparturesResponse(**data)
     except RuntimeError as e:
+        # Log the internal detail server-side, but return a generic message so we
+        # never risk leaking the upstream request URL (which carries MTD_API_KEY).
         logger.warning("telemetry departures_route_error stop_id=%s error=%s", stop_id, str(e))
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to fetch departures from transit API. Please try again.",
+        ) from e
     except Exception as e:
         logger.warning("telemetry departures_route_error stop_id=%s error=%s", stop_id, str(e))
         raise HTTPException(
