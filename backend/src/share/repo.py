@@ -49,7 +49,8 @@ def create_shared_trip(
     now = int(time.time())
     expires_at = now + HARD_CAP_SECONDS
     for _ in range(2):
-        token = secrets.token_urlsafe(6)[:8]
+        # 16 bytes ≈ 128 bits of entropy, so the token cannot be guessed/enumerated.
+        token = secrets.token_urlsafe(16)
         try:
             with sqlite3.connect(db_path) as conn:
                 conn.execute(

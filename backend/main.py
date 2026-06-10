@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -633,17 +634,23 @@ async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
     """Submit a crowding report. Rate limited. Server-side 10-min per-token rate limit."""
     if not 1 <= body.crowding_level <= 4:
         raise HTTPException(status_code=422, detail="crowding_level must be 1-4")
-    if body.user_token:
-        already_reported = await check_rate_limit(CROWDING_DB_PATH, body.user_token, body.vehicle_id)
-        if already_reported:
-            raise HTTPException(status_code=429, detail="You already reported this bus recently. Try again in 10 minutes.")
+    # Derive the dedup identity server-side from the client IP rather than trusting
+    # the client-supplied user_token (which could be omitted or rotated to bypass
+    # the per-bus rate limit and poison the crowdsourced aggregate). X-Forwarded-For
+    # is honored because the app runs behind a proxy that sets the real client IP.
+    forwarded = request.headers.get("X-Forwarded-For")
+    client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    dedup_key = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()
+    already_reported = await check_rate_limit(CROWDING_DB_PATH, dedup_key, body.vehicle_id)
+    if already_reported:
+        raise HTTPException(status_code=429, detail="You already reported this bus recently. Try again in 10 minutes.")
     await insert_report(
         CROWDING_DB_PATH,
         vehicle_id=body.vehicle_id,
         route_id=body.route_id,
         trip_id=body.trip_id,
         crowding_level=body.crowding_level,
-        user_token=body.user_token,
+        user_token=dedup_key,
         lat=body.lat,
         lon=body.lon,
     )
@@ -1376,7 +1383,7 @@ def patch_share_trip(request: Request, token: str, body: PatchShareTripRequest):
 
 
 @app.get("/share/trips/{token}/status", response_model=ShareTripStatusResponse)
-@limiter.exempt
+@limiter.limit("120/minute")
 def get_share_trip_status(request: Request, token: str):
     """Poll current state of a shared trip."""
     status = get_shared_trip_status(SHARE_DB_PATH, token)
@@ -1386,9 +1393,9 @@ def get_share_trip_status(request: Request, token: str):
 
 
 @app.get("/t/{token}", response_class=HTMLResponse, include_in_schema=False)
-@limiter.exempt
+@limiter.limit("60/minute")
 def share_trip_page(request: Request, token: str):
     """Serve the recipient share page."""
-    if not re.fullmatch(r'[A-Za-z0-9_\-]{6,16}', token):
+    if not re.fullmatch(r'[A-Za-z0-9_\-]{6,64}', token):
         return HTMLResponse("<h1>Invalid link</h1>", status_code=400)
     return HTMLResponse(content=build_share_page(token))
