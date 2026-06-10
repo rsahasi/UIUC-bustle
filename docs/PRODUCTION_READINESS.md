@@ -17,8 +17,9 @@ and append a dated log entry below.
 - [x] Crowding-report dedup derived server-side, not client-supplied (PR #7)
 - [x] Constant-time API-key comparison (`secrets.compare_digest`)
 - [x] JWT verification requires `exp`/`sub` claims (defense-in-depth)
-- [ ] Rate-limit / optionally authenticate the billed outbound proxies (`/geocode`,
-      `/autocomplete`, `/places/*`, `/directions/walk`) — Google Places is billed
+- [x] Rate-limit the billed/quota'd outbound proxies (`/geocode`, `/autocomplete`,
+      `/places/*`, `/directions/walk`) per-IP
+- [ ] Optionally *authenticate* the billed Google Places routes (rate-limited for now)
 - [ ] Trusted-proxy handling for `X-Forwarded-For` (currently taken as-is in logging)
 - [ ] Per-user daily quota on AI endpoints to cap Anthropic spend
 
