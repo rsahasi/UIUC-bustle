@@ -1,5 +1,7 @@
 # UIUC Bustle
 
+[![CI](https://github.com/ruhan-sahasi/UIUC-bustle/actions/workflows/ci.yml/badge.svg)](https://github.com/ruhan-sahasi/UIUC-bustle/actions/workflows/ci.yml)
+
 A campus bus + walk navigation app for University of Illinois Urbana-Champaign students. See nearby MTD stops with live departures, get route recommendations to your next class, and navigate on foot using a built-in map — no app switching.
 
 <p align="center">
@@ -34,6 +36,12 @@ pip install -r requirements.txt
 ```
 
 ### Environment variables
+
+Copy the template and fill in your keys (see `backend/.env.example` for the full list with comments):
+
+```bash
+cp .env.example .env
+```
 
 Create `backend/.env`:
 
