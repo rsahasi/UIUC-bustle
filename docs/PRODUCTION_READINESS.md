@@ -31,7 +31,7 @@ and append a dated log entry below.
 - [ ] Graceful handling + retry/backoff for all outbound HTTP (MTD, Nominatim, OSRM)
 
 ## Configuration & deployment
-- [ ] Document all required env vars in one place (backend `.env.example`)
+- [x] Document all required env vars in one place (backend `.env.example`)
 - [ ] Pin/lock backend dependency versions (hashes or a lockfile)
 - [ ] CI step that builds the Docker image to catch build regressions
 
