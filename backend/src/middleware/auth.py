@@ -1,5 +1,6 @@
 """Optional API key auth: when API_KEY_REQUIRED=true, require X-API-Key header."""
 import logging
+import secrets
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -29,13 +30,19 @@ class OptionalAPIKeyMiddleware(BaseHTTPMiddleware):
         self.api_key_required = api_key_required
         self.valid_keys = api_keys
 
+    def _is_valid_key(self, key: str) -> bool:
+        # Constant-time comparison against each valid key to avoid leaking key
+        # bytes through response timing. `any(...)` over compare_digest keeps each
+        # individual comparison timing-safe.
+        return any(secrets.compare_digest(key, valid) for valid in self.valid_keys)
+
     async def dispatch(self, request: Request, call_next):
         if request.url.path in AUTH_EXEMPT_PATHS:
             return await call_next(request)
         if not self.api_key_required:
             return await call_next(request)
         key = extract_api_key(request)
-        if not key or key not in self.valid_keys:
+        if not key or not self._is_valid_key(key):
             logger.warning("telemetry auth_failed path=%s", request.url.path)
             return JSONResponse(
                 status_code=401,

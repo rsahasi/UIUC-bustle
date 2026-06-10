@@ -161,11 +161,12 @@ def test_post_recommendation_building_not_found_returns_400():
     """POST /recommendation with unknown building_id returns 400."""
     from unittest.mock import AsyncMock, MagicMock, patch
     import main
-    from src.auth.jwt import get_current_user
-    from src.data.buildings_repo import BuildingRecord
 
     mock_pool = MagicMock()
-    main.app.dependency_overrides[get_current_user] = lambda: "test-user-id"
+    # Key the override on main.get_current_user (the exact object the app's routes
+    # depend on). Re-importing from src.auth.jwt is unsafe because test_auth reloads
+    # that module, producing a different function object the override wouldn't match.
+    main.app.dependency_overrides[main.get_current_user] = lambda: "test-user-id"
     try:
         with patch("main.get_pool", return_value=mock_pool), \
              patch("main.get_building", new=AsyncMock(return_value=None)):
@@ -180,7 +181,7 @@ def test_post_recommendation_building_not_found_returns_400():
                 },
             )
     finally:
-        main.app.dependency_overrides.pop(get_current_user, None)
+        main.app.dependency_overrides.pop(main.get_current_user, None)
     assert r.status_code == 400
     assert "not found" in r.json().get("detail", "").lower()
 
@@ -190,7 +191,6 @@ def test_post_recommendation_schema_and_stable(tmp_path):
     from unittest.mock import AsyncMock, MagicMock, patch
     from datetime import datetime, timezone, timedelta
     import main
-    from src.auth.jwt import get_current_user
     from src.data.buildings_repo import BuildingRecord
 
     mock_pool = MagicMock()
@@ -199,7 +199,8 @@ def test_post_recommendation_schema_and_stable(tmp_path):
     # Use arrive_by 2 hours from now so walk option is valid
     arrive = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
 
-    main.app.dependency_overrides[get_current_user] = lambda: "test-user-id"
+    # See note above: override on main.get_current_user, not a re-imported copy.
+    main.app.dependency_overrides[main.get_current_user] = lambda: "test-user-id"
     try:
         with patch("main.get_pool", return_value=mock_pool), \
              patch("main.get_building", new=AsyncMock(return_value=test_building)), \
@@ -216,7 +217,7 @@ def test_post_recommendation_schema_and_stable(tmp_path):
                 },
             )
     finally:
-        main.app.dependency_overrides.pop(get_current_user, None)
+        main.app.dependency_overrides.pop(main.get_current_user, None)
     assert r.status_code == 200
     data = r.json()
     assert "options" in data

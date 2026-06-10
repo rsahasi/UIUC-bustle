@@ -25,6 +25,9 @@ def get_current_user(request: Request) -> str:
             secret,
             algorithms=["HS256"],
             audience="authenticated",
+            # Reject tokens missing an expiry or subject rather than silently
+            # accepting them (defense-in-depth on top of signature verification).
+            options={"require": ["exp", "sub"]},
         )
         user_id = payload.get("sub")
         if not user_id:

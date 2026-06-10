@@ -442,6 +442,7 @@ async def _overpass_poi_search(query: str, limit: int = 5) -> list[dict]:
 
 
 @app.get("/autocomplete")
+@limiter.limit("60/minute")
 async def autocomplete(request: Request, q: str = "", limit: int = 8):
     """
     Combined autocomplete: local buildings (FTS5) + Google Places in parallel.
@@ -511,6 +512,7 @@ async def autocomplete(request: Request, q: str = "", limit: int = 8):
 
 
 @app.get("/geocode")
+@limiter.limit("30/minute")
 async def geocode(request: Request, q: str = ""):
     """
     Resolve a place name or address to coordinates (uses OpenStreetMap Nominatim).
@@ -575,8 +577,13 @@ async def get_departures(request: Request, stop_id: str, minutes: int = 60):
         data = await client.get_departures_by_stop(stop_id=stop_id, minutes=minutes)
         return DeparturesResponse(**data)
     except RuntimeError as e:
+        # Log the internal detail server-side, but return a generic message so we
+        # never risk leaking the upstream request URL (which carries MTD_API_KEY).
         logger.warning("telemetry departures_route_error stop_id=%s error=%s", stop_id, str(e))
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to fetch departures from transit API. Please try again.",
+        ) from e
     except Exception as e:
         logger.warning("telemetry departures_route_error stop_id=%s error=%s", stop_id, str(e))
         raise HTTPException(
@@ -972,6 +979,7 @@ WALK_DIRECTIONS_CACHE_TTL = 300  # 5 minutes
 
 
 @app.get("/directions/walk")
+@limiter.limit("60/minute")
 async def directions_walk(request: Request, orig_lat: float, orig_lng: float, dest_lat: float, dest_lng: float):
     """Proxy walking directions via OSRM. Returns { coords: [[lat, lng], ...] }."""
     import httpx
@@ -1149,6 +1157,7 @@ class PlacesAutocompleteRequest(_BaseModel):
 
 
 @app.post("/places/autocomplete")
+@limiter.limit("60/minute")
 async def places_autocomplete(request: Request, body: PlacesAutocompleteRequest):
     """Proxy to Google Places API (New) autocomplete. Returns { predictions: [] }. Empty key → silent no-op."""
     import httpx
@@ -1217,6 +1226,7 @@ async def places_autocomplete(request: Request, body: PlacesAutocompleteRequest)
 
 
 @app.get("/places/details")
+@limiter.limit("30/minute")
 async def places_details(request: Request, place_id: str = ""):
     """Resolve a Google Places place_id to lat/lng. Cached 24h."""
     import httpx
