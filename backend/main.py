@@ -133,10 +133,46 @@ def _cache_put(cache: dict, key: str, value: object) -> None:
 _PLACE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{10,250}$")
 
 
+async def _seed_stops_from_gtfs() -> None:
+    """Populate the Postgres stops table from the baked-in GTFS snapshot.
+
+    The stops table starts empty on a fresh database and nothing else writes
+    to it (the upsert path was never wired up), so /stops/nearby would return
+    no results forever. Runs once: skipped when the table already has rows.
+    """
+    import sqlite3
+
+    pool = get_pool()
+    if await pool.fetchval("SELECT COUNT(*) FROM stops"):
+        return
+    if not GTFS_DB.exists():
+        logger.warning("telemetry stops_seed_skipped reason=gtfs_db_missing")
+        return
+    conn = sqlite3.connect(str(GTFS_DB))
+    try:
+        rows = conn.execute(
+            "SELECT stop_id, stop_name, stop_lat, stop_lon FROM gtfs_stops"
+            " WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    await pool.executemany(
+        "INSERT INTO stops (stop_id, stop_name, lat, lng) VALUES ($1, $2, $3, $4)"
+        " ON CONFLICT (stop_id) DO NOTHING",
+        [(r[0], r[1] or r[0], float(r[2]), float(r[3])) for r in rows],
+    )
+    logger.info("telemetry stops_seeded count=%d", len(rows))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if settings.database_url:
         await init_pool(settings.database_url)
+        try:
+            await _seed_stops_from_gtfs()
+        except Exception as e:
+            # Never block boot on seeding — nearby stops just stay empty until fixed
+            logger.warning("telemetry stops_seed_error error=%s", str(e))
     init_share_schema()
     app.state.mtd_client = MTDClient(api_key=settings.mtd_api_key) if settings.mtd_api_key else None
 
