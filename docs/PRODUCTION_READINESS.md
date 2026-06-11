@@ -6,8 +6,7 @@ and append a dated log entry below.
 
 ## Testing & CI
 - [x] GitHub Actions CI running backend `pytest` and mobile `tsc`/`jest` on every PR
-- [ ] Fix the ~25 pre-existing mobile `strict`-mode TypeScript errors, then make
-      the CI typecheck step blocking (currently `continue-on-error`)
+- [x] Mobile `strict`-mode typecheck is clean and the CI typecheck step is blocking
 - [ ] Backend test coverage measured and reported (e.g. `pytest --cov`, fail under threshold)
 - [ ] Mobile test coverage for core utils (nextClass, weatherEngine, crowding) expanded
 - [ ] Integration test for the `/recommendation` happy path against a seeded GTFS db

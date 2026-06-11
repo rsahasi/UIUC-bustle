@@ -41,8 +41,5 @@ jobs:
         run: npm ci
       - name: Run tests
         run: node_modules/.bin/jest --ci --forceExit
-      # Typecheck is reported but non-blocking until the existing strict-mode
-      # type errors are cleaned up (tracked in docs/PRODUCTION_READINESS.md).
-      - name: Typecheck (non-blocking)
-        continue-on-error: true
+      - name: Typecheck
         run: node_modules/.bin/tsc --noEmit
