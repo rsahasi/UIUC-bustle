@@ -6,8 +6,9 @@ and append a dated log entry below.
 
 ## Testing & CI
 - [x] GitHub Actions CI running backend `pytest` and mobile `tsc`/`jest` on every PR
-- [ ] Fix the ~25 pre-existing mobile `strict`-mode TypeScript errors, then make
-      the CI typecheck step blocking (currently `continue-on-error`)
+- [ ] Fix the ~25 mobile strict-mode TS errors (implicit-any in app/(tabs)/index|map|
+      schedule.tsx, plus real ones: route_short_name/walk_distance_m not on
+      RecommendationStep), then make the CI typecheck blocking
 - [ ] Backend test coverage measured and reported (e.g. `pytest --cov`, fail under threshold)
 - [ ] Mobile test coverage for core utils (nextClass, weatherEngine, crowding) expanded
 - [ ] Integration test for the `/recommendation` happy path against a seeded GTFS db
@@ -27,8 +28,8 @@ and append a dated log entry below.
 - [x] Generic client-facing error for upstream MTD failures (no internal detail leak)
 - [ ] Run the container as a non-root user (needs care: Railway volume `/mnt/data`
       ownership must be validated before merging — do not break the deploy)
-- [ ] Structured request IDs / correlation IDs in logs
-- [ ] Readiness vs. liveness split for `/health` (DB connectivity check)
+- [x] Request-id correlation: per-request id in logs + echoed X-Request-ID header
+- [x] Readiness vs. liveness split: /health (liveness) + /health/ready (DB check)
 - [ ] Graceful handling + retry/backoff for all outbound HTTP (MTD, Nominatim, OSRM)
 
 ## Configuration & deployment
@@ -37,7 +38,7 @@ and append a dated log entry below.
 - [ ] CI step that builds the Docker image to catch build regressions
 
 ## Documentation
-- [ ] API reference (FastAPI already exposes `/docs`; link + describe auth in README)
+- [x] API reference: README documents /docs, health/readiness/metrics, and auth
 - [ ] Runbook: how to deploy, roll back, and rotate secrets
 
 ---

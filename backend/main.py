@@ -214,6 +214,20 @@ def health(request: Request):
     return {"status": "ok"}
 
 
+@app.get("/health/ready")
+@limiter.exempt
+async def health_ready(request: Request):
+    """Readiness probe: verifies the database is reachable (vs. /health, which is
+    a liveness probe that only confirms the process is up)."""
+    try:
+        pool = get_pool()
+        await pool.fetchval("SELECT 1")
+    except Exception as e:
+        logger.warning("telemetry route=health_ready status=unavailable error=%s", str(e))
+        raise HTTPException(status_code=503, detail="Database not ready")
+    return {"status": "ready"}
+
+
 @app.get("/metrics")
 @limiter.exempt
 def metrics(request: Request):

@@ -7,7 +7,7 @@ from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-AUTH_EXEMPT_PATHS = {"/health", "/metrics"}
+AUTH_EXEMPT_PATHS = {"/health", "/health/ready", "/metrics"}
 
 
 def get_valid_api_keys(api_keys_str: str) -> set[str]:
