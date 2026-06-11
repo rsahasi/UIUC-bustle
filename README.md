@@ -86,6 +86,21 @@ The API is now at `http://localhost:8000`. Check `http://localhost:8000/health`.
 > **Note:** the `uvicorn` binary in `.venv/bin/` may break if the venv is moved.
 > Always use `python -m uvicorn` to be safe.
 
+### API reference & auth
+
+- Interactive docs: `http://localhost:8000/docs` (OpenAPI/Swagger).
+- **Liveness:** `GET /health` → `{"status": "ok"}` (process up).
+- **Readiness:** `GET /health/ready` → `200` when the database is reachable, `503` otherwise.
+- **Metrics:** `GET /metrics` (request counts, uptime).
+
+Authentication:
+- User-scoped endpoints (`/recommendation`, `/ai/*`, `/schedule/*`) require a Supabase
+  JWT: send `Authorization: Bearer <token>`. Set `SUPABASE_JWT_SECRET` to enable.
+- Optional API-key gate: set `API_KEY_REQUIRED=true` and `API_KEYS=...`, then send the
+  `X-API-Key` header. `/health`, `/health/ready`, and `/metrics` are always exempt.
+- Every response includes an `X-Request-ID` header for log correlation; supply your own
+  to trace a request end-to-end.
+
 ---
 
 ## 2. Mobile setup

@@ -36,7 +36,7 @@ and append a dated log entry below.
 - [ ] CI step that builds the Docker image to catch build regressions
 
 ## Documentation
-- [ ] API reference (FastAPI already exposes `/docs`; link + describe auth in README)
+- [x] API reference: README documents /docs, health/readiness/metrics, and auth
 - [ ] Runbook: how to deploy, roll back, and rotate secrets
 
 ---
