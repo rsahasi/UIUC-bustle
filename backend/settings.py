@@ -35,6 +35,9 @@ class Settings(BaseSettings):
 
     # Supabase Auth — set SUPABASE_JWT_SECRET in Railway env vars (Settings → API → JWT Secret)
     supabase_jwt_secret: str = ""
+    # Supabase project URL (https://<ref>.supabase.co) — required to verify
+    # ES256/RS256 access tokens against the project's public JWKS
+    supabase_url: str = ""
 
     # Sentry error monitoring — set SENTRY_DSN in .env to enable
     sentry_dsn: str = ""

@@ -1,6 +1,10 @@
 import jwt
+from jwt import PyJWKClient
 from fastapi import HTTPException, Request
 from settings import get_settings
+
+# Cached per JWKS URL; PyJWKClient caches the fetched keys internally
+_jwks_clients: dict[str, PyJWKClient] = {}
 
 
 def _extract_bearer(request: Request) -> str:
@@ -10,20 +14,55 @@ def _extract_bearer(request: Request) -> str:
     return auth[len("Bearer "):]
 
 
+def _asymmetric_key(token: str, supabase_url: str):
+    url = supabase_url.rstrip("/") + "/auth/v1/.well-known/jwks.json"
+    client = _jwks_clients.get(url)
+    if client is None:
+        client = PyJWKClient(url, cache_keys=True)
+        _jwks_clients[url] = client
+    return client.get_signing_key_from_jwt(token).key
+
+
 def get_current_user(request: Request) -> str:
     """FastAPI dependency. Verifies Supabase JWT and returns user_id (UUID string).
+
+    Supports both Supabase signing schemes: legacy HS256 (shared secret via
+    SUPABASE_JWT_SECRET) and the current asymmetric keys (ES256/RS256, verified
+    against the project's public JWKS — requires SUPABASE_URL).
+
     get_settings() is called inside the function (not at module level) so tests can
     patch env vars without stale cached values.
     """
-    secret = get_settings().supabase_jwt_secret
-    if not secret:
-        raise HTTPException(status_code=503, detail="Auth not configured — set SUPABASE_JWT_SECRET environment variable")
+    settings = get_settings()
     token = _extract_bearer(request)
+    try:
+        alg = jwt.get_unverified_header(token).get("alg", "")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    if alg == "HS256":
+        if not settings.supabase_jwt_secret:
+            raise HTTPException(status_code=503, detail="Auth not configured — set SUPABASE_JWT_SECRET environment variable")
+        key = settings.supabase_jwt_secret
+        algorithms = ["HS256"]
+    elif alg in ("ES256", "RS256"):
+        if not settings.supabase_url:
+            raise HTTPException(status_code=503, detail="Auth not configured — set SUPABASE_URL environment variable for JWKS verification")
+        try:
+            key = _asymmetric_key(token, settings.supabase_url)
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        except Exception:
+            raise HTTPException(status_code=503, detail="Unable to fetch JWT signing keys")
+        algorithms = [alg]
+    else:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
     try:
         payload = jwt.decode(
             token,
-            secret,
-            algorithms=["HS256"],
+            key,
+            algorithms=algorithms,
             audience="authenticated",
             # Reject tokens missing an expiry or subject rather than silently
             # accepting them (defense-in-depth on top of signature verification).

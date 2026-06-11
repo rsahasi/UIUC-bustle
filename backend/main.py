@@ -95,7 +95,7 @@ LNG_MIN, LNG_MAX = -180.0, 180.0
 RADIUS_M_MIN, RADIUS_M_MAX = 100, 5000
 DEPARTURES_MINUTES_MIN, DEPARTURES_MINUTES_MAX = 1, 120
 STOP_ID_MAX_LEN = 64
-STOP_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]+$")
+STOP_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_:\-]+$")  # ':' — MTD child stop points (e.g. IU:1)
 
 
 def _validate_lat_lng(lat: float, lng: float) -> None:
