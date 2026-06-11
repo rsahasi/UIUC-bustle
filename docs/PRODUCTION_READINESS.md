@@ -6,7 +6,9 @@ and append a dated log entry below.
 
 ## Testing & CI
 - [x] GitHub Actions CI running backend `pytest` and mobile `tsc`/`jest` on every PR
-- [x] Mobile `strict`-mode typecheck is clean and the CI typecheck step is blocking
+- [ ] Fix the ~25 mobile strict-mode TS errors (implicit-any in app/(tabs)/index|map|
+      schedule.tsx, plus real ones: route_short_name/walk_distance_m not on
+      RecommendationStep), then make the CI typecheck blocking
 - [ ] Backend test coverage measured and reported (e.g. `pytest --cov`, fail under threshold)
 - [ ] Mobile test coverage for core utils (nextClass, weatherEngine, crowding) expanded
 - [ ] Integration test for the `/recommendation` happy path against a seeded GTFS db
