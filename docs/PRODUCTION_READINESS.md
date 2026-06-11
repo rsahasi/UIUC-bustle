@@ -26,7 +26,7 @@ and append a dated log entry below.
 - [x] Generic client-facing error for upstream MTD failures (no internal detail leak)
 - [ ] Run the container as a non-root user (needs care: Railway volume `/mnt/data`
       ownership must be validated before merging — do not break the deploy)
-- [ ] Structured request IDs / correlation IDs in logs
+- [x] Request-id correlation: per-request id in logs + echoed X-Request-ID header
 - [x] Readiness vs. liveness split: /health (liveness) + /health/ready (DB check)
 - [ ] Graceful handling + retry/backoff for all outbound HTTP (MTD, Nominatim, OSRM)
 
