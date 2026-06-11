@@ -143,6 +143,10 @@ async def _seed_stops_from_gtfs() -> None:
     import sqlite3
 
     pool = get_pool()
+    # Child stop points (colon-suffixed, e.g. IU:1) fail STOP_ID_PATTERN on the
+    # departures endpoint and duplicate their parent in nearby results — remove
+    # any previously seeded ones, then seed parents only
+    await pool.execute("DELETE FROM stops WHERE stop_id LIKE '%:%'")
     if await pool.fetchval("SELECT COUNT(*) FROM stops"):
         return
     if not GTFS_DB.exists():
@@ -153,6 +157,7 @@ async def _seed_stops_from_gtfs() -> None:
         rows = conn.execute(
             "SELECT stop_id, stop_name, stop_lat, stop_lon FROM gtfs_stops"
             " WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL"
+            " AND stop_id NOT LIKE '%:%'"
         ).fetchall()
     finally:
         conn.close()
