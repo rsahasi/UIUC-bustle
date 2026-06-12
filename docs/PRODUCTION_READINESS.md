@@ -35,6 +35,8 @@ and append a dated log entry below.
 ## Configuration & deployment
 - [x] Document all required env vars in one place (backend `.env.example`)
 - [ ] Pin/lock backend dependency versions (hashes or a lockfile)
+- [x] Always-on cloud schedule: .github/workflows/daily-agent.yml runs the routine
+      server-side (needs an ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN secret)
 - [ ] CI step that builds the Docker image to catch build regressions
 
 ## Documentation
@@ -51,3 +53,8 @@ and append a dated log entry below.
 - Hardened auth: constant-time API-key comparison; JWT now requires `exp`/`sub`.
 - Stopped leaking internal upstream error strings to clients on MTD failures.
 - Deferred the non-root Docker change pending validation of Railway volume ownership.
+
+### 2026-06-12
+- Repaired 6 tests broken by the JWKS auth refactor (stub get_unverified_header).
+- Added an always-on cloud scheduler (GitHub Actions `daily-agent.yml`) so the daily
+  routine runs server-side; requires a one-time API/OAuth secret to activate.
