@@ -1,6 +1,7 @@
 """Tests for update_class repo function and PATCH /schedule/classes/{class_id} endpoint."""
 import json
 import pytest
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.data.buildings_repo import update_class
@@ -111,13 +112,24 @@ def _make_http_pool(fetchrow_return=None):
 import os
 
 
+@contextmanager
+def _bypass_jwt():
+    """Stub JWT verification for HTTP tests. get_current_user now inspects the
+    token header (jwt.get_unverified_header) to pick the algorithm before
+    decoding, so both must be patched — otherwise the fake token raises at the
+    header step and the endpoint returns 401."""
+    with patch("src.auth.jwt.jwt.get_unverified_header", return_value={"alg": "HS256"}), \
+         patch("src.auth.jwt.jwt.decode", return_value={"sub": "user-1"}):
+        yield
+
+
 def _http_patches(mock_pool):
     """Context managers needed for HTTP-level endpoint tests."""
     import main as app_module
     return (
         patch.dict(os.environ, {"SUPABASE_JWT_SECRET": "test-secret"}),
         patch.object(app_module, "get_pool", return_value=mock_pool),
-        patch("src.auth.jwt.jwt.decode", return_value={"sub": "user-1"}),
+        _bypass_jwt(),
     )
 
 
