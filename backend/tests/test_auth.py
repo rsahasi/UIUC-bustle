@@ -26,8 +26,11 @@ class TestGetCurrentUser:
         importlib.reload(src.auth.jwt)
         from src.auth.jwt import get_current_user
         req = _make_request("Bearer sometoken")
-        with pytest.raises(HTTPException) as exc:
-            get_current_user(req)
+        # get_current_user reads the token header to pick the algorithm before
+        # checking the secret; stub it to the HS256 path.
+        with patch("src.auth.jwt.jwt.get_unverified_header", return_value={"alg": "HS256"}):
+            with pytest.raises(HTTPException) as exc:
+                get_current_user(req)
         assert exc.value.status_code == 503
         assert "Auth not configured" in exc.value.detail
 
@@ -46,7 +49,8 @@ class TestGetCurrentUser:
         # Reload BEFORE patching — reload inside the patch context manager would un-patch.
         from src.auth import jwt as jwt_module
         import importlib; importlib.reload(jwt_module)
-        with patch("src.auth.jwt.jwt.decode") as mock_decode:
+        with patch("src.auth.jwt.jwt.get_unverified_header", return_value={"alg": "HS256"}), \
+             patch("src.auth.jwt.jwt.decode") as mock_decode:
             mock_decode.return_value = {"sub": "user-uuid-123"}
             req = _make_request("Bearer validtoken")
             result = jwt_module.get_current_user(req)
@@ -57,7 +61,8 @@ class TestGetCurrentUser:
         monkeypatch.setenv("SUPABASE_JWT_SECRET", "test-secret")
         from src.auth import jwt as jwt_module
         import importlib; importlib.reload(jwt_module)
-        with patch("src.auth.jwt.jwt.decode") as mock_decode:
+        with patch("src.auth.jwt.jwt.get_unverified_header", return_value={"alg": "HS256"}), \
+             patch("src.auth.jwt.jwt.decode") as mock_decode:
             mock_decode.side_effect = pyjwt.ExpiredSignatureError("expired")
             req = _make_request("Bearer expiredtoken")
             with pytest.raises(HTTPException) as exc:

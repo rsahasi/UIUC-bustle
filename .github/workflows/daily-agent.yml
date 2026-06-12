@@ -1,0 +1,77 @@
+name: Daily Production-Readiness Agent
+
+# Runs the autonomous production-readiness routine server-side on a schedule, so it
+# no longer depends on a laptop/app being open at noon.
+#
+# REQUIRED SETUP (one-time, by a human):
+#   Add ONE of these repository secrets (Settings → Secrets and variables → Actions):
+#     - ANTHROPIC_API_KEY          (Anthropic API key, billed per run), or
+#     - CLAUDE_CODE_OAUTH_TOKEN    (from `claude setup-token`, uses your subscription)
+#   Until a secret exists, the job exits early (it will not error-spam).
+#
+# CAVEATS:
+#   - Cron is UTC and has no DST awareness. 19:00 UTC ≈ 12:00 PT in summer (PDT),
+#     11:00 PT in winter (PST). Adjust if you care about the exact hour.
+#   - PRs created with the default GITHUB_TOKEN do NOT trigger other workflows, so
+#     ci.yml will not auto-run on the agent's PRs. The agent therefore runs the test
+#     suite inside this job and gates its own merge on that. To have ci.yml run on
+#     the agent's PRs, use a Personal Access Token secret instead of GITHUB_TOKEN.
+
+on:
+  schedule:
+    - cron: "0 19 * * *"   # ~noon Pacific (UTC; see DST caveat above)
+  workflow_dispatch: {}    # allows manual "Run workflow" for testing
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: daily-agent
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for an auth secret
+        id: auth
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN secret set — skipping agent run."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.auth.outputs.ready == 'true'
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        if: steps.auth.outputs.ready == 'true'
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        if: steps.auth.outputs.ready == 'true'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run the production-readiness agent
+        if: steps.auth.outputs.ready == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          claude -p "$(cat .github/agent/daily-prompt.md)" \
+            --dangerously-skip-permissions \
+            --max-turns 120
