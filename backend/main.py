@@ -1006,7 +1006,11 @@ async def post_recommendation(request: Request, body: RecommendationRequest, use
                 {"type": o.type, "eta_minutes": o.eta_minutes, "depart_in_minutes": o.depart_in_minutes, "summary": o.summary}
                 for o in option_objects
             ]
-            ai_result = ai_client.get_best_route(
+            # get_best_route uses the synchronous Anthropic SDK (a blocking HTTPS
+            # call). Run it in a thread so it doesn't stall the event loop for
+            # every other concurrent request while Claude responds.
+            ai_result = await asyncio.to_thread(
+                ai_client.get_best_route,
                 origin=f"{body.lat},{body.lng}",
                 destination=dest_name,
                 route_options=route_opts_for_ai,
