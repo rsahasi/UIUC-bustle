@@ -82,3 +82,40 @@ class TestGetCurrentUser:
                 jwt_module.get_current_user(req)
         assert exc.value.status_code == 401
         assert "Invalid token" in exc.value.detail
+
+    def test_asymmetric_unknown_signing_key_raises_401(self, monkeypatch):
+        # A forged / stale / wrong-project ES256 token has no matching JWKS key.
+        # PyJWKClientError is NOT a subclass of InvalidTokenError, so this must be
+        # explicitly mapped to 401 (rejected token), not 503 (backend outage).
+        monkeypatch.setenv("SUPABASE_URL", "https://proj.supabase.co")
+        from src.auth import jwt as jwt_module
+        import importlib; importlib.reload(jwt_module)
+        with patch("src.auth.jwt.jwt.get_unverified_header", return_value={"alg": "ES256"}), \
+             patch("src.auth.jwt._asymmetric_key", side_effect=jwt_module.PyJWKClientError("no kid")):
+            req = _make_request("Bearer es256token")
+            with pytest.raises(HTTPException) as exc:
+                jwt_module.get_current_user(req)
+        assert exc.value.status_code == 401
+        assert "Invalid token" in exc.value.detail
+
+    def test_asymmetric_jwks_fetch_failure_raises_503(self, monkeypatch):
+        # A genuine inability to reach the JWKS endpoint is a backend outage (503).
+        monkeypatch.setenv("SUPABASE_URL", "https://proj.supabase.co")
+        from src.auth import jwt as jwt_module
+        import importlib; importlib.reload(jwt_module)
+        with patch("src.auth.jwt.jwt.get_unverified_header", return_value={"alg": "ES256"}), \
+             patch("src.auth.jwt._asymmetric_key", side_effect=ConnectionError("network down")):
+            req = _make_request("Bearer es256token")
+            with pytest.raises(HTTPException) as exc:
+                jwt_module.get_current_user(req)
+        assert exc.value.status_code == 503
+
+    def test_asymmetric_missing_supabase_url_raises_503(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_URL", "")
+        from src.auth import jwt as jwt_module
+        import importlib; importlib.reload(jwt_module)
+        with patch("src.auth.jwt.jwt.get_unverified_header", return_value={"alg": "RS256"}):
+            req = _make_request("Bearer rs256token")
+            with pytest.raises(HTTPException) as exc:
+                jwt_module.get_current_user(req)
+        assert exc.value.status_code == 503
