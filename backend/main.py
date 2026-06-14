@@ -1018,8 +1018,11 @@ async def post_recommendation(request: Request, body: RecommendationRequest, use
             )
             ranked_order = ai_result.get("ranked_order", [])
             ai_explanation = ai_result.get("ai_explanation", "")
-            if ranked_order and len(ranked_order) == len(option_objects):
-                option_objects = [option_objects[i] for i in ranked_order if i < len(option_objects)]
+            # Only reorder if Claude returned a genuine permutation of the
+            # option indices. The previous length-only check let a malformed
+            # response like [0, 0] or [-1, 1] duplicate/drop options.
+            if sorted(ranked_order) == list(range(len(option_objects))):
+                option_objects = [option_objects[i] for i in ranked_order]
             if ai_explanation and option_objects:
                 option_objects[0] = option_objects[0].model_copy(
                     update={"ai_explanation": ai_explanation, "ai_ranked": True}
