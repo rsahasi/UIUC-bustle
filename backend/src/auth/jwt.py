@@ -1,5 +1,5 @@
 import jwt
-from jwt import PyJWKClient
+from jwt import PyJWKClient, PyJWKClientError, PyJWKError
 from fastapi import HTTPException, Request
 from settings import get_settings
 
@@ -50,9 +50,14 @@ def get_current_user(request: Request) -> str:
             raise HTTPException(status_code=503, detail="Auth not configured — set SUPABASE_URL environment variable for JWKS verification")
         try:
             key = _asymmetric_key(token, settings.supabase_url)
-        except jwt.InvalidTokenError:
+        except (jwt.InvalidTokenError, PyJWKClientError, PyJWKError):
+            # No matching signing key for this token's kid (forged / stale /
+            # wrong-project token) — that's a rejected token (401), not a
+            # backend outage. PyJWKClientError/PyJWKError are NOT subclasses of
+            # InvalidTokenError, so they must be caught explicitly.
             raise HTTPException(status_code=401, detail="Invalid token")
         except Exception:
+            # Genuine inability to reach/parse the JWKS endpoint.
             raise HTTPException(status_code=503, detail="Unable to fetch JWT signing keys")
         algorithms = [alg]
     else:

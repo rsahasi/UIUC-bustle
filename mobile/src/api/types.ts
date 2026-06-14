@@ -10,6 +10,9 @@ export interface NearbyStopsResponse {
   stops: StopInfo[];
 }
 
+/** A stop annotated with its distance from the user, computed client-side. */
+export type StopWithDistance = StopInfo & { distance_m: number };
+
 /** GET /stops/{stop_id}/departures */
 export interface DepartureItem {
   route: string;
@@ -55,7 +58,6 @@ export interface ScheduleClass {
 /** PATCH /schedule/classes/:id */
 export interface UpdateClassRequest {
   title?: string;
-  location_name?: string;
   building_id?: string;
   days_of_week?: string[];
   start_time_local?: string;
@@ -116,6 +118,8 @@ export interface RecommendationStep {
   building_lat?: number;
   building_lng?: number;
   route?: string;
+  route_short_name?: string;
+  walk_distance_m?: number;
   headsign?: string;
   alighting_stop_id?: string | null;
   alighting_stop_lat?: number | null;

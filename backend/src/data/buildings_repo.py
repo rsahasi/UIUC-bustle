@@ -164,7 +164,7 @@ async def list_classes(
 
 
 _UPDATABLE_FIELDS = frozenset({
-    "title", "location_name", "building_id", "days_of_week",
+    "title", "building_id", "days_of_week",
     "start_time_local", "end_time_local", "destination_lat", "destination_lng",
     "destination_name",
 })

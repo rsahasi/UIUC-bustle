@@ -96,6 +96,23 @@ async def test_update_class_ignores_unknown_fields():
     assert "malicious_field" not in call_args[0][0]
 
 
+@pytest.mark.asyncio
+async def test_update_class_ignores_location_name():
+    # Regression: location_name was wrongly whitelisted but has no DB column, so
+    # including it in the UPDATE raised UndefinedColumnError -> HTTP 500. It must
+    # be dropped from the generated SQL (and the title still applied).
+    updated_row = make_class_row({"title": "CS 999"})
+    pool = make_pool(fetchrow_return=updated_row)
+    result = await update_class(pool, "abc-123", "user-1", {
+        "title": "CS 999",
+        "location_name": "Library",
+    })
+    assert result is not None
+    sql = pool.fetchrow.call_args[0][0]
+    assert "location_name" not in sql
+    assert "title" in sql
+
+
 # --- HTTP-level test via FastAPI TestClient ---
 
 from starlette.testclient import TestClient
