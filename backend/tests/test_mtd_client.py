@@ -54,6 +54,52 @@ async def test_mtd_client_departures_cache_miss_then_hit():
         assert mock_async_client.__aenter__.return_value.get.call_count == 1
 
 
+async def test_mtd_client_retries_then_succeeds():
+    """A transient timeout is retried; the next success is returned and cached."""
+    from unittest.mock import AsyncMock, MagicMock
+    import httpx
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"departures": []}
+    mock_resp.raise_for_status = MagicMock()
+
+    mock_async_client = AsyncMock()
+    # First attempt times out, second attempt succeeds.
+    mock_async_client.__aenter__.return_value.get = AsyncMock(
+        side_effect=[httpx.TimeoutException("slow"), mock_resp]
+    )
+    mock_async_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.mtd.client.httpx.AsyncClient", return_value=mock_async_client), \
+         patch("src.mtd.client.asyncio.sleep", new=AsyncMock()):
+        client = MTDClient(api_key="test-key")
+        result = await client.get_departures_by_stop("IT", minutes=60)
+
+    assert result == {"stop_id": "IT", "departures": []}
+    assert mock_async_client.__aenter__.return_value.get.call_count == 2
+
+
+async def test_mtd_client_raises_after_exhausting_retries():
+    """When every attempt fails, a RuntimeError is raised after the configured retries."""
+    from unittest.mock import AsyncMock, MagicMock
+    import httpx
+    from src.mtd.client import MTD_RETRY_ATTEMPTS
+
+    mock_async_client = AsyncMock()
+    mock_async_client.__aenter__.return_value.get = AsyncMock(
+        side_effect=httpx.TimeoutException("always slow")
+    )
+    mock_async_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.mtd.client.httpx.AsyncClient", return_value=mock_async_client), \
+         patch("src.mtd.client.asyncio.sleep", new=AsyncMock()):
+        client = MTDClient(api_key="test-key")
+        with pytest.raises(RuntimeError, match="MTD API unavailable"):
+            await client.get_departures_by_stop("IT", minutes=60)
+
+    assert mock_async_client.__aenter__.return_value.get.call_count == MTD_RETRY_ATTEMPTS
+
+
 async def test_mtd_client_departures_different_keys_different_entries():
     """Different (stop_id, minutes) use different cache keys."""
     from unittest.mock import AsyncMock, MagicMock

@@ -10,7 +10,7 @@ and append a dated log entry below.
       schedule.tsx, plus real ones: route_short_name/walk_distance_m not on
       RecommendationStep), then make the CI typecheck blocking
 - [ ] Backend test coverage measured and reported (e.g. `pytest --cov`, fail under threshold)
-- [ ] Mobile test coverage for core utils (nextClass, weatherEngine, crowding) expanded
+- [x] Mobile unit tests for core pure utils (distance, arriveBy, routeFormatting, crowding)
 - [ ] Integration test for the `/recommendation` happy path against a seeded GTFS db
 
 ## Security
@@ -69,4 +69,10 @@ and append a dated log entry below.
   - /recommendation ran the blocking Claude SDK call on the event loop; moved to
     asyncio.to_thread.
   - AI ranked_order now requires a valid permutation before reordering options.
+
+### 2026-06-14
+- Coverage improvements (no behavior change): +20 mobile util tests (distance,
+  arriveBy, routeFormatting, crowding); +4 tests for the startup GTFS->Postgres
+  stops seeding (previously zero coverage); +2 tests for the MTD client retry/backoff
+  and exhaustion paths. Backend 105 -> 111 passed; mobile 43 -> 63 passed.
 
