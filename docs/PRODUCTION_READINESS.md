@@ -58,3 +58,15 @@ and append a dated log entry below.
 - Repaired 6 tests broken by the JWKS auth refactor (stub get_unverified_header).
 - Added an always-on cloud scheduler (GitHub Actions `daily-agent.yml`) so the daily
   routine runs server-side; requires a one-time API/OAuth secret to activate.
+
+### 2026-06-13
+- Bug hunt + fixes (all with tests where feasible; full suite 105 passed):
+  - PATCH /schedule/classes with `location_name` → 500 (no such column); removed the
+    dangling field from backend whitelist/model and the mobile type.
+  - JWKS auth returned 503 instead of 401 for unknown-key ES256/RS256 tokens
+    (PyJWKClientError isn't an InvalidTokenError); now mapped to 401, with the first
+    tests for the asymmetric path.
+  - /recommendation ran the blocking Claude SDK call on the event loop; moved to
+    asyncio.to_thread.
+  - AI ranked_order now requires a valid permutation before reordering options.
+
