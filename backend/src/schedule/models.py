@@ -93,7 +93,6 @@ class CreateClassRequest(BaseModel):
 
 class UpdateClassRequest(BaseModel):
     title: str | None = None
-    location_name: str | None = None
     building_id: str | None = None
     days_of_week: list[str] | None = None
     start_time_local: str | None = None
