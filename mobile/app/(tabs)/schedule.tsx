@@ -9,6 +9,8 @@ import type { AutocompleteResult } from "@/src/api/client";
 import type { Building, ScheduleClass } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { theme } from "@/src/constants/theme";
+import { FadeInView, PressableScale } from "@/src/components/ui/motion";
+import { LinearGradient } from "expo-linear-gradient";
 import { Bell, BellOff, CalendarDays, Pencil, Trash2 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -50,16 +52,16 @@ function to12h(hhmm: string): string {
   return `${displayH}:${m.toString().padStart(2, '0')} ${period}`;
 }
 
-function getTransitStatusColor(startTime: string, departInMins: number): string {
+function getTransitStatus(startTime: string, departInMins: number): { main: string; soft: string } {
   const now = new Date();
   const nowMins = now.getHours() * 60 + now.getMinutes();
   const [h, m] = startTime.split(':').map(Number);
   const classMins = h * 60 + m;
   const leaveByMins = classMins - Math.round(departInMins);
   const minsUntilLeave = leaveByMins - nowMins;
-  if (minsUntilLeave > 15) return theme.colors.success;
-  if (minsUntilLeave > 5) return theme.colors.warning;
-  return theme.colors.error;
+  if (minsUntilLeave > 15) return { main: theme.colors.success, soft: theme.colors.successSoft };
+  if (minsUntilLeave > 5) return { main: theme.colors.warning, soft: theme.colors.warningSoft };
+  return { main: theme.colors.error, soft: theme.colors.errorSoft };
 }
 
 export default function ScheduleScreen() {
@@ -421,98 +423,119 @@ export default function ScheduleScreen() {
         presentationStyle="pageSheet"
         onRequestClose={resetForm}
       >
-        <ScrollView contentContainerStyle={styles.modalContainer} keyboardShouldPersistTaps="handled">
-          <View style={styles.modalHeader}>
-            <Pressable onPress={resetForm} accessibilityLabel="Cancel" accessibilityRole="button">
-              <Text style={styles.modalCancel}>Cancel</Text>
-            </Pressable>
-            <Text style={styles.modalTitle}>{editingClass ? "Edit Class" : "Add Class"}</Text>
-            <View style={{ width: 60 }} />
-          </View>
-          <View style={styles.formCard}><View style={styles.form}>
-            {editingClass && (
-              <View style={styles.editingBanner}>
-                <Text style={styles.editingBannerText}>Editing: {editingClass.title}</Text>
-              </View>
-            )}
-            <Text style={styles.label}>Title</Text>
-            <TextInput
-              style={styles.input}
-              value={title}
-              onChangeText={(text) => setTitle(text.slice(0, 60))}
-              maxLength={60}
-              placeholder="e.g. CS 101"
-            />
-            <Text style={styles.label}>Days</Text>
-            <View style={styles.dayRow}>
-              {DAYS.map((d) => (
-                <Pressable
-                  key={d}
-                  style={[styles.dayBtn, days.includes(d) && styles.dayBtnOn]}
-                  onPress={() => toggleDay(d)}
-                >
-                  <Text style={[styles.dayText, days.includes(d) && styles.dayTextOn]}>{d.slice(0, 1)}</Text>
-                </Pressable>
-              ))}
+        <View style={styles.modalRoot}>
+          <ScrollView contentContainerStyle={styles.modalContainer} keyboardShouldPersistTaps="handled">
+            <View style={styles.modalHeader}>
+              <PressableScale
+                scaleTo={0.92}
+                style={styles.modalCancelBtn}
+                onPress={resetForm}
+                accessibilityLabel="Cancel"
+                accessibilityRole="button"
+              >
+                <Text style={styles.modalCancel}>Cancel</Text>
+              </PressableScale>
+              <Text style={styles.modalTitle}>{editingClass ? "Edit Class" : "Add Class"}</Text>
+              <View style={{ width: 60 }} />
             </View>
-            <Text style={styles.label}>Start time (HH:MM)</Text>
-            <TextInput
-              style={styles.input}
-              value={time}
-              onChangeText={setTime}
-              placeholder="09:00"
-              keyboardType="numbers-and-punctuation"
-            />
-            <Text style={styles.label}>End time (HH:MM, optional)</Text>
-            <TextInput
-              style={styles.input}
-              value={endTime}
-              onChangeText={setEndTime}
-              placeholder="10:15"
-              keyboardType="numbers-and-punctuation"
-            />
-            <Text style={styles.label}>Class location (address or place)</Text>
-            <TextInput
-              style={styles.input}
-              value={locationQuery}
-              onChangeText={onLocationQueryChange}
-              placeholder="e.g. Lincoln Hall, Illini Union, 934 Lundy Lane"
-              autoCorrect={false}
-            />
-            {locationSearching && <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginTop: 6 }} />}
-            {locationSuggestions.length > 0 && (
-              <View style={styles.suggestionList}>
-                {locationSuggestions.map((item, i) => (
-                  <Pressable
-                    key={`${item.type}-${item.place_id ?? item.building_id}-${i}`}
-                    style={[styles.suggestionItem, i < locationSuggestions.length - 1 && styles.suggestionSep]}
-                    onPress={() => onSelectLocationSuggestion(item)}
+            <View style={styles.formCard}><View style={styles.form}>
+              {editingClass && (
+                <View style={styles.editingBanner}>
+                  <Text style={styles.editingBannerText}>Editing: {editingClass.title}</Text>
+                </View>
+              )}
+              <Text style={styles.label}>Title</Text>
+              <TextInput
+                style={styles.input}
+                value={title}
+                onChangeText={(text) => setTitle(text.slice(0, 60))}
+                maxLength={60}
+                placeholder="e.g. CS 101"
+                placeholderTextColor={theme.colors.textMuted}
+              />
+              <Text style={styles.label}>Days</Text>
+              <View style={styles.dayRow}>
+                {DAYS.map((d) => (
+                  <PressableScale
+                    key={d}
+                    scaleTo={0.88}
+                    style={[styles.dayBtn, days.includes(d) && styles.dayBtnOn]}
+                    onPress={() => toggleDay(d)}
                   >
-                    <Text style={styles.suggestionName} numberOfLines={1}>
-                      {item.name}
-                    </Text>
-                    {(item.secondary_text || item.display_name) ? (
-                      <Text style={styles.suggestionSub} numberOfLines={1}>
-                        {item.secondary_text ?? item.display_name}
-                      </Text>
-                    ) : null}
-                  </Pressable>
+                    <Text style={[styles.dayText, days.includes(d) && styles.dayTextOn]}>{d.slice(0, 1)}</Text>
+                  </PressableScale>
                 ))}
               </View>
-            )}
-            {locationError && <Text style={styles.locationError}>{locationError}</Text>}
-            {locationDisplay != null && (
-              <Text style={styles.locationConfirmed}>✓ {locationDisplay}</Text>
-            )}
-            <Pressable
-              style={[styles.submitBtn, submitting && styles.submitDisabled]}
-              onPress={submit}
-              disabled={submitting}
-            >
-              {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{editingClass ? "Save" : "Add class"}</Text>}
-            </Pressable>
-          </View></View>
-        </ScrollView>
+              <Text style={styles.label}>Start time (HH:MM)</Text>
+              <TextInput
+                style={styles.input}
+                value={time}
+                onChangeText={setTime}
+                placeholder="09:00"
+                placeholderTextColor={theme.colors.textMuted}
+                keyboardType="numbers-and-punctuation"
+              />
+              <Text style={styles.label}>End time (HH:MM, optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={endTime}
+                onChangeText={setEndTime}
+                placeholder="10:15"
+                placeholderTextColor={theme.colors.textMuted}
+                keyboardType="numbers-and-punctuation"
+              />
+              <Text style={styles.label}>Class location (address or place)</Text>
+              <TextInput
+                style={styles.input}
+                value={locationQuery}
+                onChangeText={onLocationQueryChange}
+                placeholder="e.g. Lincoln Hall, Illini Union, 934 Lundy Lane"
+                placeholderTextColor={theme.colors.textMuted}
+                autoCorrect={false}
+              />
+              {locationSearching && <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginTop: 6 }} />}
+              {locationSuggestions.length > 0 && (
+                <View style={styles.suggestionList}>
+                  {locationSuggestions.map((item, i) => (
+                    <Pressable
+                      key={`${item.type}-${item.place_id ?? item.building_id}-${i}`}
+                      style={[styles.suggestionItem, i < locationSuggestions.length - 1 && styles.suggestionSep]}
+                      onPress={() => onSelectLocationSuggestion(item)}
+                    >
+                      <Text style={styles.suggestionName} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                      {(item.secondary_text || item.display_name) ? (
+                        <Text style={styles.suggestionSub} numberOfLines={1}>
+                          {item.secondary_text ?? item.display_name}
+                        </Text>
+                      ) : null}
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+              {locationError && <Text style={styles.locationError}>{locationError}</Text>}
+              {locationDisplay != null && (
+                <Text style={styles.locationConfirmed}>✓ {locationDisplay}</Text>
+              )}
+              <PressableScale
+                scaleTo={0.97}
+                style={[styles.submitBtn, submitting && styles.submitDisabled]}
+                onPress={submit}
+                disabled={submitting}
+              >
+                <LinearGradient
+                  colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.submitGradient}
+                >
+                  {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{editingClass ? "Save" : "Add class"}</Text>}
+                </LinearGradient>
+              </PressableScale>
+            </View></View>
+          </ScrollView>
+        </View>
       </Modal>
 
     <ScrollView
@@ -522,268 +545,373 @@ export default function ScheduleScreen() {
       }
     >
       {successToast && (
-        <View style={styles.successToast}>
-          <Text style={styles.successToastText}>{successToast}</Text>
-        </View>
+        <FadeInView dy={-8} duration={theme.motion.base}>
+          <View style={styles.successToast}>
+            <Text style={styles.successToastText}>{successToast}</Text>
+          </View>
+        </FadeInView>
       )}
 
       {/* List / Week toggle */}
       <View style={styles.viewToggleRow}>
-        <Pressable
+        <PressableScale
+          scaleTo={0.92}
           style={[styles.viewToggleBtn, viewMode === "list" && styles.viewToggleBtnActive]}
           onPress={() => setViewMode("list")}
         >
           <Text style={[styles.viewToggleText, viewMode === "list" && styles.viewToggleTextActive]}>List</Text>
-        </Pressable>
-        <Pressable
+        </PressableScale>
+        <PressableScale
+          scaleTo={0.92}
           style={[styles.viewToggleBtn, viewMode === "week" && styles.viewToggleBtnActive]}
           onPress={() => setViewMode("week")}
         >
           <Text style={[styles.viewToggleText, viewMode === "week" && styles.viewToggleTextActive]}>Week</Text>
-        </Pressable>
+        </PressableScale>
       </View>
 
       {viewMode === "week" && (
         <View style={styles.weekStrip}>
           {DAYS.map((d) => (
-            <Pressable
+            <PressableScale
               key={d}
+              scaleTo={0.92}
               style={[styles.weekDayBtn, selectedWeekDay === d && styles.weekDayBtnActive]}
               onPress={() => setSelectedWeekDay(selectedWeekDay === d ? null : d)}
             >
               <Text style={[styles.weekDayText, selectedWeekDay === d && styles.weekDayTextActive]}>
                 {DAY_LABELS[d]}
               </Text>
-            </Pressable>
+            </PressableScale>
           ))}
         </View>
       )}
 
       <Text style={styles.listTitle}>Your classes</Text>
       {filteredClasses.length === 0 ? (
-        <Text style={styles.empty}>
-          {viewMode === "week" && selectedWeekDay
-            ? `No classes on ${DAY_LABELS[selectedWeekDay]}.`
-            : "No classes yet. Tap + to add your first class."}
-        </Text>
-      ) : (
-        filteredClasses.map((c) => (
-          <View key={c.class_id} style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.classTitle}>{c.title}</Text>
-              <View style={styles.cardActions}>
-                <Pressable
-                  style={styles.notifBtn}
-                  accessibilityLabel={disabledNotifIds.includes(c.class_id) ? `Unmute notifications for ${c.title}` : `Mute notifications for ${c.title}`}
-                  onPress={async () => {
-                    if (disabledNotifIds.includes(c.class_id)) {
-                      await enableClassNotif(c.class_id);
-                    } else {
-                      await disableClassNotif(c.class_id);
-                      await cancelClassReminder(c.class_id);
-                    }
-                    setDisabledNotifIds(await getDisabledClassIds());
-                  }}
-                >
-                  {disabledNotifIds.includes(c.class_id)
-                    ? <BellOff size={18} color={theme.colors.textMuted} />
-                    : <Bell size={18} color={theme.colors.navy} />}
-                </Pressable>
-                <Pressable
-                  style={styles.editBtn}
-                  onPress={() => onEditClass(c)}
-                  accessibilityLabel={`Edit ${c.title}`}
-                >
-                  <Pencil size={18} color={theme.colors.navy} />
-                </Pressable>
-                <Pressable
-                  style={styles.deleteBtn}
-                  onPress={() => onDeleteClass(c)}
-                  accessibilityLabel={`Delete ${c.title}`}
-                >
-                  <Trash2 size={18} color={theme.colors.error} />
-                </Pressable>
-              </View>
-            </View>
-            <Text style={styles.classMeta}>
-              {c.days_of_week.join(", ")} · {to12h(c.start_time_local)}
-              {c.end_time_local ? `–${to12h(c.end_time_local)}` : ""} · {classLocationLabel(c)}
+        <FadeInView>
+          <View style={styles.emptyCard}>
+            <Text style={styles.empty}>
+              {viewMode === "week" && selectedWeekDay
+                ? `No classes on ${DAY_LABELS[selectedWeekDay]}.`
+                : "No classes yet. Tap + to add your first class."}
             </Text>
-            {disabledNotifIds.includes(c.class_id) && (
-              <Text style={styles.notifMutedLabel}>Notifications muted</Text>
-            )}
-            {classRouteDatas[c.class_id] != null && (
-              <View style={styles.transitOverlay}>
-                <Text style={styles.transitOverlayText}>
-                  Leave by {getLeaveByTime(c.start_time_local, classRouteDatas[c.class_id]!.bestDepartInMinutes)}
-                </Text>
-                <View style={[styles.transitStatusDot, {
-                  backgroundColor: getTransitStatusColor(c.start_time_local, classRouteDatas[c.class_id]!.bestDepartInMinutes)
-                }]} />
-              </View>
-            )}
           </View>
-        ))
+        </FadeInView>
+      ) : (
+        filteredClasses.map((c, index) => {
+          const route = classRouteDatas[c.class_id];
+          const status = route != null ? getTransitStatus(c.start_time_local, route.bestDepartInMinutes) : null;
+          return (
+            <FadeInView key={c.class_id} delay={index * 60}>
+              <View style={styles.card}>
+                <View style={[styles.cardAccent, { backgroundColor: status?.main ?? theme.colors.orange }]} />
+                <View style={styles.cardBody}>
+                  <View style={styles.cardHeader}>
+                    <Text style={styles.classTitle}>{c.title}</Text>
+                    <View style={styles.cardActions}>
+                      <PressableScale
+                        scaleTo={0.85}
+                        style={styles.iconBtn}
+                        hitSlop={4}
+                        accessibilityLabel={disabledNotifIds.includes(c.class_id) ? `Unmute notifications for ${c.title}` : `Mute notifications for ${c.title}`}
+                        onPress={async () => {
+                          if (disabledNotifIds.includes(c.class_id)) {
+                            await enableClassNotif(c.class_id);
+                          } else {
+                            await disableClassNotif(c.class_id);
+                            await cancelClassReminder(c.class_id);
+                          }
+                          setDisabledNotifIds(await getDisabledClassIds());
+                        }}
+                      >
+                        {disabledNotifIds.includes(c.class_id)
+                          ? <BellOff size={18} color={theme.colors.textMuted} />
+                          : <Bell size={18} color={theme.colors.navy} />}
+                      </PressableScale>
+                      <PressableScale
+                        scaleTo={0.85}
+                        style={styles.iconBtn}
+                        hitSlop={4}
+                        onPress={() => onEditClass(c)}
+                        accessibilityLabel={`Edit ${c.title}`}
+                      >
+                        <Pencil size={18} color={theme.colors.navy} />
+                      </PressableScale>
+                      <PressableScale
+                        scaleTo={0.85}
+                        style={styles.iconBtn}
+                        hitSlop={4}
+                        onPress={() => onDeleteClass(c)}
+                        accessibilityLabel={`Delete ${c.title}`}
+                      >
+                        <Trash2 size={18} color={theme.colors.error} />
+                      </PressableScale>
+                    </View>
+                  </View>
+                  <Text style={styles.classMeta}>
+                    {c.days_of_week.join(", ")} · {to12h(c.start_time_local)}
+                    {c.end_time_local ? `–${to12h(c.end_time_local)}` : ""} · {classLocationLabel(c)}
+                  </Text>
+                  {disabledNotifIds.includes(c.class_id) && (
+                    <Text style={styles.notifMutedLabel}>Notifications muted</Text>
+                  )}
+                  {route != null && status != null && (
+                    <View style={[styles.leavePill, { backgroundColor: status.soft }]}>
+                      <View style={[styles.leaveDot, { backgroundColor: status.main }]} />
+                      <Text style={[styles.leavePillText, { color: status.main }]}>
+                        Leave by {getLeaveByTime(c.start_time_local, route.bestDepartInMinutes)}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            </FadeInView>
+          );
+        })
       )}
-      <Pressable style={styles.planWeekBtn} onPress={() => router.push('/after-class-planner')}>
+      <PressableScale scaleTo={0.96} style={styles.planWeekBtn} onPress={() => router.push('/after-class-planner')}>
         <CalendarDays size={15} color={theme.colors.orange} />
         <Text style={styles.planWeekBtnText}>Plan my evening →</Text>
-      </Pressable>
+      </PressableScale>
     </ScrollView>
 
       {/* FAB — add class */}
-      <Pressable
-        style={styles.fab}
-        onPress={() => setShowForm(true)}
-        accessibilityLabel="Add class"
-        accessibilityRole="button"
-      >
-        <Text style={styles.fabText}>+</Text>
-      </Pressable>
+      <View style={styles.fabWrap} pointerEvents="box-none">
+        <PressableScale
+          scaleTo={0.9}
+          style={styles.fab}
+          onPress={() => setShowForm(true)}
+          accessibilityLabel="Add class"
+          accessibilityRole="button"
+        >
+          <LinearGradient
+            colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <Text style={styles.fabText}>+</Text>
+        </PressableScale>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screenWrapper: { flex: 1 },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surface },
+  screenWrapper: { flex: 1, backgroundColor: theme.colors.surfaceAlt },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surfaceAlt },
   container: { padding: 16, paddingBottom: 100 },
+
+  // FAB
+  fabWrap: { position: "absolute", bottom: 24, right: 20 },
   fab: {
-    position: "absolute",
-    bottom: 24,
-    right: 20,
     width: 56,
     height: 56,
-    borderRadius: 28,
-    backgroundColor: theme.colors.navy,
+    borderRadius: theme.radius.pill,
+    overflow: "hidden",
+    backgroundColor: theme.colors.orange,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 8,
+    ...theme.shadows.glowOrange,
   },
-  fabText: { fontSize: 28, color: "#fff", lineHeight: 32, fontFamily: "DMSans_400Regular" },
+  fabText: { fontSize: 30, color: "#fff", lineHeight: 34, fontFamily: "DMSans_400Regular", marginTop: -2 },
+
+  // Modal
+  modalRoot: {
+    flex: 1,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderTopLeftRadius: theme.radius.xxl,
+    borderTopRightRadius: theme.radius.xxl,
+    overflow: "hidden",
+  },
   modalContainer: { padding: 16, paddingBottom: 40 },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
+    paddingVertical: 14,
     marginBottom: 8,
   },
-  modalTitle: { fontSize: 18, fontFamily: "DMSans_700Bold", color: theme.colors.navy },
-  modalCancel: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, width: 60 },
-  formCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, marginBottom: 16, padding: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  modalTitle: { fontSize: 24, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy },
+  modalCancelBtn: { width: 60 },
+  modalCancel: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange },
+  formCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    marginBottom: 16,
+    padding: 18,
+    ...theme.shadows.md,
+  },
   form: { marginBottom: 0 },
-  label: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, marginTop: 12, marginBottom: 4 },
+  label: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, marginTop: 14, marginBottom: 6 },
   input: {
+    backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    padding: 12,
+    borderColor: theme.colors.borderSoft,
+    borderRadius: theme.radius.lg,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     fontSize: 16,
+    color: theme.colors.text,
     fontFamily: "DMSans_400Regular",
   },
+
+  // Modal day selector chips
   dayRow: { flexDirection: "row", gap: 8, marginTop: 4 },
   dayBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
+    width: 38,
+    height: 38,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.orangeSoft,
     justifyContent: "center",
     alignItems: "center",
   },
-  dayBtnOn: { backgroundColor: theme.colors.orange },
-  dayText: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.text },
-  dayTextOn: { color: theme.colors.surface },
-  searchLocationBtn: {
-    marginTop: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.md,
-    alignItems: "center",
-  },
-  searchLocationBtnDisabled: { opacity: 0.7 },
-  searchLocationBtnText: { color: theme.colors.surface, fontSize: 15, fontFamily: "DMSans_600SemiBold" },
-  locationError: { color: theme.colors.error, fontSize: 14, fontFamily: "DMSans_400Regular", marginTop: 6 },
-  locationConfirmed: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.success, marginTop: 8 },
+  dayBtnOn: { backgroundColor: theme.colors.orange, ...theme.shadows.glowOrange, shadowOpacity: 0.25 },
+  dayText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange },
+  dayTextOn: { color: "#fff" },
+
+  locationError: { color: theme.colors.error, fontSize: 14, fontFamily: "DMSans_400Regular", marginTop: 8 },
+  locationConfirmed: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.success, marginTop: 10 },
   suggestionList: {
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    marginTop: 4,
+    borderColor: theme.colors.borderSoft,
+    borderRadius: theme.radius.lg,
+    marginTop: 8,
     backgroundColor: theme.colors.surface,
     overflow: "hidden",
+    ...theme.shadows.sm,
   },
-  suggestionItem: { paddingVertical: 10, paddingHorizontal: 12 },
-  suggestionSep: { borderBottomWidth: 1, borderBottomColor: theme.colors.border },
+  suggestionItem: { paddingVertical: 11, paddingHorizontal: 14 },
+  suggestionSep: { borderBottomWidth: 1, borderBottomColor: theme.colors.borderSoft },
   suggestionName: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
   suggestionSub: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 2 },
+
+  // Submit CTA
   submitBtn: {
-    backgroundColor: theme.colors.orange,
-    padding: 14,
-    borderRadius: theme.radius.md,
-    alignItems: "center",
-    marginTop: 16,
-  },
-  submitDisabled: { opacity: 0.7 },
-  submitText: { color: theme.colors.surface, fontFamily: "DMSans_600SemiBold", fontSize: 16 },
-  viewToggleRow: {
-    flexDirection: "row",
-    marginBottom: 12,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderRadius: theme.radius.lg,
     overflow: "hidden",
-    alignSelf: "flex-start",
+    marginTop: 20,
+    ...theme.shadows.glowOrange,
   },
+  submitGradient: { paddingVertical: 15, alignItems: "center", justifyContent: "center" },
+  submitDisabled: { opacity: 0.6 },
+  submitText: { color: "#fff", fontFamily: "DMSans_700Bold", fontSize: 16, letterSpacing: 0.2 },
+
+  // Editing banner
+  editingBanner: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: theme.colors.navy,
+    borderRadius: theme.radius.lg,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+  },
+  editingBannerText: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.textOnNavy, flex: 1 },
+
+  // View toggle + week day strip (pill buttons)
+  viewToggleRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
   viewToggleBtn: {
     paddingVertical: 8,
-    paddingHorizontal: 20,
+    paddingHorizontal: 22,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
   },
-  viewToggleBtnActive: { backgroundColor: theme.colors.navy },
+  viewToggleBtnActive: {
+    backgroundColor: theme.colors.navy,
+    borderColor: theme.colors.navy,
+    ...theme.shadows.sm,
+  },
   viewToggleText: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.textSecondary },
-  viewToggleTextActive: { color: theme.colors.surface },
+  viewToggleTextActive: { color: "#fff" },
   weekStrip: {
     flexDirection: "row",
     gap: 6,
-    marginBottom: 12,
+    marginBottom: 14,
     flexWrap: "wrap",
   },
   weekDayBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
+    paddingVertical: 7,
+    paddingHorizontal: 13,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
   },
-  weekDayBtnActive: { backgroundColor: theme.colors.orange },
-  weekDayText: { fontSize: 13, fontFamily: "DMSans_500Medium", color: theme.colors.text },
-  weekDayTextActive: { color: theme.colors.surface },
-  listTitle: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, marginBottom: 8 },
-  empty: { fontFamily: "DMSans_400Regular", fontSize: 14, color: theme.colors.textSecondary },
-  card: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, padding: 12, marginBottom: 8, borderLeftWidth: 4, borderLeftColor: theme.colors.orange, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
+  weekDayBtnActive: {
+    backgroundColor: theme.colors.navy,
+    borderColor: theme.colors.navy,
+    ...theme.shadows.sm,
+  },
+  weekDayText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.textSecondary },
+  weekDayTextActive: { color: "#fff" },
+
+  listTitle: { fontSize: 22, lineHeight: 28, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy, marginBottom: 12 },
+  emptyCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: 24,
+    alignItems: "center",
+    ...theme.shadows.sm,
+  },
+  empty: { fontFamily: "DMSans_400Regular", fontSize: 14, color: theme.colors.textSecondary, textAlign: "center" },
+
+  // Class cards
+  card: {
+    flexDirection: "row",
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: 14,
+    marginBottom: 10,
+    ...theme.shadows.md,
+  },
+  cardAccent: { width: 4, borderRadius: theme.radius.pill, alignSelf: "stretch" },
+  cardBody: { flex: 1, marginLeft: 12 },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  classTitle: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, flex: 1 },
-  cardActions: { flexDirection: "row", alignItems: "center", gap: 4 },
-  notifBtn: { padding: 4 },
-  notifBtnText: { fontSize: 18 },
-  editBtn: { padding: 4 },
-  deleteBtn: { padding: 4 },
-  deleteBtnText: { fontSize: 18 },
-  editingBanner: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: theme.colors.navy, borderRadius: theme.radius.md, paddingVertical: 8, paddingHorizontal: 12, marginBottom: 8 },
-  editingBannerText: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.surface, flex: 1 },
-  editingBannerCancel: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange, marginLeft: 8 },
+  classTitle: { fontSize: 17, fontFamily: "DMSans_700Bold", color: theme.colors.text, flex: 1 },
+  cardActions: { flexDirection: "row", alignItems: "center", gap: 2 },
+  iconBtn: { padding: 5 },
   classMeta: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
   notifMutedLabel: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.orange, marginTop: 4, fontStyle: "italic" },
-  transitOverlay: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: theme.colors.border },
-  transitOverlayText: { fontSize: 12, fontFamily: 'DMSans_500Medium', color: theme.colors.textSecondary },
-  transitStatusDot: { width: 8, height: 8, borderRadius: 4 },
-  planWeekBtn: { marginTop: 20, padding: 14, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.orange, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 },
-  planWeekBtnText: { fontSize: 15, fontFamily: 'DMSans_600SemiBold', color: theme.colors.orange },
-  successToast: { backgroundColor: theme.colors.success, borderRadius: theme.radius.md, padding: 12, marginBottom: 12, alignItems: 'center' },
-  successToastText: { color: '#fff', fontSize: 14, fontFamily: 'DMSans_600SemiBold' },
+
+  // "Leave by" status pill
+  leavePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: theme.radius.pill,
+  },
+  leaveDot: { width: 7, height: 7, borderRadius: theme.radius.pill },
+  leavePillText: { fontSize: 12, fontFamily: "DMSans_600SemiBold" },
+
+  planWeekBtn: {
+    marginTop: 20,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.orangeSoft,
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 6,
+  },
+  planWeekBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange },
+
+  successToast: {
+    backgroundColor: theme.colors.success,
+    borderRadius: theme.radius.lg,
+    padding: 12,
+    marginBottom: 12,
+    alignItems: "center",
+    ...theme.shadows.sm,
+  },
+  successToastText: { color: "#fff", fontSize: 14, fontFamily: "DMSans_600SemiBold" },
 });

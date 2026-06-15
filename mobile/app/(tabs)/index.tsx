@@ -71,6 +71,9 @@ import {
   View,
 } from "react-native";
 import { theme } from "@/src/constants/theme";
+import { FadeInView, PressableScale, PulseView, Skeleton } from "@/src/components/ui/motion";
+import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ArrowRight, ChevronRight, Clock, MapPin, Search, Star, X } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 
@@ -174,6 +177,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ highlight?: string; focus?: string }>();
   const queryClient = useQueryClient();
+  const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<"loading" | "error" | "denied" | "ready">("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(UIUC_FALLBACK);
@@ -222,7 +226,9 @@ export default function HomeScreen() {
 
   // Classes — shared TQ cache (same key as useLeaveBy — zero duplicate requests)
   const { data: classesData } = useClasses();
-  const scheduleClasses = classesData?.classes ?? [];
+  // Stable identity: `?? []` would mint a fresh array every render, re-running
+  // every effect that depends on scheduleClasses
+  const scheduleClasses = useMemo(() => classesData?.classes ?? [], [classesData]);
 
   const nextUp = getNextClassToday(scheduleClasses);
 
@@ -404,8 +410,11 @@ export default function HomeScreen() {
 
   // ── Departures timestamp tracking ─────────────────────────────────
   useEffect(() => {
-    if (departureQueries.some(q => q.isSuccess)) {
-      setDeparturesFetchedAt(Date.now());
+    // departureQueries is a new array each render; Date.now() here would
+    // change state every run and loop. dataUpdatedAt is stable per fetch.
+    const latest = Math.max(0, ...departureQueries.map((q) => q.dataUpdatedAt ?? 0));
+    if (latest > 0) {
+      setDeparturesFetchedAt((prev) => (prev === latest ? prev : latest));
     }
   }, [departureQueries]);
 
@@ -424,8 +433,13 @@ export default function HomeScreen() {
       const placeId = await getAfterLastClassPlaceId();
       const places = await getFavoritePlaces();
       const place = places.find((p) => p.id === placeId) ?? null;
-      setAfterLastClassPlace(place);
-      if (!place) { setAfterLastClassRecs([]); return; }
+      // Functional updates that bail on equal values — this effect can re-run
+      // on identity-only dep changes, and unconditional sets would loop
+      setAfterLastClassPlace((prev) => (prev?.id === place?.id ? prev : place));
+      if (!place) {
+        setAfterLastClassRecs((prev) => (prev.length === 0 ? prev : []));
+        return;
+      }
       try {
         const arriveBy = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
         const rec = await fetchRecommendation(apiBaseUrl, {
@@ -441,7 +455,7 @@ export default function HomeScreen() {
         }, { apiKey: apiKey ?? undefined });
         setAfterLastClassRecs(rec.options ?? []);
       } catch {
-        setAfterLastClassRecs([]);
+        setAfterLastClassRecs((prev) => (prev.length === 0 ? prev : []));
       }
     })();
   }, [scheduleClasses, location, apiBaseUrl]);
@@ -642,11 +656,60 @@ export default function HomeScreen() {
     }
   }, [apiBaseUrl, apiKey, location, searchQuery, _fetchRoutesTo]);
 
+  /** Build a shareable ETA message for this route option. */
+  const buildShareMessage = (opt: RecommendationOption, destName: string): string => {
+    const dest = destName.split(",")[0];
+    if (opt.type === "WALK") return `Walking to ${dest} — arriving in ~${opt.eta_minutes} min`;
+    const rideStep = opt.steps.find((s) => s.type === "RIDE");
+    const route = rideStep?.route ? `Bus ${rideStep.route}` : "bus";
+    const depart = Math.round(opt.depart_in_minutes);
+    const departStr = depart <= 1 ? "leaving now" : `leaving in ${depart} min`;
+    return `Taking ${route} to ${dest} — ${departStr}, arriving in ~${opt.eta_minutes} min`;
+  };
+
+  // NOTE: must stay above the early returns below — hooks may not run
+  // conditionally, and this is the component's last hook
+  const handleShare = useCallback(async (opt: RecommendationOption, destName: string) => {
+    const rideStep = opt.steps.find((s) => s.type === "RIDE");
+    const etaEpoch = Math.floor(Date.now() / 1000) + opt.eta_minutes * 60;
+    const body: ShareTripRequest = {
+      destination: destName.split(",")[0],
+      route_id: rideStep?.route ?? null,
+      route_name: rideStep?.headsign ?? null,
+      stop_name: rideStep?.stop_name ?? null,
+      phase: "walking",
+      eta_epoch: etaEpoch,
+    };
+    const message = buildShareMessage(opt, destName);
+    try {
+      const result = await createShareTrip(apiBaseUrl, body, { apiKey: apiKey ?? undefined });
+      setShareToken(result.token);
+      await Share.share({ message: `${message}\n${result.url}`, url: result.url });
+    } catch {
+      // Fallback to message-only share
+      await Share.share({ message });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- buildShareMessage is pure & stateless
+  }, [apiBaseUrl, apiKey]);
+
   if (status === "loading" && !refreshing) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={theme.colors.navy} />
-        <Text style={styles.centeredText}>Getting location and nearby stops…</Text>
+      <View style={{ flex: 1, backgroundColor: theme.colors.surfaceAlt }}>
+        <LinearGradient
+          colors={[theme.gradients.hero[0], theme.gradients.hero[1], theme.gradients.hero[2]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.heroBlock, { paddingTop: insets.top + 16 }]}
+        >
+          <Text style={styles.heroGreeting}>{getGreeting()}</Text>
+          <Text style={styles.heroDate}>Getting location and nearby stops…</Text>
+        </LinearGradient>
+        <View style={{ paddingHorizontal: 16, gap: 12, marginTop: -theme.radius.xxl }}>
+          <Skeleton height={150} radius={theme.radius.xl} />
+          <Skeleton height={96} radius={theme.radius.xl} />
+          <Skeleton height={96} radius={theme.radius.xl} />
+          <Skeleton height={96} radius={theme.radius.xl} />
+        </View>
       </View>
     );
   }
@@ -721,39 +784,6 @@ export default function HomeScreen() {
     return copy;
   };
 
-  /** Build a shareable ETA message for this route option. */
-  const buildShareMessage = (opt: RecommendationOption, destName: string): string => {
-    const dest = destName.split(",")[0];
-    if (opt.type === "WALK") return `Walking to ${dest} — arriving in ~${opt.eta_minutes} min`;
-    const rideStep = opt.steps.find((s) => s.type === "RIDE");
-    const route = rideStep?.route ? `Bus ${rideStep.route}` : "bus";
-    const depart = Math.round(opt.depart_in_minutes);
-    const departStr = depart <= 1 ? "leaving now" : `leaving in ${depart} min`;
-    return `Taking ${route} to ${dest} — ${departStr}, arriving in ~${opt.eta_minutes} min`;
-  };
-
-  const handleShare = useCallback(async (opt: RecommendationOption, destName: string) => {
-    const rideStep = opt.steps.find((s) => s.type === "RIDE");
-    const etaEpoch = Math.floor(Date.now() / 1000) + opt.eta_minutes * 60;
-    const body: ShareTripRequest = {
-      destination: destName.split(",")[0],
-      route_id: rideStep?.route ?? null,
-      route_name: rideStep?.headsign ?? null,
-      stop_name: rideStep?.stop_name ?? null,
-      phase: "walking",
-      eta_epoch: etaEpoch,
-    };
-    const message = buildShareMessage(opt, destName);
-    try {
-      const result = await createShareTrip(apiBaseUrl, body, { apiKey: apiKey ?? undefined });
-      setShareToken(result.token);
-      await Share.share({ message: `${message}\n${result.url}`, url: result.url });
-    } catch {
-      // Fallback to message-only share
-      await Share.share({ message });
-    }
-  }, [apiBaseUrl, apiKey, buildShareMessage]);
-
   /** Render a single option card — shared between search results, after-class recs, and class recommendations. */
   const renderOptionCard = (
     opt: RecommendationOption,
@@ -786,8 +816,9 @@ export default function HomeScreen() {
     };
 
     return (
-      <View
+      <FadeInView
         key={key}
+        delay={index * 80}
         style={[
           styles.optionCard,
           { borderLeftColor: statusColors[status] },
@@ -818,9 +849,15 @@ export default function HomeScreen() {
 
           {/* Right column: hero countdown */}
           <View style={styles.cardCountdownCol}>
-            <Text style={departNow ? styles.cardDepartNow : styles.cardDepartTime}>
-              {isWalk ? opt.eta_minutes : departNow ? "Now" : departMins}
-            </Text>
+            {departNow && !isWalk ? (
+              <PulseView minOpacity={0.55} duration={700}>
+                <Text style={styles.cardDepartNow}>Now</Text>
+              </PulseView>
+            ) : (
+              <Text style={departNow ? styles.cardDepartNow : styles.cardDepartTime}>
+                {isWalk ? opt.eta_minutes : departMins}
+              </Text>
+            )}
             {!departNow && (
               <Text style={styles.cardDepartUnit}>{isWalk ? "min walk" : "min"}</Text>
             )}
@@ -835,25 +872,32 @@ export default function HomeScreen() {
           )}
           <View style={{ flex: 1 }} />
           <View style={styles.cardActions}>
-            <Pressable
+            <PressableScale
               accessibilityLabel="Share trip with live ETA"
               accessibilityRole="button"
               style={styles.shareBtn}
               onPress={() => handleShare(opt, destName)}
             >
               <Text style={styles.shareBtnText}>Share</Text>
-            </Pressable>
-            <Pressable
+            </PressableScale>
+            <PressableScale
               accessibilityLabel={isWalk ? "Start walking directions" : "Start bus option"}
               accessibilityRole="button"
               style={styles.startBtnInline}
               onPress={onStart}
             >
-              <Text style={styles.startBtnInlineText}>Start →</Text>
-            </Pressable>
+              <LinearGradient
+                colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.startBtnInlineGradient}
+              >
+                <Text style={styles.startBtnInlineText}>Start →</Text>
+              </LinearGradient>
+            </PressableScale>
           </View>
         </View>
-      </View>
+      </FadeInView>
     );
   };
 
@@ -862,61 +906,54 @@ export default function HomeScreen() {
       ref={scrollRef}
       contentContainerStyle={styles.scrollContent}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.navy} />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />
       }
     >
-      {offlineBanner && (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>Offline — showing last saved data.</Text>
-          <Pressable onPress={onRefresh} accessibilityRole="button" accessibilityLabel="Retry loading">
-            <Text style={styles.offlineBannerRetry}>Retry</Text>
-          </Pressable>
-        </View>
-      )}
-      {useUiucArea && (
-        <View style={styles.uiucBanner}>
-          <Text style={styles.uiucBannerText}>Showing UIUC area (Champaign-Urbana) for testing</Text>
-          <Pressable onPress={() => { setUseUiucArea(false); onRefresh(); }}>
-            <Text style={styles.uiucBannerLink}>Use my location</Text>
-          </Pressable>
-        </View>
-      )}
+      {/* Covers the iOS overscroll bounce above the hero gradient */}
+      <View style={styles.bounceCover} />
 
-      {/* Rain mode banner */}
-      {rainMode && (
-        <View style={styles.rainBanner}>
-          <Text style={styles.rainBannerText}>Rain mode on — bus routes prioritised, +5 min buffer</Text>
-          <Pressable onPress={() => {}} accessibilityRole="button" accessibilityLabel="Rain mode active">
-            <Text style={styles.rainBannerIcon}>☂</Text>
-          </Pressable>
-        </View>
-      )}
+      {/* Hero header — deep navy gradient with greeting + next class chip */}
+      <LinearGradient
+        colors={[theme.gradients.hero[0], theme.gradients.hero[1], theme.gradients.hero[2]]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[styles.heroBlock, { paddingTop: insets.top + 16 }]}
+      >
+        <FadeInView dy={10}>
+          <Text style={styles.heroGreeting}>{getGreeting()}</Text>
+          <Text style={styles.heroDate}>
+            {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+          </Text>
+          {nextUp && (
+            <View style={styles.heroNextChip}>
+              <PulseView minOpacity={0.4} style={styles.heroNextDot}>
+                <View style={styles.heroNextDotInner} />
+              </PulseView>
+              <Text style={styles.heroNextText} numberOfLines={1}>
+                Next: {nextUp.title} · {nextUp.start_time_local}
+              </Text>
+            </View>
+          )}
+        </FadeInView>
+      </LinearGradient>
 
-      {/* Greeting */}
-      <View style={styles.greetingBlock}>
-        <Text style={styles.greeting}>{getGreeting()}</Text>
-        <Text style={styles.greetingDate}>
-          {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
-        </Text>
-      </View>
-
-      {/* Search card */}
-      <View style={styles.searchCard}>
+      {/* Search card — floats up over the hero */}
+      <FadeInView delay={70} style={styles.searchCard}>
         <Text style={styles.searchLabel}>Where to?</Text>
         {(homePlace || pinnedRoutes.length > 0) && !searchQuery.trim() && !searchLoading && (
           <View style={styles.quickChipsRow}>
             {homePlace && (
-              <Pressable
+              <PressableScale
                 style={styles.homePlaceChip}
                 onPress={onGetMeHome}
                 accessibilityLabel={`Get me to ${homePlace.name}`}
                 accessibilityRole="button"
               >
                 <Text style={styles.homePlaceChipText}>→ {homePlace.name}</Text>
-              </Pressable>
+              </PressableScale>
             )}
             {pinnedRoutes.map((pin) => (
-              <Pressable
+              <PressableScale
                 key={pin.id}
                 style={styles.pinnedChip}
                 onPress={async () => {
@@ -946,7 +983,7 @@ export default function HomeScreen() {
                 }}
               >
                 <Text style={styles.pinnedChipText}>{pin.destName}</Text>
-              </Pressable>
+              </PressableScale>
             ))}
           </View>
         )}
@@ -1013,17 +1050,25 @@ export default function HomeScreen() {
             ))}
           </View>
         )}
-        <Pressable
-          style={({ pressed }) => [styles.searchBtn, searchLoading && styles.searchBtnDisabled, { transform: [{ scale: pressed ? 0.97 : 1 }] }]}
+        <PressableScale
+          scaleTo={0.97}
+          style={[styles.searchBtn, searchLoading && styles.searchBtnDisabled]}
           onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onSearchDestination(); }}
           disabled={searchLoading || !searchQuery.trim() || !location}
         >
-          {searchLoading ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text style={styles.searchBtnText}>Get routes</Text>
-          )}
-        </Pressable>
+          <LinearGradient
+            colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.searchBtnGradient}
+          >
+            {searchLoading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.searchBtnText}>Get routes</Text>
+            )}
+          </LinearGradient>
+        </PressableScale>
         {searchError && <Text style={styles.searchError}>{searchError}</Text>}
         {recentSearches.length > 0 && !searchResults.length && !autocompleteSuggestions.length && (
           <View style={styles.recentSearches}>
@@ -1049,7 +1094,32 @@ export default function HomeScreen() {
             ))}
           </View>
         )}
-      </View>
+      </FadeInView>
+
+      {offlineBanner && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>Offline — showing last saved data.</Text>
+          <Pressable onPress={onRefresh} accessibilityRole="button" accessibilityLabel="Retry loading">
+            <Text style={styles.offlineBannerRetry}>Retry</Text>
+          </Pressable>
+        </View>
+      )}
+      {useUiucArea && (
+        <View style={styles.uiucBanner}>
+          <Text style={styles.uiucBannerText}>Showing UIUC area (Champaign-Urbana) for testing</Text>
+          <Pressable onPress={() => { setUseUiucArea(false); onRefresh(); }}>
+            <Text style={styles.uiucBannerLink}>Use my location</Text>
+          </Pressable>
+        </View>
+      )}
+      {rainMode && (
+        <View style={styles.rainBanner}>
+          <Text style={styles.rainBannerText}>Rain mode on — bus routes prioritised, +5 min buffer</Text>
+          <Pressable onPress={() => {}} accessibilityRole="button" accessibilityLabel="Rain mode active">
+            <Text style={styles.rainBannerIcon}>☂</Text>
+          </Pressable>
+        </View>
+      )}
 
       {/* Search results */}
       {searchDestinationName && searchResults.length > 0 && (
@@ -1097,13 +1167,14 @@ export default function HomeScreen() {
               const labels = { earliest: 'Arrives first', fastest: 'Fastest', 'least-walk': 'Fewest steps' };
               const active = routeSort === s;
               return (
-                <Pressable
+                <PressableScale
                   key={s}
+                  scaleTo={0.93}
                   style={[styles.sortPill, active && styles.sortPillActive]}
                   onPress={() => setRouteSort(s)}
                 >
                   <Text style={[styles.sortPillText, active && styles.sortPillTextActive]}>{labels[s]}</Text>
-                </Pressable>
+                </PressableScale>
               );
             })}
           </View>
@@ -1139,7 +1210,13 @@ export default function HomeScreen() {
 
       {/* Leave By Smart Card */}
       {leaveBy.nextClass && leaveBy.options.length > 0 && (
-        <View style={styles.leaveByCard}>
+        <FadeInView delay={100}>
+        <LinearGradient
+          colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.leaveByCard}
+        >
           <View style={styles.leaveByHeader}>
             <Text style={styles.leaveByTitle}>{leaveBy.nextClass.title}</Text>
             <Text style={styles.leaveByTime}>{leaveBy.nextClass.start_time_local}</Text>
@@ -1156,19 +1233,22 @@ export default function HomeScreen() {
           {leaveBy.noViableBus && leaveBy.walkOnlyMins != null && (
             <Text style={styles.leaveByWalkFallback}>No bus on time — walk {leaveBy.walkOnlyMins} min</Text>
           )}
-        </View>
+        </LinearGradient>
+        </FadeInView>
       )}
 
       {/* Running late? trigger */}
       {leaveBy.nextClass && leaveBy.options.some((o) => o.marginMins < 10) && (
-        <Pressable
-          style={styles.runningLatePill}
-          onPress={() => router.push('/running-late')}
-          accessibilityLabel="Running late? See catchable buses"
-          accessibilityRole="button"
-        >
-          <Text style={styles.runningLatePillText}>Running late?</Text>
-        </Pressable>
+        <PulseView minOpacity={0.85} maxScale={1.03} duration={1100} style={{ alignSelf: 'flex-start' }}>
+          <PressableScale
+            style={styles.runningLatePill}
+            onPress={() => router.push('/running-late')}
+            accessibilityLabel="Running late? See catchable buses"
+            accessibilityRole="button"
+          >
+            <Text style={styles.runningLatePillText}>Running late?</Text>
+          </PressableScale>
+        </PulseView>
       )}
 
       {/* Leave Now Banner */}
@@ -1206,7 +1286,7 @@ export default function HomeScreen() {
       </View>
 
       {/* Next up card */}
-      <View style={styles.nextUpCard}>
+      <FadeInView delay={60} style={styles.nextUpCard}>
         <View style={styles.nextUpLabelRow}>
           <Text style={styles.nextUpLabel}>Next up</Text>
           <NextUpArrow />
@@ -1243,7 +1323,7 @@ export default function HomeScreen() {
             </Pressable>
           </>
         )}
-      </View>
+      </FadeInView>
 
       {nextUp && recommendations.length === 0 && (
         <View style={styles.recommendationsUnavailable}>
@@ -1296,13 +1376,14 @@ export default function HomeScreen() {
               const labels = { earliest: 'Arrives first', fastest: 'Fastest', 'least-walk': 'Fewest steps' };
               const active = routeSort === s;
               return (
-                <Pressable
+                <PressableScale
                   key={s}
+                  scaleTo={0.93}
                   style={[styles.sortPill, active && styles.sortPillActive]}
                   onPress={() => setRouteSort(s)}
                 >
                   <Text style={[styles.sortPillText, active && styles.sortPillTextActive]}>{labels[s]}</Text>
-                </Pressable>
+                </PressableScale>
               );
             })}
           </View>
@@ -1341,7 +1422,7 @@ export default function HomeScreen() {
             const busOpts = recommendations.filter((o) => o.type !== 'WALK');
             const busBestEta = busOpts.length > 0 ? Math.min(...busOpts.map((o) => o.eta_minutes)) : null;
             const allBusLate = busOpts.length > 0 && busOpts.every((o) => optionStatus(o, nextUp?.start_time_local) === 'late');
-            const callouts: JSX.Element[] = [];
+            const callouts: React.JSX.Element[] = [];
             if (walkOpt && busBestEta !== null && walkOpt.eta_minutes <= busBestEta + 4) {
               callouts.push(
                 <Text key="walk-callout" style={styles.smartCallout}>
@@ -1390,20 +1471,25 @@ export default function HomeScreen() {
       {stops.length === 0 ? (
         <Text style={styles.empty}>No nearby stops in range.</Text>
       ) : (
-        stops.map((stop) => (
-          <View key={stop.stop_id} style={styles.card}>
-            <View style={styles.stopCardHeader}>
+        stops.map((stop, stopIdx) => (
+          <FadeInView key={stop.stop_id} delay={stopIdx * 90} style={styles.card}>
+            <LinearGradient
+              colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.stopCardHeader}
+            >
               <View style={{ flex: 1 }}>
                 <Text style={styles.stopName}>{stop.stop_name}</Text>
                 <Text style={styles.distance}>{formatDistance(stop.distance_m)} away</Text>
               </View>
-              <Pressable
+              <PressableScale
                 style={styles.favoriteStopBtn}
                 onPress={() => addFavoriteStop({ stop_id: stop.stop_id, stop_name: stop.stop_name })}
               >
                 <Star size={16} color="rgba(255,255,255,0.5)" />
-              </Pressable>
-            </View>
+              </PressableScale>
+            </LinearGradient>
             <View style={styles.departures}>
               {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
                 <Text style={styles.depText}>No departures</Text>
@@ -1438,7 +1524,7 @@ export default function HomeScreen() {
                 })
               )}
             </View>
-          </View>
+          </FadeInView>
         ))
       )}
     </ScrollView>
@@ -1455,35 +1541,52 @@ const styles = StyleSheet.create({
   },
   centeredText: { marginTop: 12, fontFamily: "DMSans_400Regular", fontSize: 15, color: theme.colors.textSecondary },
   scrollContent: { paddingBottom: 40, backgroundColor: theme.colors.surfaceAlt },
-  greetingBlock: { backgroundColor: theme.colors.surface, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
-  greeting: { fontSize: 26, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy, letterSpacing: -0.3 },
-  greetingDate: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 3 },
 
-  // Search card
+  // Hero header
+  bounceCover: { position: "absolute", top: -600, left: 0, right: 0, height: 600, backgroundColor: theme.gradients.hero[0] },
+  heroBlock: { paddingHorizontal: theme.spacing.lg, paddingBottom: theme.radius.xxl + 22 },
+  heroGreeting: { fontSize: 32, fontFamily: "DMSerifDisplay_400Regular", color: "#fff", letterSpacing: -0.3 },
+  heroDate: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textOnNavyMuted, marginTop: 4 },
+  heroNextChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 7,
+    marginTop: 12,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  heroNextDot: { width: 7, height: 7 },
+  heroNextDotInner: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.orangeBright },
+  heroNextText: { fontFamily: "DMSans_500Medium", fontSize: 12, color: theme.colors.textOnNavy, maxWidth: 280 },
+
+  // Search card — floats over the hero gradient
   searchCard: {
     backgroundColor: theme.colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    borderRadius: theme.radius.xl,
+    marginHorizontal: 16,
+    marginTop: -theme.radius.xxl,
     paddingHorizontal: theme.spacing.lg,
-    paddingTop: 14,
-    paddingBottom: 14,
+    paddingTop: 16,
+    paddingBottom: 16,
     marginBottom: 0,
+    ...theme.shadows.lg,
   },
   searchLabel: { fontFamily: "DMSans_700Bold", fontSize: 10, letterSpacing: 1.2, color: theme.colors.textMuted, marginBottom: 10, textTransform: "uppercase" as const },
   searchInputWrapper: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.lg,
     height: 52,
     paddingHorizontal: 14,
     marginBottom: 10,
-    borderWidth: 1.5,
-    borderColor: theme.colors.border,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
   },
   searchInput: {
     flex: 1,
@@ -1492,13 +1595,13 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
   },
   searchBtn: {
-    backgroundColor: theme.colors.orange,
-    paddingVertical: 11,
-    borderRadius: theme.radius.md,
-    alignItems: "center",
+    borderRadius: theme.radius.lg,
+    overflow: "hidden",
+    ...theme.shadows.glowOrange,
   },
-  searchBtnDisabled: { opacity: 0.7 },
-  searchBtnText: { color: "#fff", fontFamily: "DMSans_600SemiBold", fontSize: 16 },
+  searchBtnGradient: { paddingVertical: 13, alignItems: "center", justifyContent: "center" },
+  searchBtnDisabled: { opacity: 0.6 },
+  searchBtnText: { color: "#fff", fontFamily: "DMSans_600SemiBold", fontSize: 16, letterSpacing: 0.2 },
   searchError: { color: theme.colors.error, fontFamily: "DMSans_400Regular", fontSize: 13, marginTop: 8 },
 
   // Schedule section divider (separates search results from class block)
@@ -1523,16 +1626,12 @@ const styles = StyleSheet.create({
   nextUpLabelRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
   nextUpCard: {
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
+    borderRadius: theme.radius.xl,
     marginHorizontal: 16,
     marginTop: 0,
     marginBottom: 0,
     padding: 18,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 3,
+    ...theme.shadows.md,
     borderLeftWidth: 4,
     borderLeftColor: theme.colors.orange,
   },
@@ -1565,20 +1664,16 @@ const styles = StyleSheet.create({
   // Option card — transit board redesign
   optionCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: theme.radius.lg,
+    borderRadius: theme.radius.xl,
     marginHorizontal: 16,
     marginBottom: 10,
     marginTop: 0,
     borderLeftWidth: 5,
     borderLeftColor: theme.colors.orange,
     padding: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
+    ...theme.shadows.md,
   },
-  optionCardHighlight: { shadowOpacity: 0.14 },
+  optionCardHighlight: { ...theme.shadows.glowOrange, shadowOpacity: 0.25 },
 
   // Card main row layout: info left | countdown right
   cardMainRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: 12 },
@@ -1606,11 +1701,11 @@ const styles = StyleSheet.create({
   cardBottomRow: { flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderTopColor: "#F0F2F5", paddingTop: 10 },
   cardTotalTime: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textMuted },
   startBtnInline: {
-    backgroundColor: theme.colors.orange,
-    paddingHorizontal: 18,
-    paddingVertical: 9,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.lg,
+    overflow: "hidden",
+    ...theme.shadows.glowOrange,
   },
+  startBtnInlineGradient: { paddingHorizontal: 18, paddingVertical: 9, alignItems: "center", justifyContent: "center" },
   startBtnInlineText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff" },
 
   // MTD hint
@@ -1628,17 +1723,13 @@ const styles = StyleSheet.create({
   stopsSectionTitle: { fontFamily: "DMSans_700Bold", fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginBottom: 0, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 10 },
   card: {
     backgroundColor: "#FFFFFF",
-    borderRadius: theme.radius.lg,
+    borderRadius: theme.radius.xl,
     marginHorizontal: 16,
     marginBottom: 10,
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
+    ...theme.shadows.md,
   },
-  stopCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", backgroundColor: theme.colors.navy, paddingHorizontal: 14, paddingTop: 11, paddingBottom: 9 },
+  stopCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingHorizontal: 14, paddingTop: 11, paddingBottom: 9 },
   stopName: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff", flex: 1 },
   favoriteStopBtn: { paddingVertical: 4, paddingHorizontal: 6 },
   favoriteStopBtnText: { fontFamily: "DMSans_500Medium", fontSize: 16, color: "rgba(255,255,255,0.6)" },
@@ -1669,16 +1760,18 @@ const styles = StyleSheet.create({
   retryBtnSecondary: { backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.navy, marginTop: 8 },
   retryBtnSecondaryText: { fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, fontSize: 15 },
 
-  // Banners
+  // Banners — floating rounded cards
   rainBanner: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: theme.colors.navyLight,
-    paddingVertical: 8,
-    paddingHorizontal: theme.spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: theme.spacing.md,
+    marginHorizontal: 16,
+    marginTop: 10,
+    borderRadius: theme.radius.lg,
+    ...theme.shadows.sm,
   },
   rainBannerText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: "rgba(255,255,255,0.9)", flex: 1 },
   rainBannerIcon: { fontSize: 18, color: "#fff", paddingLeft: 8 },
@@ -1689,20 +1782,26 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     backgroundColor: theme.colors.surface,
     padding: theme.spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    marginHorizontal: 16,
+    marginTop: 10,
+    borderRadius: theme.radius.lg,
     borderLeftWidth: 3,
     borderLeftColor: theme.colors.navy,
+    ...theme.shadows.sm,
   },
   uiucBannerText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary, flex: 1 },
   uiucBannerLink: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange },
   offlineBanner: {
     backgroundColor: theme.colors.navy,
     paddingVertical: 10,
-    paddingHorizontal: theme.spacing.lg,
+    paddingHorizontal: theme.spacing.md,
+    marginHorizontal: 16,
+    marginTop: 10,
+    borderRadius: theme.radius.lg,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    ...theme.shadows.sm,
   },
   offlineBannerText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: "#fff", flex: 1 },
   offlineBannerRetry: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange, paddingLeft: 8 },
@@ -1729,18 +1828,13 @@ const styles = StyleSheet.create({
   leaveNowDismiss: { padding: 8 },
   leaveNowDismissText: { fontFamily: "DMSans_600SemiBold", fontSize: 15, color: "rgba(255,255,255,0.75)" },
 
-  // Leave By smart card
+  // Leave By smart card — navy gradient
   leaveByCard: {
-    backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.lg,
+    borderRadius: theme.radius.xl,
     marginHorizontal: 16,
     marginVertical: 10,
     padding: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 4,
+    ...theme.shadows.glowNavy,
   },
   leaveByHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
   leaveByTitle: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: "#fff", flex: 1 },
@@ -1755,11 +1849,12 @@ const styles = StyleSheet.create({
   // Autocomplete
   suggestionsList: {
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.sm,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.borderSoft,
     marginBottom: 8,
     overflow: "hidden",
+    ...theme.shadows.sm,
   },
   suggestionItem: {
     flexDirection: "row",
@@ -1818,20 +1913,21 @@ const styles = StyleSheet.create({
   quickChipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 },
   homePlaceChip: {
     backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.sm,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    ...theme.shadows.glowNavy,
   },
   homePlaceChipText: { fontFamily: "DMSans_600SemiBold", fontSize: 14, color: "#fff" },
   pinnedChip: {
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.sm,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    backgroundColor: theme.colors.orangeSoft,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderColor: "rgba(232,74,39,0.25)",
   },
-  pinnedChipText: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.navy },
+  pinnedChipText: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.orange },
 
   // Search result action buttons
   searchResultActions: { flexDirection: "row", alignItems: "center", gap: 10 },

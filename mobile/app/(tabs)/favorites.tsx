@@ -10,15 +10,16 @@ import {
   type FavoriteStop,
   type SavedPlace,
 } from "@/src/storage/favorites";
+import { FadeInView, PressableScale } from "@/src/components/ui/motion";
 import { MapPin, Plus, Star } from "lucide-react-native";
 import { theme } from "@/src/constants/theme";
+import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -100,123 +101,163 @@ export default function FavoritesScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.sectionTitle}>After last class I go to</Text>
-      <View style={styles.afterRow}>
-        <Pressable
-          style={[styles.chip, afterLastClassId === "" && styles.chipSelected]}
-          onPress={() => setAfterLastClass("")}
-        >
-          <Text style={[styles.chipText, afterLastClassId === "" && styles.chipTextSelected]}>None</Text>
-        </Pressable>
-        {places.map((p) => (
-          <Pressable
-            key={p.id}
-            style={[styles.chip, afterLastClassId === p.id && styles.chipSelected]}
-            onPress={() => setAfterLastClass(p.id)}
-          >
-            <Text style={[styles.chipText, afterLastClassId === p.id && styles.chipTextSelected]}>{p.name}</Text>
-          </Pressable>
-        ))}
-      </View>
-
-      <Text style={styles.sectionTitle}>Saved places</Text>
-      <Text style={styles.hint}>Use for “After last class” or Get bus routes to any place—gym, McDonald's, a friend's. Save a spot and we'll recommend the best route from Home. Use for "After last class" too.</Text>
-      {addingPlace ? (
-        <View style={styles.addRow}>
-          <TextInput
-            placeholder="Place name (e.g. Gym, McDonald's)"
-            placeholderTextColor="#999"
-            style={styles.input}
-            value={newPlaceName}
-            onChangeText={setNewPlaceName}
-          />
-          <Pressable style={styles.addBtn} onPress={addPlaceWithLocation} disabled={addingPlace}>
-            <Text style={styles.addBtnText}>Use my location</Text>
-          </Pressable>
-          <Pressable style={styles.cancelBtn} onPress={() => { setAddingPlace(false); setNewPlaceName(""); }}>
-            <Text style={styles.cancelBtnText}>Cancel</Text>
-          </Pressable>
-        </View>
-      ) : (
-        <Pressable style={styles.addPlaceBtn} onPress={() => setAddingPlace(true)}>
-          <Plus size={16} color={theme.colors.orange} style={{ marginRight: 6 }} />
-          <Text style={styles.addPlaceBtnText}>Add place</Text>
-        </Pressable>
-      )}
-      {places.map((p) => (
-        <View key={p.id} style={styles.card}>
-          <Text style={styles.placeName}>{p.name}</Text>
-          <Text style={styles.placeCoords}>{p.lat.toFixed(4)}, {p.lng.toFixed(4)}</Text>
-          <View style={styles.cardRow}>
-            <Pressable style={styles.linkBtn} onPress={() => router.push("/(tabs)")}>
-              <Text style={styles.linkBtnText}>Open Home for routes</Text>
-            </Pressable>
-            <Pressable style={styles.removeBtn} onPress={() => removePlace(p.id)}>
-              <Text style={styles.removeBtnText}>Remove</Text>
-            </Pressable>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
+      <FadeInView delay={0}>
+        <Text style={styles.sectionLabel}>After last class I go to</Text>
+        <View style={styles.sectionCard}>
+          <View style={styles.afterRow}>
+            <PressableScale
+              scaleTo={0.93}
+              style={[styles.chip, afterLastClassId === "" && styles.chipSelected]}
+              onPress={() => setAfterLastClass("")}
+            >
+              <Text style={[styles.chipText, afterLastClassId === "" && styles.chipTextSelected]}>None</Text>
+            </PressableScale>
+            {places.map((p) => (
+              <PressableScale
+                key={p.id}
+                scaleTo={0.93}
+                style={[styles.chip, afterLastClassId === p.id && styles.chipSelected]}
+                onPress={() => setAfterLastClass(p.id)}
+              >
+                <Text style={[styles.chipText, afterLastClassId === p.id && styles.chipTextSelected]}>{p.name}</Text>
+              </PressableScale>
+            ))}
           </View>
         </View>
+      </FadeInView>
+
+      <FadeInView delay={70}>
+        <Text style={styles.sectionLabel}>Saved places</Text>
+        <Text style={styles.hint}>Use for “After last class” or Get bus routes to any place—gym, McDonald's, a friend's. Save a spot and we'll recommend the best route from Home. Use for "After last class" too.</Text>
+        {addingPlace ? (
+          <View style={styles.addCard}>
+            <TextInput
+              placeholder="Place name (e.g. Gym, McDonald's)"
+              placeholderTextColor={theme.colors.textMuted}
+              style={styles.input}
+              value={newPlaceName}
+              onChangeText={setNewPlaceName}
+            />
+            <PressableScale style={styles.addBtnWrap} onPress={addPlaceWithLocation} disabled={addingPlace}>
+              <LinearGradient
+                colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.addBtn}
+              >
+                <Text style={styles.addBtnText}>Use my location</Text>
+              </LinearGradient>
+            </PressableScale>
+            <PressableScale haptic={false} style={styles.cancelBtn} onPress={() => { setAddingPlace(false); setNewPlaceName(""); }}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </PressableScale>
+          </View>
+        ) : (
+          <PressableScale style={styles.addPlaceBtn} onPress={() => setAddingPlace(true)}>
+            <Plus size={16} color={theme.colors.orange} style={{ marginRight: 6 }} />
+            <Text style={styles.addPlaceBtnText}>Add place</Text>
+          </PressableScale>
+        )}
+      </FadeInView>
+      {places.map((p, i) => (
+        <FadeInView key={p.id} delay={100 + i * 60}>
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.iconCircle}>
+                <MapPin size={16} color={theme.colors.orange} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.placeName}>{p.name}</Text>
+                <Text style={styles.placeCoords}>{p.lat.toFixed(4)}, {p.lng.toFixed(4)}</Text>
+              </View>
+            </View>
+            <View style={styles.cardRow}>
+              <PressableScale style={styles.linkBtn} onPress={() => router.push("/(tabs)")}>
+                <Text style={styles.linkBtnText}>Open Home for routes</Text>
+              </PressableScale>
+              <PressableScale style={styles.removeBtn} onPress={() => removePlace(p.id)}>
+                <Text style={styles.removeBtnText}>Remove</Text>
+              </PressableScale>
+            </View>
+          </View>
+        </FadeInView>
       ))}
 
-      <Text style={styles.sectionTitle}>Favorite stops</Text>
-      <Text style={styles.hint}>Add stops from Home or Map. Quick access to departures.</Text>
-      {stops.length === 0 ? (
-        <View style={styles.emptyState}>
-          <Star size={28} color={theme.colors.textMuted} style={{ marginBottom: 8 }} />
-          <Text style={styles.empty}>No favorite stops yet.</Text>
-          <Text style={styles.emptyHint}>Tap the star on any stop in Home or Map.</Text>
-        </View>
-      ) : (
-        stops.map((s) => (
-          <View key={s.stop_id} style={styles.card}>
-            <Text style={styles.stopName}>{s.stop_name}</Text>
+      <FadeInView delay={140}>
+        <Text style={styles.sectionLabel}>Favorite stops</Text>
+        <Text style={styles.hint}>Add stops from Home or Map. Quick access to departures.</Text>
+        {stops.length === 0 && (
+          <View style={styles.emptyCard}>
+            <View style={styles.emptyIconCircle}>
+              <Star size={24} color={theme.colors.orange} />
+            </View>
+            <Text style={styles.empty}>No favorite stops yet.</Text>
+            <Text style={styles.emptyHint}>Tap the star on any stop in Home or Map.</Text>
+          </View>
+        )}
+      </FadeInView>
+      {stops.map((s, i) => (
+        <FadeInView key={s.stop_id} delay={170 + i * 60}>
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.iconCircle}>
+                <Star size={16} color={theme.colors.orange} />
+              </View>
+              <Text style={[styles.stopName, { flex: 1 }]}>{s.stop_name}</Text>
+            </View>
             <View style={styles.cardRow}>
-              <Pressable
+              <PressableScale
                 style={styles.linkBtn}
                 onPress={() => router.push({ pathname: "/trip", params: { stop_id: s.stop_id, stop_name: s.stop_name } })}
               >
                 <Text style={styles.linkBtnText}>Departures</Text>
-              </Pressable>
-              <Pressable style={styles.removeBtn} onPress={() => removeStop(s.stop_id)}>
+              </PressableScale>
+              <PressableScale style={styles.removeBtn} onPress={() => removeStop(s.stop_id)}>
                 <Text style={styles.removeBtnText}>Remove</Text>
-              </Pressable>
+              </PressableScale>
             </View>
           </View>
-        ))
-      )}
+        </FadeInView>
+      ))}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: theme.colors.surfaceAlt },
   container: { padding: 16, paddingBottom: 32 },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center" },
-  sectionTitle: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, marginTop: 16, marginBottom: 8 },
-  hint: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 12 },
-  afterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
-  chip: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: theme.radius.lg, backgroundColor: theme.colors.surfaceAlt },
-  chipSelected: { backgroundColor: theme.colors.navy },
-  chipText: { fontSize: 14, fontFamily: "DMSans_500Medium", color: theme.colors.text },
-  chipTextSelected: { color: theme.colors.surface },
-  addRow: { marginBottom: 12 },
-  input: { borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.md, padding: 12, marginBottom: 8, fontSize: 16, fontFamily: "DMSans_400Regular" },
-  addBtn: { backgroundColor: theme.colors.navy, padding: 12, borderRadius: theme.radius.md, alignItems: "center", marginBottom: 8 },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surfaceAlt },
+  sectionLabel: { fontSize: 11, fontFamily: "DMSans_600SemiBold", letterSpacing: 0.8, textTransform: "uppercase", color: theme.colors.textMuted, marginTop: 16, marginBottom: 8, marginLeft: 4 },
+  hint: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 12, marginLeft: 4 },
+  sectionCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.xl, padding: 16, ...theme.shadows.md },
+  afterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  chip: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: theme.radius.pill, backgroundColor: theme.colors.orangeSoft },
+  chipSelected: { backgroundColor: theme.colors.orange, ...theme.shadows.glowOrange },
+  chipText: { fontSize: 14, fontFamily: "DMSans_500Medium", color: theme.colors.orange },
+  chipTextSelected: { color: theme.colors.surface, fontFamily: "DMSans_600SemiBold" },
+  addCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.xl, padding: 16, marginBottom: 12, ...theme.shadows.md },
+  input: { backgroundColor: theme.colors.surfaceAlt, borderWidth: 1, borderColor: theme.colors.borderSoft, borderRadius: theme.radius.lg, padding: 12, marginBottom: 10, fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.text },
+  addBtnWrap: { borderRadius: theme.radius.lg, ...theme.shadows.glowOrange, marginBottom: 4 },
+  addBtn: { padding: 14, borderRadius: theme.radius.lg, alignItems: "center" },
   addBtnText: { color: theme.colors.surface, fontFamily: "DMSans_600SemiBold", fontSize: 15 },
-  cancelBtn: { alignItems: "center" },
+  cancelBtn: { alignItems: "center", padding: 10 },
   cancelBtnText: { color: theme.colors.textSecondary, fontSize: 14, fontFamily: "DMSans_400Regular" },
-  addPlaceBtn: { flexDirection: "row", padding: 14, borderRadius: theme.radius.md, borderWidth: 1.5, borderColor: theme.colors.orange, borderStyle: "dashed", alignItems: "center", justifyContent: "center", marginBottom: 12 },
+  addPlaceBtn: { flexDirection: "row", padding: 16, borderRadius: theme.radius.lg, borderWidth: 1.5, borderColor: theme.colors.orange, borderStyle: "dashed", alignItems: "center", justifyContent: "center", marginBottom: 12, backgroundColor: theme.colors.surface },
   addPlaceBtnText: { color: theme.colors.orange, fontFamily: "DMSans_600SemiBold", fontSize: 15 },
-  emptyState: { alignItems: "center", paddingVertical: 20, marginBottom: 12 },
+  emptyCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.xl, padding: 24, alignItems: "center", ...theme.shadows.md },
+  emptyIconCircle: { width: 52, height: 52, borderRadius: 26, backgroundColor: theme.colors.orangeSoft, alignItems: "center", justifyContent: "center", marginBottom: 10 },
+  empty: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.textSecondary },
   emptyHint: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 4 },
-  card: { backgroundColor: theme.colors.surfaceAlt, borderRadius: theme.radius.lg, padding: 14, marginBottom: 10 },
-  placeName: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
-  placeCoords: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
-  stopName: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
-  cardRow: { flexDirection: "row", marginTop: 10, gap: 12 },
-  linkBtn: { paddingVertical: 8, paddingHorizontal: 12, backgroundColor: theme.colors.navy, borderRadius: theme.radius.md },
+  card: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.xl, padding: 16, marginBottom: 10, ...theme.shadows.md },
+  cardHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  iconCircle: { width: 34, height: 34, borderRadius: 17, backgroundColor: theme.colors.orangeSoft, alignItems: "center", justifyContent: "center" },
+  placeName: { fontSize: 16, fontFamily: "DMSans_700Bold", color: theme.colors.navy },
+  placeCoords: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 2 },
+  stopName: { fontSize: 16, fontFamily: "DMSans_700Bold", color: theme.colors.navy },
+  cardRow: { flexDirection: "row", marginTop: 12, gap: 10, alignItems: "center" },
+  linkBtn: { paddingVertical: 8, paddingHorizontal: 14, backgroundColor: theme.colors.navy, borderRadius: theme.radius.pill },
   linkBtnText: { color: theme.colors.surface, fontSize: 14, fontFamily: "DMSans_600SemiBold" },
-  removeBtn: { paddingVertical: 8, paddingHorizontal: 12, justifyContent: "center" },
-  removeBtnText: { color: theme.colors.error, fontSize: 14, fontFamily: "DMSans_400Regular" },
-  empty: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 16 },
+  removeBtn: { paddingVertical: 8, paddingHorizontal: 14, backgroundColor: theme.colors.errorSoft, borderRadius: theme.radius.pill },
+  removeBtnText: { color: theme.colors.error, fontSize: 14, fontFamily: "DMSans_600SemiBold" },
 });

@@ -28,6 +28,7 @@ import {
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { theme } from "@/src/constants/theme";
+import { FadeInView, PressableScale } from "@/src/components/ui/motion";
 import { Bus, Footprints, MapPin, Search, X } from "lucide-react-native";
 
 function MapLiveBadge({ count }: { count: number }) {
@@ -717,24 +718,25 @@ export default function MapScreen() {
           <MapLiveBadge count={vehicles.length} />
         </View>
       )}
-      <Pressable style={styles.centerBtn} onPress={centerOnMe} accessibilityLabel="Center map on my location">
+      <PressableScale style={styles.centerBtn} onPress={centerOnMe} accessibilityLabel="Center map on my location" scaleTo={0.88}>
         <MapPin size={20} color="#fff" />
-      </Pressable>
+      </PressableScale>
 
       {/* Zoom controls */}
       <View style={styles.zoomControls}>
-        <Pressable style={styles.zoomBtn} onPress={zoomIn} accessibilityLabel="Zoom in">
+        <PressableScale style={styles.zoomBtn} onPress={zoomIn} accessibilityLabel="Zoom in" scaleTo={0.85}>
           <Text style={styles.zoomBtnText}>+</Text>
-        </Pressable>
+        </PressableScale>
         <View style={styles.zoomDivider} />
-        <Pressable style={styles.zoomBtn} onPress={zoomOut} accessibilityLabel="Zoom out">
+        <PressableScale style={styles.zoomBtn} onPress={zoomOut} accessibilityLabel="Zoom out" scaleTo={0.85}>
           <Text style={styles.zoomBtnText}>−</Text>
-        </Pressable>
+        </PressableScale>
       </View>
 
       {/* Place route panel */}
       {selectedPlace && (
-        <View style={styles.detailCard}>
+        <FadeInView dy={28} duration={theme.motion.base} style={styles.detailCard}>
+          <View style={styles.grabber} />
           <View style={styles.detailHeader}>
             <Text style={styles.detailTitle} numberOfLines={1}>{selectedPlace.name}</Text>
             {location && (
@@ -798,12 +800,13 @@ export default function MapScreen() {
           ) : (
             <Text style={styles.depEmpty}>No routes available right now.</Text>
           )}
-        </View>
+        </FadeInView>
       )}
 
       {/* Bus stop detail card */}
       {selectedStop && !selectedPlace && (
-        <View style={styles.detailCard}>
+        <FadeInView dy={28} duration={theme.motion.base} style={styles.detailCard}>
+          <View style={styles.grabber} />
           <View style={styles.detailHeader}>
             <Text style={styles.detailTitle}>{selectedStop.stop_name}</Text>
             <Text style={styles.detailDistance}>{formatDistance(selectedStop.distance_m)} away</Text>
@@ -830,7 +833,7 @@ export default function MapScreen() {
           ) : (
             <Text style={styles.depEmpty}>No departures in the next 60 min.</Text>
           )}
-        </View>
+        </FadeInView>
       )}
     </View>
   );
@@ -867,12 +870,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 6,
+    borderRadius: theme.radius.pill,
+    paddingLeft: 6,
+    ...theme.shadows.lg,
   },
   searchInput: {
     flex: 1,
@@ -890,14 +890,11 @@ const styles = StyleSheet.create({
   },
   suggestionList: {
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
-    marginTop: 4,
+    borderRadius: theme.radius.lg,
+    marginTop: 6,
     maxHeight: 220,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    elevation: 6,
+    overflow: "hidden",
+    ...theme.shadows.lg,
   },
   suggestionRow: {
     paddingHorizontal: 14,
@@ -949,24 +946,16 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
-    elevation: 4,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
+    ...theme.shadows.glowNavy,
   },
   zoomControls: {
     position: "absolute",
     top: 76,
     right: 16,
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.lg,
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
+    ...theme.shadows.lg,
   },
   zoomBtn: {
     width: 48,
@@ -991,18 +980,28 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: theme.radius.lg,
-    borderTopRightRadius: theme.radius.lg,
+    borderTopLeftRadius: theme.radius.xxl,
+    borderTopRightRadius: theme.radius.xxl,
     padding: 16,
+    paddingTop: 18,
     maxHeight: 300,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 8,
+    shadowColor: "#0B1B36",
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.16,
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  grabber: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: theme.colors.border,
+    marginTop: -6,
+    marginBottom: 10,
   },
   detailHeader: { marginBottom: 10 },
-  detailTitle: { fontSize: 18, fontFamily: "DMSans_700Bold", color: theme.colors.navy },
+  detailTitle: { fontSize: 19, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy },
   detailDistance: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
   routeList: { maxHeight: 200 },
   routeRow: {
@@ -1016,7 +1015,7 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.sm,
   },
   routeRowSelected: {
-    backgroundColor: "rgba(232, 74, 39, 0.06)",
+    backgroundColor: theme.colors.orangeSoft,
     borderLeftWidth: 3,
     borderLeftColor: theme.colors.orange,
   },
@@ -1024,18 +1023,20 @@ const styles = StyleSheet.create({
   routeLabel: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
   routeMeta: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 2 },
   startBtn: {
-    backgroundColor: theme.colors.navy,
-    paddingVertical: 8,
+    backgroundColor: theme.colors.orange,
+    paddingVertical: 9,
     paddingHorizontal: 18,
-    borderRadius: 8,
+    borderRadius: theme.radius.lg,
+    ...theme.shadows.glowOrange,
   },
   startBtnText: { color: "#fff", fontSize: 15, fontFamily: "DMSans_700Bold" },
   tripBtn: {
     backgroundColor: theme.colors.navy,
-    padding: 12,
-    borderRadius: 8,
+    padding: 13,
+    borderRadius: theme.radius.lg,
     alignItems: "center",
     marginBottom: 12,
+    ...theme.shadows.glowNavy,
   },
   tripBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_600SemiBold" },
   depLoader: { marginVertical: 8 },

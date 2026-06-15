@@ -85,6 +85,13 @@ async function fetchWithRetry(
           continue;
         }
         if (res.status === 401) {
+          const { data: sessionData } = await supabase.auth.getSession();
+          if (!sessionData.session) {
+            // Not signed in — a 401 is expected; signing out here would wipe
+            // auth storage, including a PKCE code verifier for an in-flight
+            // OAuth/magic-link login
+            return res;
+          }
           if (!refreshAttempted) {
             refreshAttempted = true;
             await supabase.auth.refreshSession();

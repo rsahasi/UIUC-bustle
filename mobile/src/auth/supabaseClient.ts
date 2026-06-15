@@ -10,5 +10,9 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
+    // sign-in.tsx and the deep-link handler use exchangeCodeForSession, which
+    // requires the PKCE flow (default is implicit, whose tokens arrive in the
+    // URL fragment and can't be exchanged)
+    flowType: "pkce",
   },
 });
