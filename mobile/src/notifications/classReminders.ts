@@ -21,10 +21,10 @@ const EARLY_REMINDER_MINUTES_BEFORE = 45;
 export function setNotificationHandler(): void {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
-      shouldShowAlert: true,
       shouldPlaySound: true,
       shouldSetBadge: false,
       shouldShowBanner: true,
+      shouldShowList: true,
     }),
   });
 }

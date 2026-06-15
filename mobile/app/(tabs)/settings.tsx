@@ -2,7 +2,7 @@ import { fetchBuildings, fetchClasses, fetchHealth } from "@/src/api/client";
 import { resetAllPatterns } from "@/src/utils/patternEngine";
 import { theme } from "@/src/constants/theme";
 import { WALKING_MODES } from "@/src/constants/walkingMode";
-import type { WalkingModeId } from "@/src/constants/walkingMode";
+import { FadeInView, PressableScale } from "@/src/components/ui/motion";
 import { useAuth } from "@/src/auth/useAuth";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
@@ -16,6 +16,7 @@ import {
 import { MAX_BUFFER, MAX_WEIGHT_KG, MIN_BUFFER, MIN_WEIGHT_KG } from "@/src/storage/recommendationSettings";
 import Slider from "@react-native-community/slider";
 import Constants from "expo-constants";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -24,15 +25,19 @@ import {
   KeyboardAvoidingView,
   Linking,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
+
+const WIDGET_STEPS = [
+  "Long-press your iPhone home screen until icons jiggle",
+  "Tap the + button in the top-left corner",
+  'Search for "UIUC Bus" and choose a size (small, medium, or large)',
+];
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -184,29 +189,37 @@ export default function SettingsScreen() {
       style={{ flex: 1, backgroundColor: theme.colors.surfaceAlt }}
     >
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.sectionHeader}>Account</Text>
-      <View style={styles.sectionCard}>
-        <View style={styles.accountRow}>
-          <View style={styles.accountAvatar}>
-            <Text style={styles.accountAvatarText}>
-              {(user?.email?.[0] ?? "?").toUpperCase()}
-            </Text>
+      <FadeInView delay={0}>
+        <Text style={styles.sectionHeader}>Account</Text>
+        <View style={styles.sectionCard}>
+          <View style={styles.accountRow}>
+            <LinearGradient
+              colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.accountAvatar}
+            >
+              <Text style={styles.accountAvatarText}>
+                {(user?.email?.[0] ?? "?").toUpperCase()}
+              </Text>
+            </LinearGradient>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.accountEmail}>{user?.email ?? "—"}</Text>
+              <Text style={styles.accountHint}>Signed in via Supabase</Text>
+            </View>
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.accountEmail}>{user?.email ?? "—"}</Text>
-            <Text style={styles.accountHint}>Signed in via Supabase</Text>
-          </View>
+          <PressableScale
+            style={styles.signOutBtn}
+            onPress={handleSignOut}
+            accessibilityLabel="Sign out"
+            accessibilityRole="button"
+          >
+            <Text style={styles.signOutBtnText}>Sign out</Text>
+          </PressableScale>
         </View>
-        <Pressable
-          style={styles.signOutBtn}
-          onPress={handleSignOut}
-          accessibilityLabel="Sign out"
-          accessibilityRole="button"
-        >
-          <Text style={styles.signOutBtnText}>Sign out</Text>
-        </Pressable>
-      </View>
+      </FadeInView>
 
+      <FadeInView delay={70}>
       <Text style={styles.sectionHeader}>Connection</Text>
       <View style={styles.sectionCard}>
       <Text style={styles.label}>API base URL</Text>
@@ -221,7 +234,7 @@ export default function SettingsScreen() {
         onChangeText={setInput}
         onBlur={() => setInput((v) => v.trim().replace(/\/$/, ""))}
         placeholder="http://localhost:8000"
-        placeholderTextColor="#999"
+        placeholderTextColor={theme.colors.textMuted}
         style={styles.input}
         value={input}
       />
@@ -233,41 +246,54 @@ export default function SettingsScreen() {
         editable={!saving}
         onChangeText={setApiKeyInput}
         placeholder="Leave blank if not required"
-        placeholderTextColor="#999"
+        placeholderTextColor={theme.colors.textMuted}
         secureTextEntry
         style={styles.input}
         value={apiKeyInput}
       />
       <View style={styles.buttonRow}>
-        <TouchableOpacity
-          accessibilityLabel="Test connection"
-          accessibilityRole="button"
-          disabled={saving || testingConnection}
-          onPress={testConnection}
-          style={[styles.buttonSecondary, (saving || testingConnection) && styles.buttonDisabled]}
-        >
-          {testingConnection ? (
-            <ActivityIndicator color={theme.colors.navy} size="small" />
-          ) : (
-            <Text style={styles.buttonSecondaryText}>Test connection</Text>
-          )}
-        </TouchableOpacity>
-        <TouchableOpacity
-          accessibilityLabel="Save API URL"
-          accessibilityRole="button"
-          disabled={saving || testingConnection}
-          onPress={save}
-          style={[styles.button, (saving || testingConnection) && styles.buttonDisabled]}
-        >
-          {saving ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.buttonText}>Save</Text>
-          )}
-        </TouchableOpacity>
+        <View style={{ flex: 1 }}>
+          <PressableScale
+            accessibilityLabel="Test connection"
+            accessibilityRole="button"
+            disabled={saving || testingConnection}
+            onPress={testConnection}
+            style={[styles.buttonSecondary, (saving || testingConnection) && styles.buttonDisabled]}
+          >
+            {testingConnection ? (
+              <ActivityIndicator color={theme.colors.navy} size="small" />
+            ) : (
+              <Text style={styles.buttonSecondaryText}>Test connection</Text>
+            )}
+          </PressableScale>
+        </View>
+        <View style={{ flex: 1 }}>
+          <PressableScale
+            accessibilityLabel="Save API URL"
+            accessibilityRole="button"
+            disabled={saving || testingConnection}
+            onPress={save}
+            style={[styles.buttonWrap, (saving || testingConnection) && styles.buttonDisabled]}
+          >
+            <LinearGradient
+              colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.buttonGradient}
+            >
+              {saving ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>Save</Text>
+              )}
+            </LinearGradient>
+          </PressableScale>
+        </View>
       </View>
       </View>
+      </FadeInView>
 
+      <FadeInView delay={140}>
       <Text style={styles.sectionHeader}>Walking preferences</Text>
       <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
@@ -277,8 +303,9 @@ export default function SettingsScreen() {
         </Text>
         <View style={styles.walkingRow}>
           {WALKING_MODES.map((mode) => (
-            <Pressable
+            <PressableScale
               key={mode.id}
+              scaleTo={0.93}
               accessibilityLabel={`Walking mode ${mode.label}`}
               accessibilityRole="button"
               accessibilityState={{ selected: walkingModeId === mode.id }}
@@ -296,28 +323,29 @@ export default function SettingsScreen() {
               >
                 {mode.label}
               </Text>
-            </Pressable>
+            </PressableScale>
           ))}
         </View>
       </View>
 
       <View style={styles.toggleRow}>
-        <Text style={styles.label}>Buffer (minutes)</Text>
+        <View style={styles.labelRow}>
+          <Text style={[styles.label, styles.labelInRow]}>Buffer (minutes)</Text>
+          <View style={styles.valuePill}>
+            <Text style={styles.valuePillText}>{Math.round(bufferSlider)} min</Text>
+          </View>
+        </View>
         <Text style={styles.hint}>
           Extra time before arrival (0–15 min). More buffer = earlier suggested departure.
         </Text>
         <View style={styles.sliderRow}>
-          <View style={styles.sliderLabelRow}>
-            <Text style={styles.sliderMinMax}>0 min</Text>
-            <Text style={styles.sliderValue}>{Math.round(bufferSlider)} min</Text>
-            <Text style={styles.sliderMinMax}>15 min</Text>
-          </View>
           <Slider
             accessibilityLabel="Buffer minutes before arrival"
             accessibilityValue={{ min: MIN_BUFFER, max: MAX_BUFFER, now: Math.round(bufferSlider) }}
-            maximumTrackTintColor={theme.colors.border}
+            maximumTrackTintColor={theme.colors.borderSoft}
             maximumValue={MAX_BUFFER}
-            minimumTrackTintColor={theme.colors.navy}
+            minimumTrackTintColor={theme.colors.orange}
+            thumbTintColor={theme.colors.orangeBright}
             minimumValue={MIN_BUFFER}
             onSlidingComplete={(v) => setBufferMinutes(v)}
             onValueChange={setBufferSlider}
@@ -325,11 +353,20 @@ export default function SettingsScreen() {
             style={styles.slider}
             value={bufferSlider}
           />
+          <View style={styles.sliderLabelRow}>
+            <Text style={styles.sliderMinMax}>0 min</Text>
+            <Text style={styles.sliderMinMax}>15 min</Text>
+          </View>
         </View>
       </View>
 
-      <View style={[styles.toggleRow, { borderTopWidth: 1, borderTopColor: theme.colors.border, marginTop: 16, paddingTop: 16 }]}>
-        <Text style={styles.label}>Body weight (lbs)</Text>
+      <View style={[styles.toggleRow, styles.dividerTop]}>
+        <View style={styles.labelRow}>
+          <Text style={[styles.label, styles.labelInRow]}>Body weight (lbs)</Text>
+          <View style={styles.valuePill}>
+            <Text style={styles.valuePillText}>{Math.round(weightSlider * 2.20462)} lbs</Text>
+          </View>
+        </View>
         <Text style={styles.hint}>
           Used to calculate calories burned during walks (88–330 lbs).
         </Text>
@@ -337,17 +374,13 @@ export default function SettingsScreen() {
           Stored on-device only. Never transmitted to any server.
         </Text>
         <View style={styles.sliderRow}>
-          <View style={styles.sliderLabelRow}>
-            <Text style={styles.sliderMinMax}>{Math.round(MIN_WEIGHT_KG * 2.20462)} lbs</Text>
-            <Text style={styles.sliderValue}>{Math.round(weightSlider * 2.20462)} lbs</Text>
-            <Text style={styles.sliderMinMax}>{Math.round(MAX_WEIGHT_KG * 2.20462)} lbs</Text>
-          </View>
           <Slider
             accessibilityLabel="Body weight in pounds"
             accessibilityValue={{ min: MIN_WEIGHT_KG, max: MAX_WEIGHT_KG, now: Math.round(weightSlider) }}
-            maximumTrackTintColor={theme.colors.border}
+            maximumTrackTintColor={theme.colors.borderSoft}
             maximumValue={MAX_WEIGHT_KG}
-            minimumTrackTintColor={theme.colors.navy}
+            minimumTrackTintColor={theme.colors.orange}
+            thumbTintColor={theme.colors.orangeBright}
             minimumValue={MIN_WEIGHT_KG}
             onSlidingComplete={(v) => setWeightKg(v)}
             onValueChange={setWeightSlider}
@@ -355,10 +388,16 @@ export default function SettingsScreen() {
             style={styles.slider}
             value={weightSlider}
           />
+          <View style={styles.sliderLabelRow}>
+            <Text style={styles.sliderMinMax}>{Math.round(MIN_WEIGHT_KG * 2.20462)} lbs</Text>
+            <Text style={styles.sliderMinMax}>{Math.round(MAX_WEIGHT_KG * 2.20462)} lbs</Text>
+          </View>
         </View>
       </View>
       </View>
+      </FadeInView>
 
+      <FadeInView delay={210}>
       <Text style={styles.sectionHeader}>Notifications</Text>
       <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
@@ -377,11 +416,11 @@ export default function SettingsScreen() {
             disabled={notificationsToggling}
             onValueChange={onClassNotificationsToggle}
             value={classNotificationsEnabled}
-            trackColor={{ false: theme.colors.border, true: theme.colors.navy }}
+            trackColor={{ false: theme.colors.border, true: theme.colors.orange }}
             thumbColor="#fff"
           />
         </View>
-        <Pressable
+        <PressableScale
           style={styles.testNotifBtn}
           onPress={async () => {
             try {
@@ -393,10 +432,10 @@ export default function SettingsScreen() {
           }}
         >
           <Text style={styles.testNotifBtnText}>Send test notification</Text>
-        </Pressable>
+        </PressableScale>
       </View>
 
-      <View style={[styles.sectionCard, { marginTop: 8 }]}>
+      <View style={styles.innerCard}>
       <View style={styles.toggleRow}>
         <Text style={styles.label}>Rain mode</Text>
         <Text style={styles.hint}>
@@ -410,7 +449,7 @@ export default function SettingsScreen() {
             accessibilityState={{ checked: rainMode }}
             onValueChange={setRainMode}
             value={rainMode}
-            trackColor={{ false: theme.colors.border, true: theme.colors.navy }}
+            trackColor={{ false: theme.colors.border, true: theme.colors.orange }}
             thumbColor="#fff"
           />
         </View>
@@ -418,7 +457,9 @@ export default function SettingsScreen() {
 
       </View>
       </View>
+      </FadeInView>
 
+      <FadeInView delay={280}>
       <Text style={styles.sectionHeader}>Privacy & data</Text>
       <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
@@ -426,7 +467,7 @@ export default function SettingsScreen() {
         <Text style={styles.hint}>
           The app quietly learns your walk times, stop choices, and departure habits to make suggestions more accurate. All data stays on your device and is never uploaded.
         </Text>
-        <Pressable
+        <PressableScale
           accessibilityLabel="Reset learned patterns"
           accessibilityRole="button"
           onPress={() =>
@@ -446,13 +487,15 @@ export default function SettingsScreen() {
               ]
             )
           }
-          style={[styles.linkButton, { borderColor: theme.colors.error }]}
+          style={styles.dangerBtn}
         >
-          <Text style={[styles.linkButtonText, { color: theme.colors.error }]}>Reset my patterns</Text>
-        </Pressable>
+          <Text style={styles.dangerBtnText}>Reset my patterns</Text>
+        </PressableScale>
       </View>
       </View>
+      </FadeInView>
 
+      <FadeInView delay={350}>
       <Text style={styles.sectionHeader}>Home screen widget</Text>
       <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
@@ -461,9 +504,14 @@ export default function SettingsScreen() {
           The UIUC Bus widget shows your next class and departure time on your home screen or lock screen. To add it:
         </Text>
         <View style={styles.widgetSteps}>
-          <Text style={styles.widgetStep}>1. Long-press your iPhone home screen until icons jiggle</Text>
-          <Text style={styles.widgetStep}>2. Tap the + button in the top-left corner</Text>
-          <Text style={styles.widgetStep}>3. Search for "UIUC Bus" and choose a size (small, medium, or large)</Text>
+          {WIDGET_STEPS.map((step, i) => (
+            <View key={step} style={styles.widgetStepRow}>
+              <View style={styles.stepCircle}>
+                <Text style={styles.stepCircleText}>{i + 1}</Text>
+              </View>
+              <Text style={styles.widgetStep}>{step}</Text>
+            </View>
+          ))}
         </View>
         <Text style={styles.hint} numberOfLines={0}>
           The widget refreshes every 15 minutes in the background. Tap the widget to open the app.
@@ -473,37 +521,43 @@ export default function SettingsScreen() {
         </Text>
       </View>
       </View>
+      </FadeInView>
 
+      <FadeInView delay={420}>
       <Text style={styles.sectionHeader}>Debug</Text>
       <View style={styles.sectionCard}>
       <View style={styles.toggleRow}>
         <Text style={styles.label}>Report issue</Text>
         <Text style={styles.hint}>Copy recent logs to paste when reporting a bug (no external service).</Text>
-        <Pressable
+        <PressableScale
           accessibilityLabel="Open Report issue screen"
           accessibilityRole="button"
           onPress={() => router.push("/report-issue")}
           style={styles.linkButton}
         >
           <Text style={styles.linkButtonText}>Copy logs & report</Text>
-        </Pressable>
+        </PressableScale>
       </View>
       </View>
+      </FadeInView>
+
+      <FadeInView delay={490}>
       <Text style={styles.sectionHeader}>About</Text>
       <View style={styles.sectionCard}>
         <View style={styles.aboutRow}>
           <Text style={styles.aboutLabel}>App version</Text>
           <Text style={styles.aboutValue}>{Constants.expoConfig?.version ?? '—'}</Text>
         </View>
-        <View style={[styles.aboutRow, { borderTopWidth: 1, borderTopColor: theme.colors.border, marginTop: 12, paddingTop: 12 }]}>
-          <Pressable
+        <View style={[styles.aboutRow, { borderTopWidth: 1, borderTopColor: theme.colors.borderSoft, marginTop: 12, paddingTop: 12 }]}>
+          <PressableScale
             accessibilityRole="link"
             onPress={() => Linking.openURL('mailto:support@uiucbus.app?subject=UIUC%20Bus%20App%20Feedback')}
           >
             <Text style={styles.aboutLink}>Send feedback</Text>
-          </Pressable>
+          </PressableScale>
         </View>
       </View>
+      </FadeInView>
     </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -516,13 +570,18 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceAlt,
   },
   sectionHeader: { fontSize: 11, fontFamily: "DMSans_600SemiBold", letterSpacing: 0.8, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginTop: 20, marginBottom: 8, marginLeft: 4 },
-  sectionCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, padding: 16, marginBottom: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
+  sectionCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.xl, padding: 16, marginBottom: 4, ...theme.shadows.md },
+  innerCard: { backgroundColor: theme.colors.surfaceRaised, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.borderSoft, padding: 14, marginTop: 12 },
   label: {
     fontSize: 16,
     fontFamily: "DMSans_600SemiBold",
     color: theme.colors.navy,
     marginBottom: 8,
   },
+  labelRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  labelInRow: { marginBottom: 0 },
+  valuePill: { backgroundColor: theme.colors.orangeSoft, borderRadius: theme.radius.pill, paddingVertical: 4, paddingHorizontal: 12 },
+  valuePillText: { fontSize: 14, fontFamily: "DMSans_700Bold", color: theme.colors.orange },
   hint: {
     fontSize: 14,
     fontFamily: "DMSans_400Regular",
@@ -530,47 +589,51 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   input: {
+    backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
+    borderColor: theme.colors.borderSoft,
+    borderRadius: theme.radius.lg,
     padding: 12,
     fontSize: 16,
     fontFamily: "DMSans_400Regular",
+    color: theme.colors.text,
     marginBottom: 16,
   },
   buttonRow: { flexDirection: "row", gap: 12, marginTop: 8 },
   buttonSecondary: {
-    flex: 1,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: theme.colors.navy,
-    paddingVertical: 14,
-    borderRadius: theme.radius.md,
+    paddingVertical: 13,
+    borderRadius: theme.radius.lg,
     alignItems: "center",
+    justifyContent: "center",
   },
   buttonSecondaryText: { color: theme.colors.navy, fontSize: 16, fontFamily: "DMSans_600SemiBold" },
-  button: {
-    flex: 1,
-    backgroundColor: theme.colors.navy,
-    padding: 14,
-    borderRadius: theme.radius.md,
+  buttonWrap: { borderRadius: theme.radius.lg, ...theme.shadows.glowOrange },
+  buttonGradient: {
+    borderRadius: theme.radius.lg,
+    paddingVertical: 14,
     alignItems: "center",
+    justifyContent: "center",
   },
   buttonDisabled: { opacity: 0.7 },
   buttonText: { color: theme.colors.surface, fontSize: 16, fontFamily: "DMSans_600SemiBold" },
   toggleRow: { marginTop: 0 },
+  dividerTop: { borderTopWidth: 1, borderTopColor: theme.colors.borderSoft, marginTop: 16, paddingTop: 16 },
   walkingRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   walkingBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: theme.radius.md,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
   },
-  walkingBtnOn: { backgroundColor: theme.colors.orange },
+  walkingBtnOn: { backgroundColor: theme.colors.navy, borderColor: theme.colors.navy, ...theme.shadows.glowNavy },
   walkingBtnText: { fontSize: 14, fontFamily: "DMSans_500Medium", color: theme.colors.text },
-  walkingBtnTextOn: { color: theme.colors.surface },
-  sliderRow: { marginTop: 8 },
-  sliderValue: { fontSize: 20, fontFamily: "DMSans_700Bold", color: theme.colors.orange, marginBottom: 4 },
+  walkingBtnTextOn: { color: theme.colors.surface, fontFamily: "DMSans_600SemiBold" },
+  sliderRow: { marginTop: 4 },
   slider: { width: "100%", height: 40 },
   switchRow: {
     flexDirection: "row",
@@ -582,23 +645,35 @@ const styles = StyleSheet.create({
   testNotifBtn: {
     marginTop: 12,
     padding: 12,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.orangeSoft,
     alignItems: "center",
   },
-  testNotifBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
+  testNotifBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange },
   linkButton: {
     marginTop: 8,
-    padding: 14,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
+    padding: 13,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1.5,
     borderColor: theme.colors.navy,
+    backgroundColor: theme.colors.surface,
     alignItems: "center",
   },
   linkButtonText: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
+  dangerBtn: {
+    marginTop: 8,
+    padding: 13,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.errorSoft,
+    alignItems: "center",
+  },
+  dangerBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.error },
   widgetSteps: { marginBottom: 12 },
-  widgetStep: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.text, marginBottom: 6, paddingLeft: 4 },
-  sliderLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  widgetStepRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 8 },
+  stepCircle: { width: 22, height: 22, borderRadius: 11, backgroundColor: theme.colors.navy, alignItems: "center", justifyContent: "center", marginTop: 1 },
+  stepCircleText: { fontSize: 12, fontFamily: "DMSans_700Bold", color: theme.colors.surface },
+  widgetStep: { flex: 1, fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.text, lineHeight: 20 },
+  sliderLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
   sliderMinMax: { fontSize: 11, fontFamily: 'DMSans_400Regular', color: theme.colors.textMuted },
   aboutRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   aboutLabel: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.text },
@@ -606,18 +681,18 @@ const styles = StyleSheet.create({
   aboutLink: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: theme.colors.navy },
   accountRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
   accountAvatar: {
-    width: 42, height: 42, borderRadius: 21,
-    backgroundColor: theme.colors.navy,
+    width: 46, height: 46, borderRadius: 23,
     justifyContent: "center", alignItems: "center",
+    ...theme.shadows.glowOrange,
   },
-  accountAvatarText: { color: "#fff", fontSize: 18, fontFamily: "DMSans_700Bold" },
+  accountAvatarText: { color: "#fff", fontSize: 19, fontFamily: "DMSans_700Bold" },
   accountEmail: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
   accountHint: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 2 },
   signOutBtn: {
-    padding: 14, borderRadius: theme.radius.md,
-    backgroundColor: "rgba(220, 38, 38, 0.08)",
-    borderWidth: 1, borderColor: theme.colors.error,
+    padding: 13, borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1.5, borderColor: theme.colors.navy,
     alignItems: "center",
   },
-  signOutBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.error },
+  signOutBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
 });

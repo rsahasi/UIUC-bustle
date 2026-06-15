@@ -1,8 +1,10 @@
+import "react-native-reanimated"; // must be first — initializes worklets runtime
 import { NotificationRedirect } from "@/src/components/NotificationRedirect";
 import "@/src/tasks/notificationRefresh"; // registers defineTask at module level
 import { registerNotificationRefreshTask } from "@/src/tasks/notificationRefresh";
 import { AUTO_WALK_TASK_NAME } from '@/src/utils/autoWalkDetect';
 import { refreshWidgetData } from '@/src/tasks/widgetRefresh';
+import { completeAuthFromUrl } from "@/src/auth/authCallback";
 import { supabase } from "@/src/auth/supabaseClient";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
@@ -120,11 +122,11 @@ export default function RootLayout() {
   }, [fontsLoaded, authLoading]);
 
   useEffect(() => {
-    // Handle deep links (magic link callback)
+    // Handle deep links (magic link / OAuth callback)
     const handleUrl = async ({ url }: { url: string }) => {
       if (url.includes('auth/callback')) {
-        const { error } = await supabase.auth.exchangeCodeForSession(url);
-        if (error) console.warn('Magic link exchange error:', error.message);
+        const error = await completeAuthFromUrl(url);
+        if (error) console.warn('Auth link exchange error:', error);
       }
     };
 
@@ -157,14 +159,22 @@ export default function RootLayout() {
         options={{
           host: "https://us.i.posthog.com",
           disabled: !posthogKey || process.env.NODE_ENV === "test",
-          captureScreenViews: false,
         }}
+        autocapture={false}
       >
         <AnalyticsIdentifier userId={user?.id} />
         <>
           <StatusBar style="light" />
           <NotificationRedirect />
-          <Stack screenOptions={{ headerShown: false }}>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              headerStyle: { backgroundColor: "#13294B" },
+              headerShadowVisible: false,
+              headerTintColor: "#fff",
+              headerTitleStyle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 20 },
+            }}
+          >
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="sign-in" options={{ headerShown: false }} />
             <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />

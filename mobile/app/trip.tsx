@@ -1,10 +1,12 @@
 import { fetchDepartures } from "@/src/api/client";
+import { FadeInView, PressableScale, PulseView } from "@/src/components/ui/motion";
+import { theme } from "@/src/constants/theme";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
+import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -56,93 +58,211 @@ export default function TripScreen() {
     return (
       <View style={styles.centered}>
         <Text style={styles.error}>Missing stop</Text>
-        <Pressable
+        <PressableScale
           accessibilityLabel="Go back"
           accessibilityRole="button"
           onPress={() => router.back()}
           style={styles.btn}
         >
           <Text style={styles.btnText}>Back</Text>
-        </Pressable>
+        </PressableScale>
       </View>
     );
   }
 
   return (
     <ScrollView
+      style={styles.screen}
       contentContainerStyle={styles.container}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor="#13294b" />
       }
     >
-      <View style={styles.header}>
-        <Text style={styles.stopName}>{stop_name || stop_id}</Text>
-        <Text style={styles.subtitle}>Live departures (updates every 25s)</Text>
-      </View>
+      <FadeInView delay={0} style={styles.card}>
+        <LinearGradient
+          colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardHeader}
+        >
+          <Text style={styles.stopName}>{stop_name || stop_id}</Text>
+          <View style={styles.accentUnderline} />
+          <View style={styles.liveRow}>
+            <PulseView minOpacity={0.3} maxScale={1.4} duration={900} style={styles.liveDot} />
+            <Text style={styles.subtitle}>Live departures (updates every 25s)</Text>
+          </View>
+        </LinearGradient>
 
-      {loading ? (
-        <ActivityIndicator size="large" color="#13294b" style={styles.loader} />
-      ) : loadError ? (
-        <View style={styles.errorBlock}>
-          <Text style={styles.empty}>Couldn’t load departures. Pull down to refresh.</Text>
-        </View>
-      ) : departures.length === 0 ? (
-        <Text style={styles.empty}>No departures right now.</Text>
-      ) : (
-        <View style={styles.list}>
-          {departures.map((d, i) => (
-            <View key={i} style={styles.row}>
-              <Text style={styles.route}>{d.route}</Text>
-              <Text style={styles.headsign}>{d.headsign || "—"}</Text>
-              <Text style={styles.mins}>{d.expected_mins} min</Text>
+        <View style={styles.cardBody}>
+          {loading ? (
+            <ActivityIndicator size="large" color={theme.colors.orange} style={styles.loader} />
+          ) : loadError ? (
+            <View style={styles.errorBlock}>
+              <Text style={styles.empty}>Couldn’t load departures. Pull down to refresh.</Text>
             </View>
-          ))}
+          ) : departures.length === 0 ? (
+            <Text style={styles.empty}>No departures right now.</Text>
+          ) : (
+            <View style={styles.list}>
+              {departures.map((d, i) => (
+                <FadeInView key={i} delay={i * 60}>
+                  <View style={styles.row}>
+                    <View style={styles.routeBadge}>
+                      <Text style={styles.route}>{d.route}</Text>
+                    </View>
+                    <Text style={styles.headsign}>{d.headsign || "—"}</Text>
+                    <Text style={styles.mins}>{d.expected_mins} min</Text>
+                  </View>
+                </FadeInView>
+              ))}
+            </View>
+          )}
         </View>
-      )}
+      </FadeInView>
 
-      <Pressable
-        accessibilityLabel="I'll walk instead, go back to Home"
-        accessibilityRole="button"
-        onPress={onWalkInstead}
-        style={styles.walkBtn}
-      >
-        <Text style={styles.walkBtnText}>I'll walk instead</Text>
-      </Pressable>
+      <FadeInView delay={140}>
+        <PressableScale
+          accessibilityLabel="I'll walk instead, go back to Home"
+          accessibilityRole="button"
+          onPress={onWalkInstead}
+          style={styles.walkBtn}
+        >
+          <Text style={styles.walkBtnText}>I'll walk instead</Text>
+        </PressableScale>
+      </FadeInView>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
+  centered: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  screen: { backgroundColor: theme.colors.surfaceAlt },
   container: { padding: 16, paddingBottom: 32 },
-  header: { marginBottom: 16 },
-  stopName: { fontSize: 22, fontWeight: "700", color: "#13294b" },
-  subtitle: { fontSize: 14, color: "#666", marginTop: 4 },
+  card: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    marginBottom: 20,
+    ...theme.shadows.md,
+  },
+  cardHeader: {
+    borderTopLeftRadius: theme.radius.xl,
+    borderTopRightRadius: theme.radius.xl,
+    paddingHorizontal: 20,
+    paddingTop: 22,
+    paddingBottom: 18,
+  },
+  stopName: {
+    ...theme.typography.screenTitle,
+    color: theme.colors.textOnNavy,
+  },
+  accentUnderline: {
+    width: 44,
+    height: 3,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.orange,
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  liveRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.orangeBright,
+    marginRight: 8,
+  },
+  subtitle: {
+    fontSize: 13,
+    fontFamily: "DMSans_500Medium",
+    color: theme.colors.textOnNavyMuted,
+  },
+  cardBody: {
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 12,
+  },
   loader: { marginVertical: 24 },
-  empty: { fontSize: 16, color: "#666", marginVertical: 16 },
-  errorBlock: { marginVertical: 16 },
-  list: { marginBottom: 24 },
+  empty: {
+    fontSize: 15,
+    fontFamily: "DMSans_400Regular",
+    color: theme.colors.textSecondary,
+    marginVertical: 16,
+    textAlign: "center",
+  },
+  errorBlock: { marginVertical: 8 },
+  list: {},
   row: {
     flexDirection: "row",
     alignItems: "center",
     paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: "#f5f5f5",
-    borderRadius: 8,
+    paddingHorizontal: 12,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.lg,
     marginBottom: 8,
   },
-  route: { fontSize: 18, fontWeight: "600", width: 48 },
-  headsign: { flex: 1, fontSize: 16, color: "#333" },
-  mins: { fontSize: 16, color: "#13294b", fontWeight: "600" },
+  routeBadge: {
+    minWidth: 48,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.orangeSoft,
+    alignItems: "center",
+    marginRight: 12,
+  },
+  route: {
+    fontSize: 16,
+    fontFamily: "DMSans_700Bold",
+    color: theme.colors.orange,
+  },
+  headsign: {
+    flex: 1,
+    fontSize: 15,
+    fontFamily: "DMSans_400Regular",
+    color: theme.colors.textSecondary,
+  },
+  mins: {
+    fontSize: 16,
+    fontFamily: "DMSans_600SemiBold",
+    color: theme.colors.navy,
+  },
   walkBtn: {
     padding: 16,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "#13294b",
+    borderRadius: theme.radius.lg,
+    borderWidth: 1.5,
+    borderColor: theme.colors.navy,
+    backgroundColor: theme.colors.surface,
     alignItems: "center",
+    ...theme.shadows.sm,
   },
-  walkBtnText: { fontSize: 16, fontWeight: "600", color: "#13294b" },
-  error: { fontSize: 16, color: "#c41e3a", marginBottom: 12 },
-  btn: { padding: 12, backgroundColor: "#13294b", borderRadius: 8 },
-  btnText: { color: "#fff", fontWeight: "600" },
+  walkBtnText: {
+    fontSize: 16,
+    fontFamily: "DMSans_600SemiBold",
+    color: theme.colors.navy,
+  },
+  error: {
+    fontSize: 16,
+    fontFamily: "DMSans_500Medium",
+    color: theme.colors.error,
+    marginBottom: 12,
+  },
+  btn: {
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    backgroundColor: theme.colors.navy,
+    borderRadius: theme.radius.lg,
+    ...theme.shadows.glowNavy,
+  },
+  btnText: {
+    color: "#fff",
+    fontFamily: "DMSans_600SemiBold",
+  },
 });

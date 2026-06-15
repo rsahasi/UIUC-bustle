@@ -2,6 +2,7 @@ import { theme } from "@/src/constants/theme";
 import type { LucideIcon } from "lucide-react-native";
 import { StyleSheet, Text, View } from "react-native";
 import { Button } from "./Button";
+import { FadeInView, FloatingView } from "./motion";
 
 interface EmptyStateProps {
   icon: LucideIcon;
@@ -12,8 +13,12 @@ interface EmptyStateProps {
 
 export function EmptyState({ icon: Icon, title, subtitle, action }: EmptyStateProps) {
   return (
-    <View style={styles.container}>
-      <Icon size={40} color={theme.colors.textMuted} strokeWidth={1.5} />
+    <FadeInView style={styles.container}>
+      <FloatingView distance={6}>
+        <View style={styles.iconHalo}>
+          <Icon size={36} color={theme.colors.orange} strokeWidth={1.6} />
+        </View>
+      </FloatingView>
       <Text style={styles.title}>{title}</Text>
       {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
       {action && (
@@ -21,7 +26,7 @@ export function EmptyState({ icon: Icon, title, subtitle, action }: EmptyStatePr
           <Button label={action.label} onPress={action.onPress} variant="secondary" size="sm" />
         </View>
       )}
-    </View>
+    </FadeInView>
   );
 }
 
@@ -31,6 +36,14 @@ const styles = StyleSheet.create({
     paddingVertical: theme.spacing.xxl,
     paddingHorizontal: theme.spacing.xl,
     gap: theme.spacing.sm,
+  },
+  iconHalo: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: theme.colors.orangeSoft,
+    alignItems: "center",
+    justifyContent: "center",
   },
   title: {
     fontFamily: "DMSans_600SemiBold",

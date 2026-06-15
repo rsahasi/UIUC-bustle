@@ -10,14 +10,16 @@ interface DepartureRowProps {
 }
 
 export function DepartureRow({ route, headsign, expectedMins, isRealtime }: DepartureRowProps) {
-  const minsText = expectedMins <= 0 ? "Now" : `${expectedMins} min`;
+  const isNow = expectedMins <= 0;
+  const isSoon = expectedMins > 0 && expectedMins <= 5;
+  const minsText = isNow ? "Now" : `${expectedMins} min`;
   return (
     <View style={styles.row}>
       <Badge label={route} variant="route" size="sm" />
       <Text style={styles.headsign} numberOfLines={1}>{headsign}</Text>
       <View style={styles.right}>
         {isRealtime && <Badge label="Live" variant="live" size="sm" />}
-        <Text style={styles.countdown}>{minsText}</Text>
+        <Text style={[styles.countdown, (isNow || isSoon) && styles.countdownUrgent]}>{minsText}</Text>
       </View>
     </View>
   );
@@ -51,5 +53,8 @@ const styles = StyleSheet.create({
     minWidth: 44,
     textAlign: "right",
     fontVariant: ["tabular-nums"],
+  },
+  countdownUrgent: {
+    color: theme.colors.orange,
   },
 });

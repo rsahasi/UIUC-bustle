@@ -19,7 +19,9 @@ import {
   Text,
   View,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { theme } from "@/src/constants/theme";
+import { AnimatedBar, FadeInView, PressableScale, ProgressRing, PulseView } from "@/src/components/ui/motion";
 
 const CHART_DAYS = 7;
 const BAR_MAX_H = 80;
@@ -199,6 +201,7 @@ export default function ActivityScreen() {
   const todayDurationSeconds = todayEntries.reduce((s, e) => s + e.durationSeconds, 0);
 
   const maxSteps = Math.max(...weekSummaries.map((d) => d.steps), 1);
+  const weeklyProgress = Math.min(1, Math.max(0, weeklySteps / weeklyGoal));
 
   if (loading) {
     return (
@@ -215,52 +218,61 @@ export default function ActivityScreen() {
     >
       {/* Auto-walk prompt */}
       {pendingWalk != null && (
-        <View style={styles.autoWalkPrompt}>
+        <FadeInView delay={0} style={styles.autoWalkPrompt}>
           <Text style={styles.autoWalkPromptTitle}>Looks like you walked</Text>
           <Text style={styles.autoWalkPromptBody}>
             {formatDistance(pendingWalk.distanceM)} · ~{Math.round((pendingWalk.endEpochMs - pendingWalk.startEpochMs) / 60000)} min
           </Text>
           <View style={styles.autoWalkPromptRow}>
-            <Pressable style={styles.autoWalkConfirm} onPress={onConfirmAutoWalk}>
-              <Text style={styles.autoWalkConfirmText}>Log it</Text>
-            </Pressable>
-            <Pressable style={styles.autoWalkDismiss} onPress={onDismissAutoWalk}>
+            <PressableScale style={styles.autoWalkConfirm} onPress={onConfirmAutoWalk}>
+              <LinearGradient
+                colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.autoWalkConfirmInner}
+              >
+                <Text style={styles.autoWalkConfirmText}>Log it</Text>
+              </LinearGradient>
+            </PressableScale>
+            <PressableScale haptic={false} style={styles.autoWalkDismiss} onPress={onDismissAutoWalk}>
               <Text style={styles.autoWalkDismissText}>Not me</Text>
-            </Pressable>
+            </PressableScale>
           </View>
-        </View>
+        </FadeInView>
       )}
 
       {/* Today summary */}
-      <View style={styles.todayCard}>
-        <Text style={styles.todayTitle}>Today</Text>
-        <View style={styles.todayStats}>
-          <View style={styles.statCell}>
-            <Text style={styles.statValue}>{todaySteps.toLocaleString()}</Text>
-            <Text style={styles.statLabel}>Steps</Text>
+      <FadeInView delay={0}>
+        <LinearGradient
+          colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.todayCard}
+        >
+          <Text style={styles.todayTitle}>Today</Text>
+          <Text style={styles.todayHeroValue}>{todaySteps.toLocaleString()}</Text>
+          <Text style={styles.todayHeroLabel}>Steps</Text>
+          <View style={styles.todayStats}>
+            <View style={styles.statCell}>
+              <Text style={styles.statValue}>{todayCalories.toFixed(0)}</Text>
+              <Text style={styles.statLabel}>kcal</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statCell}>
+              <Text style={styles.statValue}>{(todayDistanceM / 1609.344).toFixed(2)}</Text>
+              <Text style={styles.statLabel}>mi</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statCell}>
+              <Text style={styles.statValue}>{Math.floor(todayDurationSeconds / 60)}</Text>
+              <Text style={styles.statLabel}>min</Text>
+            </View>
           </View>
-          <View style={styles.statCell}>
-            <Text style={styles.statValue}>{todayCalories.toFixed(0)}</Text>
-            <Text style={styles.statLabel}>kcal</Text>
-          </View>
-          <View style={styles.statCell}>
-            <Text style={styles.statValue}>{(todayDistanceM / 1609.344).toFixed(2)}</Text>
-            <Text style={styles.statLabel}>mi</Text>
-          </View>
-          <View style={styles.statCell}>
-            <Text style={styles.statValue}>{Math.floor(todayDurationSeconds / 60)}</Text>
-            <Text style={styles.statLabel}>min</Text>
-          </View>
-        </View>
-      </View>
+        </LinearGradient>
+      </FadeInView>
 
       {/* Streak + weekly goal */}
-      <View style={styles.streakRow}>
-        <View style={styles.streakCard}>
-          <Text style={styles.streakCount}>{streak}</Text>
-          <Text style={styles.streakLabel}>{streak === 1 ? "day streak" : "days streak"}</Text>
-          <Text style={styles.streakHint}>{streak === 0 ? 'Walk today to start' : streak < 7 ? `${7 - streak} days to a week streak!` : 'Week streak!'}</Text>
-        </View>
+      <FadeInView delay={70} style={styles.streakRow}>
         <View style={styles.weeklyCard}>
           <View style={styles.weeklyHeader}>
             <Text style={styles.weeklyLabel}>Weekly goal</Text>
@@ -272,7 +284,7 @@ export default function ActivityScreen() {
                   { text: 'Cancel', style: 'cancel' },
                   {
                     text: 'Save',
-                    onPress: async (val) => {
+                    onPress: async (val?: string) => {
                       const n = parseInt(val ?? '', 10);
                       if (!isNaN(n) && n >= 1000) {
                         await setWeeklyStepGoal(n);
@@ -290,50 +302,74 @@ export default function ActivityScreen() {
               </Text>
             </Pressable>
           </View>
-          <View style={styles.weeklyBarBg}>
-            <View
-              style={[
-                styles.weeklyBarFill,
-                { width: `${Math.min(100, (weeklySteps / weeklyGoal) * 100)}%` },
-              ]}
-            />
+          <View style={styles.weeklyRingWrap}>
+            <ProgressRing
+              progress={weeklyProgress}
+              size={112}
+              strokeWidth={11}
+              colors={[theme.colors.mint, theme.colors.sky]}
+            >
+              <Text style={styles.weeklyPctBig}>
+                {Math.round((weeklySteps / weeklyGoal) * 100)}%
+              </Text>
+              <Text style={styles.weeklyPctSub}>complete</Text>
+            </ProgressRing>
           </View>
-          <Text style={styles.weeklyPct}>
-            {Math.round((weeklySteps / weeklyGoal) * 100)}% complete
-          </Text>
         </View>
-      </View>
+        <LinearGradient
+          colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.streakCard}
+        >
+          <PulseView minOpacity={0.8} maxScale={1.05} duration={1400}>
+            <Text style={styles.streakCount}>{streak}</Text>
+          </PulseView>
+          <Text style={styles.streakLabel}>{streak === 1 ? "day streak" : "days streak"}</Text>
+          <Text style={styles.streakHint}>{streak === 0 ? 'Walk today to start' : streak < 7 ? `${7 - streak} days to a week streak!` : 'Week streak!'}</Text>
+        </LinearGradient>
+      </FadeInView>
 
       {/* Personalized goal suggestion */}
       {weeklySteps > weeklyGoal * 1.1 && (
-        <View style={styles.goalSuggestion}>
+        <FadeInView delay={110} style={styles.goalSuggestion}>
           <Text style={styles.goalSuggestionText}>
             You're consistently exceeding your goal — consider raising it to {Math.ceil(weeklySteps * 1.1 / 1000) * 1000} steps/week
           </Text>
-        </View>
+        </FadeInView>
       )}
 
       {/* 7-day bar chart (steps) */}
-      <View style={styles.chartCard}>
+      <FadeInView delay={140} style={styles.chartCard}>
         <Text style={styles.chartTitle}>Steps — last 7 days</Text>
         <View style={styles.chartRow}>
-          {weekSummaries.map((d) => {
+          {weekSummaries.map((d, i) => {
             const barH = maxSteps > 0 ? Math.round((d.steps / maxSteps) * BAR_MAX_H) : 0;
             const isToday = d.label === "Today";
             return (
               <View key={d.date} style={styles.chartBar}>
                 <Text style={styles.chartBarValue}>{d.steps > 0 ? d.steps.toLocaleString() : ""}</Text>
-                <View style={[styles.barFill, { height: Math.max(barH, 2), backgroundColor: isToday ? theme.colors.orange : theme.colors.navy }]} />
+                <AnimatedBar
+                  height={Math.max(barH, 3)}
+                  delay={i * 80}
+                  width={22}
+                  radius={7}
+                  gradient={
+                    isToday
+                      ? [theme.colors.orangeBright, theme.colors.orange]
+                      : [theme.colors.navyLight, theme.colors.navy]
+                  }
+                />
                 <Text style={[styles.chartBarLabel, isToday && styles.chartBarLabelToday]}>{d.label}</Text>
               </View>
             );
           })}
         </View>
-      </View>
+      </FadeInView>
 
       {/* Weekly commute summary */}
       {weeklyWalks > 0 && (
-        <View style={styles.commuteSummaryCard}>
+        <FadeInView delay={210} style={styles.commuteSummaryCard}>
           <Text style={styles.commuteSummaryTitle}>7-day commute summary</Text>
           <View style={styles.commuteSummaryRow}>
             <View style={styles.commuteStat}>
@@ -352,45 +388,53 @@ export default function ActivityScreen() {
           {topDestination && (
             <Text style={styles.commuteTopDest}>Most frequent: {topDestination}</Text>
           )}
-        </View>
+        </FadeInView>
       )}
 
       {/* Money saved */}
       {weeklyWalks > 0 && (
-        <View style={styles.moneySavedCard}>
+        <FadeInView delay={280} style={styles.moneySavedCard}>
           <Text style={styles.moneySavedLabel}>This week you saved</Text>
           <Text style={styles.moneySavedAmount}>${(weeklyWalks * 8).toFixed(0)}</Text>
           <Text style={styles.moneySavedSub}>vs. {weeklyWalks} Uber trips at ~$8 each</Text>
-        </View>
+        </FadeInView>
       )}
 
       {/* Today's walks */}
-      <Text style={styles.sectionTitle}>Today's walks</Text>
+      <FadeInView delay={350}>
+        <Text style={styles.sectionTitle}>Today's walks</Text>
+      </FadeInView>
       {todayEntries.length === 0 ? (
-        <Text style={styles.empty}>No walks recorded today. Use the Walk button on the Home screen to start tracking.</Text>
+        <FadeInView delay={400} style={styles.emptyCard}>
+          <Text style={styles.empty}>No walks recorded today. Use the Walk button on the Home screen to start tracking.</Text>
+        </FadeInView>
       ) : (
-        todayEntries.map((e) => (
-          <View key={e.id} style={styles.entryCard}>
-            <Text style={styles.entryRoute}>{e.from} → {e.to}</Text>
-            <Text style={styles.entryMeta}>
-              {e.walkingModeId} · {formatDistance(e.distanceM)} · {Math.floor(e.durationSeconds / 60)} min · {e.caloriesBurned.toFixed(1)} kcal · {e.stepCount} steps
-            </Text>
-          </View>
-        ))
+        <View style={styles.walksCard}>
+          {todayEntries.map((e, i) => (
+            <FadeInView key={e.id} delay={i * 60} style={[styles.entryRow, i > 0 && styles.entryRowBorder]}>
+              <Text style={styles.entryRoute}>{e.from} → {e.to}</Text>
+              <Text style={styles.entryMeta}>
+                {e.walkingModeId} · {formatDistance(e.distanceM)} · {Math.floor(e.durationSeconds / 60)} min · {e.caloriesBurned.toFixed(1)} kcal · {e.stepCount} steps
+              </Text>
+            </FadeInView>
+          ))}
+        </View>
       )}
 
       {/* Pattern insights */}
       {patternInsights !== null && (
-        <PatternInsightCards
-          insights={patternInsights}
-          dismissedKeys={dismissedInsightKeys}
-          onDismiss={handleDismissInsight}
-        />
+        <FadeInView delay={420}>
+          <PatternInsightCards
+            insights={patternInsights}
+            dismissedKeys={dismissedInsightKeys}
+            onDismiss={handleDismissInsight}
+          />
+        </FadeInView>
       )}
 
       {/* AI disclosure card */}
       {showAiDisclosure && (
-        <View style={styles.disclosureCard}>
+        <FadeInView delay={0} style={styles.disclosureCard}>
           <Text style={styles.disclosureTitle}>Before we continue</Text>
           <Text style={styles.disclosureBody}>
             To generate your report, your step count, distance, and walk history for today will be sent to an AI service. No personal identifiers are included.
@@ -409,33 +453,42 @@ export default function ActivityScreen() {
               <Text style={styles.disclosureAllowText}>Allow & Generate</Text>
             </Pressable>
           </View>
-        </View>
+        </FadeInView>
       )}
 
       {/* AI Report button */}
-      <Pressable
-        style={({ pressed }) => [styles.reportBtn, reportLoading && styles.reportBtnDisabled, { transform: [{ scale: pressed ? 0.97 : 1 }] }]}
-        onPress={onGetReport}
-        disabled={reportLoading}
-      >
-        {reportLoading ? (
-          <ActivityIndicator size="small" color="#fff" />
-        ) : (
-          <Text style={styles.reportBtnText}>Get AI Report</Text>
-        )}
-      </Pressable>
+      <FadeInView delay={490}>
+        <PressableScale
+          style={[styles.reportBtn, reportLoading && styles.reportBtnDisabled]}
+          onPress={onGetReport}
+          disabled={reportLoading}
+        >
+          <LinearGradient
+            colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.reportBtnInner}
+          >
+            {reportLoading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.reportBtnText}>Get AI Report</Text>
+            )}
+          </LinearGradient>
+        </PressableScale>
+      </FadeInView>
 
       {reportError && (
-        <View style={styles.reportError}>
+        <FadeInView delay={0} style={styles.reportError}>
           <Text style={styles.reportErrorText}>{reportError}</Text>
-        </View>
+        </FadeInView>
       )}
 
       {reportText && (
-        <View style={styles.reportCard}>
+        <FadeInView delay={0} style={styles.reportCard}>
           <Text style={styles.reportTitle}>Today's Report</Text>
           <Text style={styles.reportBody}>{reportText}</Text>
-        </View>
+        </FadeInView>
       )}
     </ScrollView>
   );
@@ -445,149 +498,180 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: "center", alignItems: "center" },
   container: { padding: 16, paddingBottom: 32 },
   todayCard: {
-    backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.lg,
-    padding: 16,
+    borderRadius: theme.radius.xl,
+    padding: 20,
     marginBottom: 16,
+    ...theme.shadows.glowNavy,
   },
-  todayTitle: { fontSize: 20, fontFamily: "DMSerifDisplay_400Regular", color: "#fff", marginBottom: 12 },
-  todayStats: { flexDirection: "row", justifyContent: "space-around" },
-  statCell: { alignItems: "center" },
-  statValue: { fontSize: 22, fontFamily: "DMSans_700Bold", color: "#fff" },
-  statLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", marginTop: 2 },
+  todayTitle: { ...theme.typography.screenTitle, color: theme.colors.textOnNavy, marginBottom: 10 },
+  todayHeroValue: { fontSize: 42, lineHeight: 48, fontFamily: "DMSans_700Bold", color: "#fff" },
+  todayHeroLabel: { fontSize: 12, fontFamily: "DMSans_500Medium", color: theme.colors.textOnNavyMuted, marginTop: 2, marginBottom: 14, letterSpacing: 1, textTransform: "uppercase" },
+  todayStats: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.14)",
+    paddingTop: 12,
+  },
+  statCell: { alignItems: "center", flex: 1 },
+  statDivider: { width: 1, height: 26, backgroundColor: "rgba(255,255,255,0.14)" },
+  statValue: { fontSize: 20, fontFamily: "DMSans_700Bold", color: "#fff" },
+  statLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: theme.colors.textOnNavyMuted, marginTop: 2 },
   streakRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: 12,
     marginBottom: 16,
   },
+  weeklyCard: {
+    flex: 1.25,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: 14,
+    justifyContent: "center",
+    ...theme.shadows.md,
+  },
+  weeklyHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 },
+  weeklyLabel: { fontSize: 12, fontFamily: "DMSans_600SemiBold", color: theme.colors.textSecondary },
+  weeklyFraction: { fontSize: 11, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted },
+  weeklyRingWrap: { alignItems: "center" },
+  weeklyPctBig: { fontSize: 24, fontFamily: "DMSans_700Bold", color: theme.colors.navy },
+  weeklyPctSub: { fontSize: 11, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 1 },
   streakCard: {
     flex: 1,
-    backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.xl,
     padding: 14,
     alignItems: "center",
     justifyContent: "center",
+    ...theme.shadows.glowNavy,
   },
-  streakCount: { fontSize: 36, fontFamily: "DMSans_700Bold", color: theme.colors.orange, lineHeight: 40 },
-  streakLabel: { fontSize: 12, fontFamily: "DMSans_500Medium", color: "rgba(255,255,255,0.75)", marginTop: 2 },
-  streakHint: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 4, textAlign: "center" },
-  weeklyCard: {
-    flex: 2,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    justifyContent: "center",
-  },
-  weeklyHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 },
-  weeklyLabel: { fontSize: 12, fontFamily: "DMSans_600SemiBold", color: theme.colors.textSecondary },
-  weeklyFraction: { fontSize: 11, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted },
-  weeklyBarBg: {
-    height: 8,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: 4,
-    overflow: "hidden",
-    marginBottom: 6,
-  },
-  weeklyBarFill: {
-    height: 8,
-    backgroundColor: theme.colors.orange,
-    borderRadius: 4,
-  },
-  weeklyPct: { fontSize: 11, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted },
+  streakCount: { fontSize: 44, lineHeight: 50, fontFamily: "DMSans_700Bold", color: theme.colors.gold, textAlign: "center" },
+  streakLabel: { fontSize: 12, fontFamily: "DMSans_500Medium", color: theme.colors.textOnNavy, marginTop: 2 },
+  streakHint: { fontSize: 11, fontFamily: "DMSans_400Regular", color: theme.colors.textOnNavyMuted, marginTop: 4, textAlign: "center" },
 
   chartCard: {
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
     padding: 16,
     marginBottom: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    ...theme.shadows.md,
   },
   chartTitle: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, marginBottom: 12 },
   chartRow: { flexDirection: "row", alignItems: "flex-end", gap: 4, height: BAR_MAX_H + 40 },
   chartBar: { flex: 1, alignItems: "center", justifyContent: "flex-end" },
-  chartBarValue: { fontSize: 9, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 2 },
-  barFill: { width: "80%", borderRadius: 4 },
-  chartBarLabel: { fontSize: 10, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 4, textAlign: "center" },
+  chartBarValue: { fontSize: 9, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 4 },
+  chartBarLabel: { fontSize: 10, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 6, textAlign: "center" },
   chartBarLabelToday: { color: theme.colors.orange, fontFamily: "DMSans_700Bold" },
-  sectionTitle: { fontSize: 16, fontFamily: "DMSans_700Bold", color: theme.colors.navy, marginBottom: 10 },
-  empty: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 16 },
-  entryCard: {
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
-    padding: 12,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+  sectionTitle: { ...theme.typography.screenTitle, color: theme.colors.navy, marginBottom: 10 },
+  emptyCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: 16,
+    marginBottom: 16,
+    ...theme.shadows.md,
   },
+  empty: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, lineHeight: 21 },
+  walksCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    marginBottom: 16,
+    overflow: "hidden",
+    ...theme.shadows.md,
+  },
+  entryRow: { paddingVertical: 12, paddingHorizontal: 16 },
+  entryRowBorder: { borderTopWidth: 1, borderTopColor: theme.colors.borderSoft },
   entryRoute: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
   entryMeta: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
   commuteSummaryCard: {
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
-    padding: 14,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: 16,
+    marginBottom: 16,
+    ...theme.shadows.md,
   },
   commuteSummaryTitle: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy, marginBottom: 12 },
   commuteSummaryRow: { flexDirection: "row", justifyContent: "space-around", marginBottom: 8 },
   commuteStat: { alignItems: "center" },
   commuteStatValue: { fontSize: 22, fontFamily: "DMSans_700Bold", color: theme.colors.text },
   commuteStatLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 2 },
-  commuteTopDest: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8, marginTop: 4 },
+  commuteTopDest: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, borderTopWidth: 1, borderTopColor: theme.colors.borderSoft, paddingTop: 8, marginTop: 4 },
 
   reportBtn: {
+    borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.orange,
-    padding: 14,
-    borderRadius: theme.radius.md,
-    alignItems: "center",
     marginTop: 16,
     marginBottom: 12,
+    ...theme.shadows.glowOrange,
+  },
+  reportBtnInner: {
+    padding: 15,
+    borderRadius: theme.radius.lg,
+    alignItems: "center",
+    overflow: "hidden",
   },
   reportBtnDisabled: { opacity: 0.7 },
   reportBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_700Bold" },
-  reportError: { backgroundColor: "rgba(220, 38, 38, 0.08)", borderRadius: theme.radius.md, padding: 12, marginBottom: 12 },
+  reportError: { backgroundColor: theme.colors.errorSoft, borderRadius: theme.radius.lg, padding: 12, marginBottom: 12 },
   reportErrorText: { color: theme.colors.error, fontSize: 14, fontFamily: "DMSans_400Regular" },
   reportCard: {
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
     padding: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    ...theme.shadows.md,
   },
   reportTitle: { fontSize: 15, fontFamily: "DMSans_700Bold", color: theme.colors.navy, marginBottom: 8 },
   reportBody: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.text, lineHeight: 22 },
 
   // Auto-walk prompt
-  autoWalkPrompt: { backgroundColor: "rgba(232, 74, 39, 0.08)", borderLeftWidth: 4, borderLeftColor: theme.colors.orange, padding: 14, marginBottom: 12, borderRadius: theme.radius.md },
+  autoWalkPrompt: {
+    backgroundColor: theme.colors.surface,
+    borderLeftWidth: 4,
+    borderLeftColor: theme.colors.orange,
+    padding: 14,
+    marginBottom: 12,
+    borderRadius: theme.radius.xl,
+    ...theme.shadows.md,
+  },
   autoWalkPromptTitle: { fontSize: 15, fontFamily: 'DMSans_600SemiBold', color: theme.colors.navy, marginBottom: 2 },
   autoWalkPromptBody: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.textSecondary, marginBottom: 10 },
-  autoWalkPromptRow: { flexDirection: 'row', gap: 10 },
-  autoWalkConfirm: { backgroundColor: theme.colors.orange, paddingVertical: 8, paddingHorizontal: 16, borderRadius: theme.radius.md },
+  autoWalkPromptRow: { flexDirection: 'row', gap: 10, alignItems: 'center' },
+  autoWalkConfirm: { borderRadius: theme.radius.lg, backgroundColor: theme.colors.orange, ...theme.shadows.glowOrange },
+  autoWalkConfirmInner: { paddingVertical: 9, paddingHorizontal: 18, borderRadius: theme.radius.lg, overflow: 'hidden' },
   autoWalkConfirmText: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: '#fff' },
-  autoWalkDismiss: { paddingVertical: 8, paddingHorizontal: 16 },
+  autoWalkDismiss: { paddingVertical: 9, paddingHorizontal: 16 },
   autoWalkDismissText: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.textSecondary },
 
   // Money saved card
-  moneySavedCard: { backgroundColor: theme.colors.navy, borderRadius: theme.radius.md, padding: 16, marginBottom: 16, alignItems: 'center' },
-  moneySavedLabel: { fontSize: 12, fontFamily: 'DMSans_500Medium', color: 'rgba(255,255,255,0.7)', marginBottom: 4 },
-  moneySavedAmount: { fontSize: 40, fontFamily: 'DMSans_700Bold', color: theme.colors.orange, lineHeight: 46 },
-  moneySavedSub: { fontSize: 12, fontFamily: 'DMSans_400Regular', color: 'rgba(255,255,255,0.6)', marginTop: 4 },
+  moneySavedCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: 18,
+    marginBottom: 20,
+    alignItems: 'center',
+    ...theme.shadows.md,
+  },
+  moneySavedLabel: { fontSize: 12, fontFamily: 'DMSans_500Medium', color: theme.colors.textSecondary, marginBottom: 4, letterSpacing: 0.5, textTransform: 'uppercase' },
+  moneySavedAmount: { fontSize: 44, fontFamily: 'DMSans_700Bold', color: theme.colors.success, lineHeight: 50 },
+  moneySavedSub: { fontSize: 12, fontFamily: 'DMSans_400Regular', color: theme.colors.textMuted, marginTop: 4 },
 
   // Goal suggestion
-  goalSuggestion: { backgroundColor: "rgba(22, 163, 74, 0.08)", borderRadius: theme.radius.md, padding: 12, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: theme.colors.success },
+  goalSuggestion: { backgroundColor: theme.colors.successSoft, borderRadius: theme.radius.lg, padding: 12, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: theme.colors.success },
   goalSuggestionText: { fontSize: 13, fontFamily: 'DMSans_400Regular', color: theme.colors.success },
 
   // AI disclosure card
-  disclosureCard: { backgroundColor: theme.colors.surfaceAlt, borderRadius: theme.radius.md, padding: 16, marginTop: 16, marginBottom: 8, borderWidth: 1, borderColor: theme.colors.border },
+  disclosureCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: 16,
+    marginTop: 16,
+    marginBottom: 8,
+    ...theme.shadows.md,
+  },
   disclosureTitle: { fontSize: 15, fontFamily: 'DMSans_700Bold', color: theme.colors.navy, marginBottom: 8 },
   disclosureBody: { fontSize: 13, fontFamily: 'DMSans_400Regular', color: theme.colors.textSecondary, lineHeight: 20, marginBottom: 12 },
   disclosureRow: { flexDirection: 'row', gap: 10 },
-  disclosureDeny: { flex: 1, padding: 12, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.border, alignItems: 'center' },
+  disclosureDeny: { flex: 1, padding: 12, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border, alignItems: 'center' },
   disclosureDenyText: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: theme.colors.textSecondary },
-  disclosureAllow: { flex: 2, padding: 12, borderRadius: theme.radius.md, backgroundColor: theme.colors.navy, alignItems: 'center' },
+  disclosureAllow: { flex: 2, padding: 12, borderRadius: theme.radius.lg, backgroundColor: theme.colors.navy, alignItems: 'center', ...theme.shadows.glowNavy },
   disclosureAllowText: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: '#fff' },
 });
