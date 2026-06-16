@@ -58,17 +58,19 @@ When you need to restrict access or support multiple tenants:
 1. Create a Railway account at https://railway.app
 2. New project → "Deploy from GitHub repo" → select `rsahasi/UIUC-bustle`
 3. In service settings, set **Root Directory** to `backend/`
-4. Add a **Volume**: mount path `/mnt/data`, size 1GB
+4. Add a **PostgreSQL** database (New → Database → PostgreSQL). Railway injects
+   `DATABASE_URL` automatically. All persistent data — buildings, schedule,
+   stops, crowding reports, and shared trips — lives here, so no volume is needed.
 5. Add **Environment Variables**:
    - `MTD_API_KEY=<your key>`
    - `CLAUDE_API_KEY=<your key>`
+   - `SUPABASE_JWT_SECRET=<your secret>` and `SUPABASE_URL=<your project url>`
    - `SENTRY_DSN=<your dsn>` (optional)
-   - `APP_DB_PATH=/mnt/data/app.db`
-   - `STOPS_DB_PATH=/mnt/data/stops.db`
    - `CORS_ORIGINS=https://<your-subdomain>.up.railway.app`
    - `API_KEY_REQUIRED=false`
-6. Set **Health Check Path** to `/health`
-7. Deploy — Railway builds the Docker image and runs `load_gtfs.py` during the build
+6. Set **Health Check Path** to `/health/ready` (verifies the database is reachable)
+7. Deploy — Railway builds the Docker image (running `load_gtfs.py` during the
+   build) and runs `alembic upgrade head` on start, creating all tables.
 
 ### After deploy
 

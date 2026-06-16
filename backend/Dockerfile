@@ -12,9 +12,6 @@ COPY . .
 # load_gtfs.py resolves output path via __file__ → writes to /app/data/gtfs.db
 RUN python scripts/load_gtfs.py
 
-# Ensure Railway volume mount point exists
-RUN mkdir -p /mnt/data
-
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD python -c "import urllib.request, os; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\", \"8000\")}/health')" || exit 1
 
