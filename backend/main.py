@@ -23,9 +23,9 @@ from src.data.buildings_repo import (
 )
 from src.data.stops_repo import search_nearby
 from src.data.crowding_repo import (
-    init_crowding_schema, insert_report, get_recent_reports,
+    insert_report, get_recent_reports,
     check_rate_limit, get_reports_by_route, delete_old_reports,
-    compute_weighted_level, CROWDING_DB_PATH,
+    compute_weighted_level,
 )
 from src.data.crowding_estimate import estimate_crowding_level
 from src.auth.jwt import get_current_user
@@ -42,7 +42,7 @@ from src.share.models import (
     ShareTripStatusResponse,
     VALID_PHASES,
 )
-from src.share.repo import create_shared_trip, get_shared_trip_status, patch_shared_trip, init_share_schema, SHARE_DB_PATH
+from src.share.repo import create_shared_trip, get_shared_trip_status, patch_shared_trip
 from src.share.page import build_share_page
 from src.schedule.models import (
     BuildingsListResponse,
@@ -178,26 +178,26 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             # Never block boot on seeding — nearby stops just stay empty until fixed
             logger.warning("telemetry stops_seed_error error=%s", str(e))
-    init_share_schema()
     app.state.mtd_client = MTDClient(api_key=settings.mtd_api_key) if settings.mtd_api_key else None
 
-    await init_crowding_schema()
-
+    # crowding_reports / shared_trips live in Postgres (migration 0003), so the
+    # cleanup loop only runs when a database is configured.
     async def _crowding_cleanup():
         while True:
             try:
-                deleted = await delete_old_reports(CROWDING_DB_PATH, older_than_hours=2)
+                deleted = await delete_old_reports(get_pool(), older_than_hours=2)
                 if deleted:
                     logger.info("telemetry crowding_cleanup deleted=%d", deleted)
             except Exception as e:
                 logger.warning("telemetry crowding_cleanup_error error=%s", str(e))
             await asyncio.sleep(3600)
 
-    cleanup_task = asyncio.create_task(_crowding_cleanup())
+    cleanup_task = asyncio.create_task(_crowding_cleanup()) if settings.database_url else None
 
     yield
 
-    cleanup_task.cancel()
+    if cleanup_task:
+        cleanup_task.cancel()
     app.state.mtd_client = None
     if settings.database_url:
         await close_pool()
@@ -703,11 +703,11 @@ async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
     forwarded = request.headers.get("X-Forwarded-For")
     client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
     dedup_key = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()
-    already_reported = await check_rate_limit(CROWDING_DB_PATH, dedup_key, body.vehicle_id)
+    already_reported = await check_rate_limit(get_pool(), dedup_key, body.vehicle_id)
     if already_reported:
         raise HTTPException(status_code=429, detail="You already reported this bus recently. Try again in 10 minutes.")
     await insert_report(
-        CROWDING_DB_PATH,
+        get_pool(),
         vehicle_id=body.vehicle_id,
         route_id=body.route_id,
         trip_id=body.trip_id,
@@ -716,7 +716,7 @@ async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
         lat=body.lat,
         lon=body.lon,
     )
-    reports = await get_recent_reports(CROWDING_DB_PATH, body.vehicle_id)
+    reports = await get_recent_reports(get_pool(), body.vehicle_id)
     agg = compute_weighted_level(reports)
     current = {"level": agg.level, "confidence": agg.confidence, "source": agg.source, "report_count": agg.report_count} if agg else None
     logger.info("telemetry route=crowding_report vehicle=%s level=%d", body.vehicle_id, body.crowding_level)
@@ -726,7 +726,7 @@ async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
 @app.get("/crowding/route/{route_id}")
 async def get_route_crowding(request: Request, route_id: str):
     """Get crowding for all active vehicles on a route."""
-    grouped = await get_reports_by_route(CROWDING_DB_PATH, route_id)
+    grouped = await get_reports_by_route(get_pool(), route_id)
     result = {}
     for vid, reports in grouped.items():
         agg = compute_weighted_level(reports)
@@ -738,7 +738,7 @@ async def get_route_crowding(request: Request, route_id: str):
 @app.get("/crowding/{vehicle_id}", response_model=CrowdingResponse)
 async def get_vehicle_crowding(request: Request, vehicle_id: str, route_id: str = ""):
     """Get crowding for a vehicle. Falls back to schedule estimate if < 2 crowdsourced reports."""
-    reports = await get_recent_reports(CROWDING_DB_PATH, vehicle_id)
+    reports = await get_recent_reports(get_pool(), vehicle_id)
     agg = compute_weighted_level(reports)
     if agg and agg.report_count >= 2:
         return CrowdingResponse(level=agg.level, confidence=agg.confidence, source="crowdsourced", report_count=agg.report_count)
@@ -1424,12 +1424,12 @@ def post_walk_complete(request: Request, body: WalkCompleteRequest, user=Depends
 
 @app.post("/share/trips", response_model=CreateShareTripResponse)
 @limiter.limit("20/minute")
-def post_share_trip(request: Request, body: CreateShareTripRequest):
+async def post_share_trip(request: Request, body: CreateShareTripRequest):
     """Create a new shared trip record. Returns token and shareable URL."""
     if body.phase not in VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"phase must be one of {sorted(VALID_PHASES)}")
-    token = create_shared_trip(
-        db_path=SHARE_DB_PATH,
+    token = await create_shared_trip(
+        get_pool(),
         destination=body.destination[:200],
         route_id=body.route_id,
         route_name=body.route_name,
@@ -1444,11 +1444,11 @@ def post_share_trip(request: Request, body: CreateShareTripRequest):
 
 @app.patch("/share/trips/{token}")
 @limiter.limit("60/minute")
-def patch_share_trip(request: Request, token: str, body: PatchShareTripRequest):
+async def patch_share_trip(request: Request, token: str, body: PatchShareTripRequest):
     """Update phase and/or eta for a shared trip. Returns 404 if expired or not found."""
     if body.phase is not None and body.phase not in VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"phase must be one of {sorted(VALID_PHASES)}")
-    updated = patch_shared_trip(SHARE_DB_PATH, token, body.phase, body.eta_epoch)
+    updated = await patch_shared_trip(get_pool(), token, body.phase, body.eta_epoch)
     if not updated:
         raise HTTPException(status_code=404, detail="Trip not found or has expired")
     return {"ok": True}
@@ -1456,9 +1456,9 @@ def patch_share_trip(request: Request, token: str, body: PatchShareTripRequest):
 
 @app.get("/share/trips/{token}/status", response_model=ShareTripStatusResponse)
 @limiter.limit("120/minute")
-def get_share_trip_status(request: Request, token: str):
+async def get_share_trip_status(request: Request, token: str):
     """Poll current state of a shared trip."""
-    status = get_shared_trip_status(SHARE_DB_PATH, token)
+    status = await get_shared_trip_status(get_pool(), token)
     if status is None:
         return ShareTripStatusResponse(expired=True)
     return ShareTripStatusResponse(**status)
