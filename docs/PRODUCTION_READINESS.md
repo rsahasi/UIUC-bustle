@@ -29,6 +29,8 @@ and append a dated log entry below.
       ownership must be validated before merging — do not break the deploy)
 - [x] Request-id correlation: per-request id in logs + echoed X-Request-ID header
 - [x] Readiness vs. liveness split: /health (liveness) + /health/ready (DB check)
+- [x] Move crowding reports + shared trips off ephemeral SQLite onto Postgres
+      (no more data loss on redeploy; works across multiple instances)
 - [ ] Graceful handling + retry/backoff for all outbound HTTP (MTD, Nominatim, OSRM)
 
 ## Configuration & deployment
@@ -80,4 +82,16 @@ and append a dated log entry below.
   foreign absolute path; broke on every checkout) and hardened the gitignore.
 - CI: flipped the mobile typecheck to blocking now that tsc is clean (0 errors)
   after the Expo 54 migration.
+
+### 2026-06-16
+- LARGE: migrated the two SQLite-backed features (crowding reports, shared trips)
+  onto Postgres. They previously wrote to app.db on the container's ephemeral
+  filesystem (the documented APP_DB_PATH volume env vars were never read), so all
+  data was lost on every redeploy and the features broke across >1 instance
+  (rate-limit bypass, per-instance aggregates, share links 404'ing on the wrong
+  replica). New Alembic migration 0003 creates both tables; crowding_repo and
+  share/repo rewritten onto the asyncpg pool; aiosqlite removed. Added a Postgres
+  test fixture + CI Postgres service (alembic upgrade head before pytest) and
+  Postgres-backed tests for both features. Fixed the misleading volume/APP_DB_PATH
+  docs and dead Dockerfile mkdir. Backend suite: 115 passed (98 + 17 DB tests).
 

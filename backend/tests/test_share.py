@@ -1,130 +1,121 @@
 # backend/tests/test_share.py
-"""Tests for share trip endpoints and repo."""
-import sqlite3
-import pytest
-from fastapi.testclient import TestClient
+"""Tests for share-trip repo + endpoints (Postgres-backed)."""
 from unittest.mock import patch
 
+from httpx import AsyncClient, ASGITransport
+
 import main
-from src.share.repo import (
-    create_shared_trip, get_shared_trip_status, patch_shared_trip, init_share_schema,
-)
+from src.share.repo import create_shared_trip, get_shared_trip_status, patch_shared_trip
 
 
-@pytest.fixture
-def share_db(tmp_path):
-    db = tmp_path / "app.db"
-    init_share_schema(db)
-    return db
+def _client() -> AsyncClient:
+    # ASGI transport runs the app on the test's own event loop, so the asyncpg
+    # pool (created on that loop) is safe to use — unlike Starlette's TestClient,
+    # which spins a separate loop and would trip asyncpg's cross-loop guard.
+    return AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test")
 
 
-@pytest.fixture
-def client(share_db):
-    with patch.object(main, "SHARE_DB_PATH", share_db):
-        yield TestClient(main.app)
+# ── Repo unit tests (direct pool) ───────────────────────────────────────────
 
-
-# ── Schema test ────────────────────────────────────────────────────────────────
-
-def test_shared_trips_table_created(tmp_path):
-    """init_share_schema must create the shared_trips table."""
-    db = tmp_path / "app.db"
-    init_share_schema(db)
-    with sqlite3.connect(db) as conn:
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert "shared_trips" in tables
-
-
-# ── Repo unit tests ────────────────────────────────────────────────────────────
-
-def test_create_and_get_trip(share_db):
-    token = create_shared_trip(share_db, "Siebel Center", "22", "Illini", "Green & Wright", "walking", 9999999999)
+async def test_create_and_get_trip(pg_pool):
+    token = await create_shared_trip(pg_pool, "Siebel Center", "22", "Illini", "Green & Wright", "walking", 9999999999)
     assert len(token) >= 16  # high-entropy token (token_urlsafe(16) ≈ 22 chars)
-    status = get_shared_trip_status(share_db, token)
+    status = await get_shared_trip_status(pg_pool, token)
     assert status is not None
     assert status["destination"] == "Siebel Center"
     assert status["phase"] == "walking"
     assert status["expired"] is False
 
 
-def test_patch_phase(share_db):
-    token = create_shared_trip(share_db, "Siebel Center", "22", "Illini", "Stop A", "walking", None)
-    ok = patch_shared_trip(share_db, token, "on_bus", 9999999999)
-    assert ok is True
-    status = get_shared_trip_status(share_db, token)
+async def test_patch_phase(pg_pool):
+    token = await create_shared_trip(pg_pool, "Siebel Center", "22", "Illini", "Stop A", "walking", None)
+    assert await patch_shared_trip(pg_pool, token, "on_bus", 9999999999) is True
+    status = await get_shared_trip_status(pg_pool, token)
     assert status["phase"] == "on_bus"
     assert status["eta_epoch"] == 9999999999
 
 
-def test_patch_arrived_soft_expires(share_db):
-    token = create_shared_trip(share_db, "Siebel", None, None, None, "on_bus", None)
-    patch_shared_trip(share_db, token, "arrived", None)
-    status = get_shared_trip_status(share_db, token)
+async def test_patch_arrived_soft_expires(pg_pool):
+    token = await create_shared_trip(pg_pool, "Siebel", None, None, None, "on_bus", None)
+    await patch_shared_trip(pg_pool, token, "arrived", None)
+    status = await get_shared_trip_status(pg_pool, token)
     assert status["expired"] is True
 
 
-def test_get_nonexistent_token(share_db):
-    result = get_shared_trip_status(share_db, "notfound")
-    assert result is None
+async def test_get_nonexistent_token(pg_pool):
+    assert await get_shared_trip_status(pg_pool, "notfound") is None
 
 
-def test_patch_nonexistent_returns_false(share_db):
-    ok = patch_shared_trip(share_db, "notfound", "on_bus", None)
-    assert ok is False
+async def test_patch_nonexistent_returns_false(pg_pool):
+    assert await patch_shared_trip(pg_pool, "notfound", "on_bus", None) is False
 
 
-# ── Endpoint integration tests ─────────────────────────────────────────────────
+# ── Endpoint integration tests (httpx ASGI) ─────────────────────────────────
 
-def test_post_share_trip(client):
-    r = client.post("/share/trips", json={
-        "destination": "Siebel Center",
-        "route_id": "22",
-        "route_name": "Illini",
-        "stop_name": "Green & Wright",
-        "phase": "walking",
-        "eta_epoch": 9999999999,
-    })
+async def test_post_share_trip(pg_pool):
+    with patch("main.get_pool", return_value=pg_pool):
+        async with _client() as ac:
+            r = await ac.post("/share/trips", json={
+                "destination": "Siebel Center",
+                "route_id": "22",
+                "route_name": "Illini",
+                "stop_name": "Green & Wright",
+                "phase": "walking",
+                "eta_epoch": 9999999999,
+            })
     assert r.status_code == 200
     data = r.json()
     assert "token" in data
-    assert len(data["token"]) >= 16  # high-entropy token
+    assert len(data["token"]) >= 16
     assert "/t/" in data["url"]
 
 
-def test_post_share_trip_invalid_phase(client):
-    r = client.post("/share/trips", json={"destination": "Siebel", "phase": "teleporting"})
+async def test_post_share_trip_invalid_phase(pg_pool):
+    with patch("main.get_pool", return_value=pg_pool):
+        async with _client() as ac:
+            r = await ac.post("/share/trips", json={"destination": "Siebel", "phase": "teleporting"})
     assert r.status_code == 400
 
 
-def test_patch_share_trip(client):
-    token = client.post("/share/trips", json={"destination": "Siebel", "phase": "walking"}).json()["token"]
-    r = client.patch(f"/share/trips/{token}", json={"phase": "on_bus"})
+async def test_patch_share_trip(pg_pool):
+    with patch("main.get_pool", return_value=pg_pool):
+        async with _client() as ac:
+            token = (await ac.post("/share/trips", json={"destination": "Siebel", "phase": "walking"})).json()["token"]
+            r = await ac.patch(f"/share/trips/{token}", json={"phase": "on_bus"})
     assert r.status_code == 200
 
 
-def test_patch_expired_returns_404(client):
-    r = client.patch("/share/trips/notfound", json={"phase": "on_bus"})
+async def test_patch_expired_returns_404(pg_pool):
+    with patch("main.get_pool", return_value=pg_pool):
+        async with _client() as ac:
+            r = await ac.patch("/share/trips/notfound", json={"phase": "on_bus"})
     assert r.status_code == 404
 
 
-def test_get_status(client):
-    token = client.post("/share/trips", json={"destination": "Siebel", "phase": "walking", "eta_epoch": 9999999999}).json()["token"]
-    r = client.get(f"/share/trips/{token}/status")
+async def test_get_status(pg_pool):
+    with patch("main.get_pool", return_value=pg_pool):
+        async with _client() as ac:
+            token = (await ac.post("/share/trips", json={"destination": "Siebel", "phase": "walking", "eta_epoch": 9999999999})).json()["token"]
+            r = await ac.get(f"/share/trips/{token}/status")
     assert r.status_code == 200
     data = r.json()
     assert data["destination"] == "Siebel"
     assert data["expired"] is False
 
 
-def test_get_status_unknown_token_returns_expired(client):
-    r = client.get("/share/trips/unknownXX/status")
+async def test_get_status_unknown_token_returns_expired(pg_pool):
+    with patch("main.get_pool", return_value=pg_pool):
+        async with _client() as ac:
+            r = await ac.get("/share/trips/unknownXX/status")
     assert r.status_code == 200
     assert r.json()["expired"] is True
 
 
-def test_share_page_html(client):
-    token = client.post("/share/trips", json={"destination": "Siebel", "phase": "walking"}).json()["token"]
-    r = client.get(f"/t/{token}")
+async def test_share_page_html(pg_pool):
+    with patch("main.get_pool", return_value=pg_pool):
+        async with _client() as ac:
+            token = (await ac.post("/share/trips", json={"destination": "Siebel", "phase": "walking"})).json()["token"]
+            r = await ac.get(f"/t/{token}")
     assert r.status_code == 200
     assert "UIUC Bustle" in r.text
     assert token in r.text
