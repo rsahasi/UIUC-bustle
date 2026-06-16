@@ -17,7 +17,8 @@ venv/
 .DS_Store
 
 # Node / Expo
-node_modules/
+# No trailing slash so a stray `node_modules` symlink is ignored too, not just dirs.
+node_modules
 mobile/.expo/
 mobile/dist/
 mobile/.cache/
