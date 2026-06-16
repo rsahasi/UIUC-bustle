@@ -41,9 +41,5 @@ jobs:
         run: npm ci
       - name: Run tests
         run: node_modules/.bin/jest --ci --forceExit
-      # Non-blocking: ~25 pre-existing strict-mode type errors remain (app/(tabs)/
-      # index|map|schedule.tsx and a couple of real type mismatches). Flip to
-      # blocking once they're fixed — tracked in docs/PRODUCTION_READINESS.md.
-      - name: Typecheck (non-blocking)
-        continue-on-error: true
+      - name: Typecheck
         run: node_modules/.bin/tsc --noEmit

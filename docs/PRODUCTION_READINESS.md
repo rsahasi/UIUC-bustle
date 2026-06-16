@@ -6,9 +6,8 @@ and append a dated log entry below.
 
 ## Testing & CI
 - [x] GitHub Actions CI running backend `pytest` and mobile `tsc`/`jest` on every PR
-- [ ] Fix the ~25 mobile strict-mode TS errors (implicit-any in app/(tabs)/index|map|
-      schedule.tsx, plus real ones: route_short_name/walk_distance_m not on
-      RecommendationStep), then make the CI typecheck blocking
+- [x] Mobile typecheck is clean (resolved by the Expo 54 migration) and the CI
+      typecheck step is now blocking
 - [ ] Backend test coverage measured and reported (e.g. `pytest --cov`, fail under threshold)
 - [x] Mobile unit tests for core pure utils (distance, arriveBy, routeFormatting, crowding)
 - [ ] Integration test for the `/recommendation` happy path against a seeded GTFS db
@@ -75,4 +74,10 @@ and append a dated log entry below.
   arriveBy, routeFormatting, crowding); +4 tests for the startup GTFS->Postgres
   stops seeding (previously zero coverage); +2 tests for the MTD client retry/backoff
   and exhaustion paths. Backend 105 -> 111 passed; mobile 43 -> 63 passed.
+
+### 2026-06-15
+- Repo hygiene: untracked the stray mobile/node_modules symlink (pointed at a
+  foreign absolute path; broke on every checkout) and hardened the gitignore.
+- CI: flipped the mobile typecheck to blocking now that tsc is clean (0 errors)
+  after the Expo 54 migration.
 
