@@ -18,7 +18,11 @@ export function DepartureRow({ route, headsign, expectedMins, isRealtime }: Depa
       <Badge label={route} variant="route" size="sm" />
       <Text style={styles.headsign} numberOfLines={1}>{headsign}</Text>
       <View style={styles.right}>
-        {isRealtime && <Badge label="Live" variant="live" size="sm" />}
+        {isRealtime ? (
+          <Badge label="Live" variant="live" size="sm" />
+        ) : (
+          <Badge label="Scheduled" variant="info" size="sm" />
+        )}
         <Text style={[styles.countdown, (isNow || isSoon) && styles.countdownUrgent]}>{minsText}</Text>
       </View>
     </View>

@@ -28,6 +28,10 @@ export interface DepartureItem {
 export interface DeparturesResponse {
   stop_id: string;
   departures: DepartureItem[];
+  /** "realtime" if any departure is live, else "scheduled" (GTFS times only). */
+  source?: "realtime" | "scheduled";
+  /** epoch seconds when the server produced this response. */
+  generated_at?: number;
 }
 
 /** GET /buildings */
@@ -157,6 +161,8 @@ export interface RecommendationRequest {
 
 export interface RecommendationResponse {
   options: RecommendationOption[];
+  /** epoch seconds when the server produced this response (data-freshness signal). */
+  generated_at?: number;
 }
 
 /** POST /share/trips */

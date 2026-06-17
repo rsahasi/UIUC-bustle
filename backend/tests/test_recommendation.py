@@ -223,6 +223,7 @@ def test_post_recommendation_schema_and_stable(tmp_path):
     assert "options" in data
     assert isinstance(data["options"], list)
     assert len(data["options"]) >= 1
+    assert data.get("generated_at", 0) > 0  # freshness signal for the client
     for opt in data["options"]:
         assert opt["type"] in ("WALK", "BUS")
         assert "summary" in opt
