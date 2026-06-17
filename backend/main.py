@@ -630,7 +630,9 @@ async def get_departures(request: Request, stop_id: str, minutes: int = 60):
         )
     try:
         data = await client.get_departures_by_stop(stop_id=stop_id, minutes=minutes)
-        return DeparturesResponse(**data)
+        deps = data.get("departures", [])
+        source = "realtime" if any(d.get("is_realtime") for d in deps) else "scheduled"
+        return DeparturesResponse(**data, source=source, generated_at=int(time.time()))
     except RuntimeError as e:
         # Log the internal detail server-side, but return a generic message so we
         # never risk leaking the upstream request URL (which carries MTD_API_KEY).
@@ -1030,7 +1032,7 @@ async def post_recommendation(request: Request, body: RecommendationRequest, use
         except Exception:
             pass  # AI ranking failure is non-fatal
 
-    return RecommendationResponse(options=option_objects)
+    return RecommendationResponse(options=option_objects, generated_at=int(time.time()))
 
 
 # --- Walking directions proxy ---

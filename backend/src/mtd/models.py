@@ -17,6 +17,10 @@ class DepartureItem(BaseModel):
 class DeparturesResponse(BaseModel):
     stop_id: str
     departures: list[DepartureItem]
+    # "realtime" if any departure is live, else "scheduled" (GTFS times only).
+    # Lets the client honestly label stale/scheduled data.
+    source: str = "scheduled"
+    generated_at: int = 0  # epoch seconds when this response was produced
 
 
 class StopInfo(BaseModel):

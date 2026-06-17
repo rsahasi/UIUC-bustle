@@ -74,3 +74,4 @@ class RecommendationOption(BaseModel):
 
 class RecommendationResponse(BaseModel):
     options: list[RecommendationOption]
+    generated_at: int = 0  # epoch seconds; lets the client show data freshness / "updated Xm ago"
