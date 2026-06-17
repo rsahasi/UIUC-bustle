@@ -11,6 +11,8 @@ import { scheduleLeaveNowAlert, cancelLeaveNowAlert, cancelAllLeaveNowAlerts, bu
 import { addFavoriteStop, addFavoritePlace, getAfterLastClassPlaceId, getFavoritePlaces, type SavedPlace } from "@/src/storage/favorites";
 import { getPinnedRoutes, addPinnedRoute, removePinnedRoute, type PinnedRoute } from "@/src/storage/pinnedRoutes";
 import { getLastKnownHomeData, setLastKnownHomeData } from "@/src/storage/lastKnownHome";
+import { useNetworkStatus } from "@/src/utils/networkStatus";
+import { dataStatus } from "@/src/utils/freshness";
 import { setClassSummary, setClassRouteData } from "@/src/storage/classSummaryCache";
 import type { ClassRouteData } from "@/src/storage/classSummaryCache";
 import { buildRouteSummary, formatOptionLabel } from "@/src/utils/routeFormatting";
@@ -185,7 +187,8 @@ export default function HomeScreen() {
   const [afterLastClassRecs, setAfterLastClassRecs] = useState<RecommendationOption[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [highlightWalk, setHighlightWalk] = useState(false);
-  const [offlineBanner, setOfflineBanner] = useState(false);
+  const [bannerText, setBannerText] = useState<string | null>(null);
+  const { online } = useNetworkStatus();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -418,12 +421,19 @@ export default function HomeScreen() {
     }
   }, [departureQueries]);
 
-  // ── Offline banner ────────────────────────────────────────────────
+  // ── Offline / stale-data banner ───────────────────────────────────
+  // Honest state: when offline or the live fetch errors, show the age of the
+  // cached snapshot we're falling back to (or an empty state if there's none).
   useEffect(() => {
     const anyError = departureQueries.some(q => q.isError);
-    const hasNoData = departureQueries.every(q => q.data === undefined);
-    setOfflineBanner(anyError && hasNoData);
-  }, [departureQueries]);
+    const status = dataStatus({
+      online,
+      isError: anyError,
+      hasLiveData: online && !anyError,
+      cacheAgeMs: cachedHomeData ? Date.now() - cachedHomeData.savedAt : null,
+    });
+    setBannerText(status.banner);
+  }, [departureQueries, online, cachedHomeData]);
 
   // ── After-last-class place recommendations ────────────────────────
   useEffect(() => {
@@ -1096,9 +1106,9 @@ export default function HomeScreen() {
         )}
       </FadeInView>
 
-      {offlineBanner && (
+      {bannerText && (
         <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>Offline — showing last saved data.</Text>
+          <Text style={styles.offlineBannerText}>{bannerText}</Text>
           <Pressable onPress={onRefresh} accessibilityRole="button" accessibilityLabel="Retry loading">
             <Text style={styles.offlineBannerRetry}>Retry</Text>
           </Pressable>
