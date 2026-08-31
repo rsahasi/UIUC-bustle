@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchDepartures, fetchNearbyStops } from "@/src/api/client";
+import type { StopWithDistance } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 
 export function useDepartures(
@@ -8,7 +9,7 @@ export function useDepartures(
 ) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["departures", stopId],
+    queryKey: ["departures", stopId, apiBaseUrl],
     queryFn: () => fetchDepartures(apiBaseUrl, stopId, 60, { apiKey }),
     staleTime: 30_000,
     refetchInterval: 30_000,
@@ -19,11 +20,11 @@ export function useDepartures(
 export function useNearbyStops(
   lat: number,
   lng: number,
-  options?: { enabled?: boolean; placeholderData?: { stops: import("@/src/api/types").StopWithDistance[] } }
+  options?: { enabled?: boolean; placeholderData?: { stops: StopWithDistance[] } }
 ) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["nearby-stops", lat, lng],
+    queryKey: ["nearby-stops", lat, lng, apiBaseUrl],
     queryFn: () => fetchNearbyStops(apiBaseUrl, lat, lng, 800, { apiKey }),
     staleTime: 60_000,
     enabled:

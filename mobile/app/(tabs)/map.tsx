@@ -543,7 +543,6 @@ export default function MapScreen() {
   return (
     <View style={styles.container}>
       <MapView
-        key={`map-${mapCenter.lat}-${mapCenter.lng}`}
         ref={mapRef}
         style={styles.map}
         initialRegion={initialRegion}
@@ -569,6 +568,7 @@ export default function MapScreen() {
             title={selectedPlace.name}
             anchor={{ x: 0.5, y: 1.0 }}
             key="dest"
+            tracksViewChanges={false}
           >
             <View style={{ alignItems: 'center' }}>
               <View style={{
@@ -592,7 +592,11 @@ export default function MapScreen() {
           const ringColor = crowdingColor(crowding);
           return (
             <Marker
-              key={`vehicle-${v.vehicle_id}`}
+              // ringColor is baked into the bitmap, so key on it: the marker
+              // remounts (redrawing once) when crowding changes, instead of
+              // re-rasterizing on every frame to catch a color that rarely moves.
+              key={`vehicle-${v.vehicle_id}-${ringColor}`}
+              tracksViewChanges={false}
               coordinate={{ latitude: v.lat, longitude: v.lng }}
               title={`Bus ${v.route_id}`}
               description={v.headsign || undefined}

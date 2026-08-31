@@ -30,7 +30,14 @@ import { theme } from "@/src/constants/theme";
 import { getEntranceCoords } from "@/src/utils/buildingEntrance";
 
 const ARRIVAL_THRESHOLD_M = 30;
+// GPS accuracy degrades badly next to buildings, so the arrival radius grows with the
+// reported accuracy. The cap keeps a wildly wrong fix from triggering arrival blocks away.
+const MAX_ARRIVAL_THRESHOLD_M = 75;
 const OFF_ROUTE_THRESHOLD_M = 120;
+// A watch that stops delivering leaves the HUD frozen, so anything older than this counts as lost.
+const GPS_STALE_MS = 20_000;
+const GPS_STALE_CHECK_MS = 5_000;
+const WALK_ROUTE_RETRY_MS = 15_000;
 
 /** Minimum distance (meters) from point (pLat, pLng) to a line segment [(aLat,aLng)-(bLat,bLng)] */
 function distToSegmentM(
@@ -124,6 +131,7 @@ export default function WalkNavScreen() {
     params.bus_dep_epoch_ms ? parseInt(params.bus_dep_epoch_ms, 10) : null
   );
   const [busMissed, setBusMissed] = useState(false);
+  const [gpsStale, setGpsStale] = useState(false);
 
   const startTimeRef = useRef<number>(Date.now());
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
@@ -135,7 +143,12 @@ export default function WalkNavScreen() {
   const walkedDistanceMRef = useRef(0);
   const lastPositionRef = useRef<{ lat: number; lng: number } | null>(null);
   const walkingRouteFetchedRef = useRef(false);
+  const walkingRouteRetryAtRef = useRef(0);
   const navPhaseRef = useRef<NavPhase>("walking");
+  const busMissedRef = useRef(false);
+  const busMissedDismissedRef = useRef(false);
+  const lastFixAtRef = useRef<number | null>(null);
+  const shareToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Track current target for arrival detection
   const currentTargetRef = useRef<{ lat: number; lng: number }>({ lat: destLat, lng: destLng });
 
@@ -162,7 +175,8 @@ export default function WalkNavScreen() {
       await Share.share({ message: msg, url: result.url });
     } catch {
       setShareErrorToast("Couldn't reach share server — sharing directly");
-      setTimeout(() => setShareErrorToast(null), 2500);
+      if (shareToastTimerRef.current) clearTimeout(shareToastTimerRef.current);
+      shareToastTimerRef.current = setTimeout(() => setShareErrorToast(null), 2500);
       const msg = `Heading to ${body.destination}${routeId ? ` · Bus ${routeId}` : ""}`;
       await Share.share({ message: msg });
     }
@@ -176,6 +190,10 @@ export default function WalkNavScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     capture("walk_started", { walking_mode: modeId });
+  }, []);
+
+  useEffect(() => () => {
+    if (shareToastTimerRef.current) clearTimeout(shareToastTimerRef.current);
   }, []);
 
   // Keep navPhaseRef in sync
@@ -229,23 +247,34 @@ export default function WalkNavScreen() {
 
   // Pedometer
   useEffect(() => {
+    let cancelled = false;
+    let sub: { remove: () => void } | null = null;
     (async () => {
       const avail = await Pedometer.isAvailableAsync().catch(() => false);
+      // The await can resolve after teardown, and subscribing then would leave the
+      // subscription running with no reachable handle to remove it
+      if (cancelled) return;
       setPedometerAvailable(avail);
-      if (avail) {
-        pedometerSubRef.current = Pedometer.watchStepCount((result) => {
-          setStepCount(result.steps);
-        });
-      }
+      if (!avail) return;
+      const started = Pedometer.watchStepCount((result) => {
+        setStepCount(result.steps);
+      });
+      sub = started;
+      pedometerSubRef.current = started;
     })();
     return () => {
-      pedometerSubRef.current?.remove();
+      cancelled = true;
+      sub?.remove();
+      pedometerSubRef.current = null;
     };
   }, []);
 
   // Fetch walking route on first GPS fix or when off-route
   const fetchWalkRoute = useCallback(async (userLat: number, userLng: number, force = false) => {
     if (walkingRouteFetchedRef.current && !force) return;
+    // A failed attempt clears the guard so a later fix can retry, throttled so the
+    // 2 s location callback cannot hammer the routing server while it is down.
+    if (!force && Date.now() < walkingRouteRetryAtRef.current) return;
     walkingRouteFetchedRef.current = true;
     // Snap origin to UIUC if GPS is far away (simulator default = San Francisco)
     const UIUC_LAT = 40.102, UIUC_LNG = -88.2272;
@@ -261,8 +290,14 @@ export default function WalkNavScreen() {
       );
       if (res.coords.length > 1) {
         setWalkingRouteCoords(res.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
+      } else {
+        walkingRouteFetchedRef.current = false;
+        walkingRouteRetryAtRef.current = Date.now() + WALK_ROUTE_RETRY_MS;
       }
-    } catch {}
+    } catch {
+      walkingRouteFetchedRef.current = false;
+      walkingRouteRetryAtRef.current = Date.now() + WALK_ROUTE_RETRY_MS;
+    }
   }, [apiBaseUrl, apiKey, destLat, destLng]);
 
   // Fetch bus route shape + stops; used both at mount (preview) and on phase switch
@@ -324,104 +359,165 @@ export default function WalkNavScreen() {
     if (isBusMode) fetchBusData();
   }, [isBusMode, fetchBusData]);
 
+  // The location callback reads these through refs: apiBaseUrl, apiKey and weightKg all
+  // resolve from AsyncStorage a tick after mount, and depending on them directly would
+  // tear down and restart the GPS watch mid-walk.
+  const fetchWalkRouteRef = useRef(fetchWalkRoute);
+  const fetchBusDataRef = useRef(fetchBusData);
+  const weightKgRef = useRef(weightKg);
+  const apiRef = useRef({ apiBaseUrl, apiKey });
+  useEffect(() => {
+    fetchWalkRouteRef.current = fetchWalkRoute;
+    fetchBusDataRef.current = fetchBusData;
+    weightKgRef.current = weightKg;
+    apiRef.current = { apiBaseUrl, apiKey };
+  }, [fetchWalkRoute, fetchBusData, weightKg, apiBaseUrl, apiKey]);
+
+  // Keep busMissedRef in sync
+  useEffect(() => {
+    busMissedRef.current = busMissed;
+  }, [busMissed]);
+
   // Location tracking
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
+    let sub: Location.LocationSubscription | null = null;
     (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        setLocationError("Location permission denied. Cannot track walk.");
-        return;
-      }
-      locationSubRef.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 2000,
-          distanceInterval: 5,
-        },
-        (loc) => {
-          if (!mounted) return;
-          let { latitude, longitude } = loc.coords;
-          // Snap to UIUC if GPS is far away (simulator default = San Francisco)
-          if (haversineMeters(latitude, longitude, 40.102, -88.2272) > 100_000) {
-            latitude = 40.102;
-            longitude = -88.2272;
-          }
-          setUserLocation({ lat: latitude, lng: longitude });
-
-          // Fetch walking route on first fix
-          fetchWalkRoute(latitude, longitude);
-
-          const target = currentTargetRef.current;
-          const dist = Math.round(haversineMeters(latitude, longitude, target.lat, target.lng));
-          setDistanceM(dist);
-
-          // Accumulate walked distance (ignore GPS jumps > 100 m)
-          if (lastPositionRef.current) {
-            const delta = haversineMeters(
-              lastPositionRef.current.lat,
-              lastPositionRef.current.lng,
-              latitude,
-              longitude
-            );
-            if (delta < 100) {
-              walkedDistanceMRef.current += delta;
-              const met = MET_BY_MODE[modeId] ?? 2.8;
-              const walkedHours = walkedDistanceMRef.current / speedMps / 3600;
-              setCaloriesBurned(calcCalories(met, weightKg, walkedHours));
-            }
-          }
-          lastPositionRef.current = { lat: latitude, lng: longitude };
-
-          // Missed bus detection
-          if (busDepEpochMs && navPhaseRef.current === "walking" && Date.now() > busDepEpochMs + 30000 && !busMissed) {
-            setBusMissed(true);
-          }
-
-          // Off-route detection: if >120m from polyline, re-fetch OSRM route
-          if (
-            navPhaseRef.current === "walking" &&
-            !arrivedRef.current &&
-            !offRouteRefetchRef.current &&
-            walkingRouteCoordsRef.current.length > 1
-          ) {
-            const distToRoute = minDistToPolylineM(latitude, longitude, walkingRouteCoordsRef.current);
-            if (distToRoute > OFF_ROUTE_THRESHOLD_M) {
-              offRouteRefetchRef.current = true;
-              walkingRouteFetchedRef.current = false;
-              fetchWalkRoute(latitude, longitude, true).finally(() => {
-                offRouteRefetchRef.current = false;
-              });
-            }
-          }
-
-          if (dist <= ARRIVAL_THRESHOLD_M && !arrivedRef.current) {
-            const phase = navPhaseRef.current;
-            if (isBusMode && phase === "walking") {
-              // Arrived at boarding stop — switch to bus phase
-              arrivedRef.current = false; // reset so we can detect alighting stop arrival
-              if (shareTokenRef.current) {
-                patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "waiting" }, { apiKey: apiKey ?? undefined });
-              }
-              setNavPhase("bus");
-              // on_bus PATCH is sent by a separate useEffect watching navPhase === "bus"
-              currentTargetRef.current = { lat: alightingLat, lng: alightingLng };
-              setDistanceM(null);
-              fetchBusData();
-            } else {
-              // Pure walk arrival OR arrived at alighting stop
-              arrivedRef.current = true;
-              setArrived(true);
-            }
-          }
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (cancelled) return;
+        if (status !== "granted") {
+          setLocationError("Location permission denied. Cannot track walk.");
+          return;
         }
-      );
+        const started = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 2000,
+            distanceInterval: 5,
+          },
+          (loc) => {
+            if (cancelled) return;
+            lastFixAtRef.current = Date.now();
+            setGpsStale(false);
+            let { latitude, longitude } = loc.coords;
+            // Snap to UIUC if GPS is far away (simulator default = San Francisco)
+            if (haversineMeters(latitude, longitude, 40.102, -88.2272) > 100_000) {
+              latitude = 40.102;
+              longitude = -88.2272;
+            }
+            setUserLocation({ lat: latitude, lng: longitude });
+
+            // Fetch walking route on first fix
+            fetchWalkRouteRef.current(latitude, longitude);
+
+            const target = currentTargetRef.current;
+            const dist = Math.round(haversineMeters(latitude, longitude, target.lat, target.lng));
+            setDistanceM(dist);
+
+            // Accumulate walked distance (ignore GPS jumps > 100 m)
+            if (lastPositionRef.current) {
+              const delta = haversineMeters(
+                lastPositionRef.current.lat,
+                lastPositionRef.current.lng,
+                latitude,
+                longitude
+              );
+              if (delta < 100) {
+                walkedDistanceMRef.current += delta;
+                const met = MET_BY_MODE[modeId] ?? 2.8;
+                const walkedHours = walkedDistanceMRef.current / speedMps / 3600;
+                setCaloriesBurned(calcCalories(met, weightKgRef.current, walkedHours));
+              }
+            }
+            lastPositionRef.current = { lat: latitude, lng: longitude };
+
+            // Missed bus detection
+            if (
+              busDepEpochMs &&
+              navPhaseRef.current === "walking" &&
+              Date.now() > busDepEpochMs + 30000 &&
+              !busMissedRef.current &&
+              !busMissedDismissedRef.current
+            ) {
+              busMissedRef.current = true;
+              setBusMissed(true);
+            }
+
+            // Off-route detection: if >120m from polyline, re-fetch OSRM route
+            if (
+              navPhaseRef.current === "walking" &&
+              !arrivedRef.current &&
+              !offRouteRefetchRef.current &&
+              walkingRouteCoordsRef.current.length > 1
+            ) {
+              const distToRoute = minDistToPolylineM(latitude, longitude, walkingRouteCoordsRef.current);
+              if (distToRoute > OFF_ROUTE_THRESHOLD_M) {
+                offRouteRefetchRef.current = true;
+                walkingRouteFetchedRef.current = false;
+                fetchWalkRouteRef.current(latitude, longitude, true).finally(() => {
+                  offRouteRefetchRef.current = false;
+                });
+              }
+            }
+
+            // A degraded fix can sit tens of meters off the true position, so trust the
+            // reading's own accuracy estimate instead of waiting for a 30 m fix that
+            // never arrives next to a building
+            const reportedAccuracyM = loc.coords.accuracy != null && loc.coords.accuracy > 0 ? loc.coords.accuracy : 0;
+            const arrivalThresholdM = Math.min(ARRIVAL_THRESHOLD_M + reportedAccuracyM, MAX_ARRIVAL_THRESHOLD_M);
+
+            if (dist <= arrivalThresholdM && !arrivedRef.current) {
+              const phase = navPhaseRef.current;
+              if (isBusMode && phase === "walking") {
+                // Arrived at boarding stop — switch to bus phase
+                arrivedRef.current = false; // reset so we can detect alighting stop arrival
+                const { apiBaseUrl: base, apiKey: key } = apiRef.current;
+                if (shareTokenRef.current) {
+                  patchShareTrip(base, shareTokenRef.current, { phase: "waiting" }, { apiKey: key ?? undefined });
+                }
+                setNavPhase("bus");
+                // on_bus PATCH is sent by a separate useEffect watching navPhase === "bus"
+                currentTargetRef.current = { lat: alightingLat, lng: alightingLng };
+                setDistanceM(null);
+                fetchBusDataRef.current();
+              } else {
+                // Pure walk arrival OR arrived at alighting stop
+                arrivedRef.current = true;
+                setArrived(true);
+              }
+            }
+          }
+        );
+        // The awaits above can resolve after teardown, which would strand the watch and
+        // leave the GPS radio on for the lifetime of the process
+        if (cancelled) {
+          started.remove();
+          return;
+        }
+        sub = started;
+        locationSubRef.current = started;
+      } catch {
+        if (!cancelled) setLocationError("Couldn't start location tracking. Distance and ETA are unavailable.");
+      }
     })();
     return () => {
-      mounted = false;
-      locationSubRef.current?.remove();
+      cancelled = true;
+      sub?.remove();
+      locationSubRef.current = null;
     };
-  }, [destLat, destLng, isBusMode, alightingLat, alightingLng, fetchWalkRoute, fetchBusData, modeId, speedMps, weightKg]);
+  }, [destLat, destLng, isBusMode, alightingLat, alightingLng, modeId, speedMps, busDepEpochMs]);
+
+  // Without a watchdog a watch that silently stops delivering leaves distance and ETA
+  // frozen at their last values while still rendering as live
+  useEffect(() => {
+    if (arrived) return;
+    const staleCheck = setInterval(() => {
+      const last = lastFixAtRef.current;
+      setGpsStale(last != null && Date.now() - last > GPS_STALE_MS);
+    }, GPS_STALE_CHECK_MS);
+    return () => clearInterval(staleCheck);
+  }, [arrived]);
 
   // Show completion modal on arrival + fetch encouragement
   useEffect(() => {
@@ -458,6 +554,29 @@ export default function WalkNavScreen() {
     }
   }, [arrived, showCompletion, capture, apiBaseUrl, apiKey, modeId, caloriesBurned, destName]);
 
+  // Manual arrival takes the same path the GPS threshold crossing takes, so the trip is
+  // still recorded when the fix is too coarse to ever cross it. In bus mode the walking leg
+  // ends at the boarding stop, so tapping this during that leg must advance to the bus phase
+  // exactly like the automatic branch does; ending the whole trip there would drop the bus
+  // leg and write an activity entry for a trip that has not happened.
+  const markArrived = useCallback(() => {
+    if (arrivedRef.current) return;
+    if (isBusMode && navPhaseRef.current === "walking") {
+      const { apiBaseUrl: base, apiKey: key } = apiRef.current;
+      if (shareTokenRef.current) {
+        patchShareTrip(base, shareTokenRef.current, { phase: "waiting" }, { apiKey: key ?? undefined });
+      }
+      setNavPhase("bus");
+      // on_bus PATCH is sent by a separate useEffect watching navPhase === "bus"
+      currentTargetRef.current = { lat: alightingLat, lng: alightingLng };
+      setDistanceM(null);
+      fetchBusDataRef.current();
+      return;
+    }
+    arrivedRef.current = true;
+    setArrived(true);
+  }, [isBusMode, alightingLat, alightingLng]);
+
   const finishWalk = useCallback(async () => {
     await addActivityEntry({
       date: todayDateString(),
@@ -480,6 +599,10 @@ export default function WalkNavScreen() {
     if (vehiclePollRef.current) clearInterval(vehiclePollRef.current);
     router.back();
   }, [router]);
+
+  // The button advances the phase during the bus-mode walking leg and completes the trip
+  // otherwise, so the label has to say which one the tap will do.
+  const manualArrivalLabel = isBusMode && navPhase === "walking" ? "I'm at the stop" : "I've arrived";
 
   const target = currentTargetRef.current;
   const etaSeconds = distanceM != null && speedMps > 0 ? Math.round(distanceM / speedMps) : null;
@@ -685,6 +808,7 @@ export default function WalkNavScreen() {
                 coordinate={{ latitude: s.lat, longitude: s.lng }}
                 title={s.stop_name}
                 anchor={{ x: 0.5, y: 0.5 }}
+                tracksViewChanges={false}
               >
                 <View style={{
                   width: 22, height: 22, borderRadius: 11,
@@ -700,6 +824,7 @@ export default function WalkNavScreen() {
                 coordinate={{ latitude: s.lat, longitude: s.lng }}
                 title={s.stop_name}
                 anchor={{ x: 0.5, y: 0.5 }}
+                tracksViewChanges={false}
               >
                 <View style={{
                   width: 14, height: 14, borderRadius: 7,
@@ -761,7 +886,14 @@ export default function WalkNavScreen() {
       {busMissed && (
         <View style={styles.missedBusBanner}>
           <Text style={styles.missedBusText}>Bus departed — continue walking to destination</Text>
-          <Pressable onPress={() => setBusMissed(false)} style={styles.missedBusDismiss}>
+          <Pressable
+            onPress={() => {
+              busMissedDismissedRef.current = true;
+              busMissedRef.current = false;
+              setBusMissed(false);
+            }}
+            style={styles.missedBusDismiss}
+          >
             <Text style={styles.missedBusDismissText}>Got it</Text>
           </Pressable>
         </View>
@@ -771,6 +903,14 @@ export default function WalkNavScreen() {
       <View style={styles.hud}>
         <View style={styles.hudHeader}>
           <Pressable
+            accessibilityLabel={manualArrivalLabel}
+            accessibilityRole="button"
+            onPress={markArrived}
+            style={styles.hudArrivedBtn}
+          >
+            <Text style={styles.hudArrivedBtnText}>{manualArrivalLabel}</Text>
+          </Pressable>
+          <Pressable
             accessibilityLabel="Share trip"
             accessibilityRole="button"
             onPress={handleWalkNavShare}
@@ -779,18 +919,23 @@ export default function WalkNavScreen() {
             <Share2 size={18} color={theme.colors.navy} />
           </Pressable>
         </View>
+        {gpsStale && (
+          <Text style={styles.gpsStaleNotice}>
+            GPS signal lost — showing last known position
+          </Text>
+        )}
         {navPhase === "walking" ? (
           <>
             <View style={styles.hudRow}>
               <View style={styles.hudCell}>
                 <Text style={styles.hudLabel}>Distance</Text>
-                <Text style={styles.hudValue}>
+                <Text style={[styles.hudValue, gpsStale && styles.hudValueStale]}>
                   {distanceM != null ? formatDistance(distanceM) : "—"}
                 </Text>
               </View>
               <View style={styles.hudCell}>
                 <Text style={styles.hudLabel}>ETA</Text>
-                <Text style={styles.hudValue}>
+                <Text style={[styles.hudValue, gpsStale && styles.hudValueStale]}>
                   {etaMinutes != null ? `${etaMinutes} min` : "—"}
                 </Text>
               </View>
@@ -822,7 +967,7 @@ export default function WalkNavScreen() {
             <View style={styles.hudRow}>
               <View style={styles.hudCell}>
                 <Text style={styles.hudLabel}>Dist to stop</Text>
-                <Text style={styles.hudValue}>
+                <Text style={[styles.hudValue, gpsStale && styles.hudValueStale]}>
                   {distanceM != null ? formatDistance(distanceM) : "—"}
                 </Text>
               </View>
@@ -961,7 +1106,25 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: theme.radius.lg,
     borderTopRightRadius: theme.radius.lg,
   },
-  hudHeader: { flexDirection: "row", justifyContent: "flex-end", marginBottom: 8 },
+  hudHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  hudArrivedBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    backgroundColor: theme.colors.orange,
+  },
+  hudArrivedBtnText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_700Bold" },
+  gpsStaleNotice: {
+    fontSize: 12,
+    fontFamily: "DMSans_600SemiBold",
+    color: "#fff",
+    backgroundColor: "rgba(220,38,38,0.9)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginBottom: 8,
+    textAlign: "center",
+  },
   hudShareBtn: {
     width: 36,
     height: 36,
@@ -974,6 +1137,7 @@ const styles = StyleSheet.create({
   hudCell: { alignItems: "center" },
   hudLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", marginBottom: 2 },
   hudValue: { fontSize: 20, fontFamily: "DMSans_700Bold", color: "#fff" },
+  hudValueStale: { color: "rgba(255,255,255,0.45)" },
   hudMode: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", textAlign: "center", marginBottom: 4 },
   hudDest: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange, textAlign: "center" },
   cancelBtn: {

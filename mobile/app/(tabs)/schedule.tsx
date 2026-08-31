@@ -2,6 +2,7 @@ import * as Haptics from 'expo-haptics';
 import {
   fetchPlaceDetails,
 } from "@/src/api/client";
+import { cancelLeaveNowAlert } from "@/src/notifications/leaveNow";
 import { cancelClassReminder } from "@/src/notifications/classReminders";
 import { disableClassNotif, enableClassNotif, getDisabledClassIds } from "@/src/storage/classNotifPrefs";
 import { getClassRouteData, type ClassRouteData } from "@/src/storage/classSummaryCache";
@@ -379,6 +380,13 @@ export default function ScheduleScreen() {
         style: "destructive",
         onPress: () => {
           deleteClassMutation(c.class_id, {
+            onSuccess: () => {
+              // Without this the class's pending reminders keep firing on
+              // schedule — the Home screen's rescheduler is throttled and
+              // keyed on class IDs, so a delete can go unnoticed for minutes.
+              void cancelClassReminder(c.class_id);
+              void cancelLeaveNowAlert(c.class_id);
+            },
             onError: (e) => {
               Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete");
             },

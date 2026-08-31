@@ -1,7 +1,7 @@
 import { fetchBuildings, fetchRecommendation } from "@/src/api/client";
 import { refreshWidgetData } from "@/src/tasks/widgetRefresh";
 import { cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
-import { scheduleLeaveNowAlert, cancelAllLeaveNowAlerts } from "@/src/notifications/leaveNow";
+import { scheduleLeaveNowAlert } from "@/src/notifications/leaveNow";
 import { getStoredApiKey } from "@/src/storage/apiKey";
 import { getStoredApiBaseUrl } from "@/src/storage/apiUrl";
 import { getClassNotificationsEnabled } from "@/src/storage/classNotifications";
@@ -92,8 +92,12 @@ TaskManager.defineTask(NOTIFICATION_REFRESH_TASK, async () => {
       for (const b of bRes.buildings ?? []) buildingMap[b.building_id] = b.name;
     } catch {}
 
+    // NOTE: cancelAllLeaveNowAlerts() must NOT run here. scheduleLeaveNowAlert
+    // above re-anchors the leave-now alert to the live departure time, and
+    // scheduleClassReminders only writes `class-*` identifiers — so cancelling
+    // at this point deleted the alert just created and nothing restored it.
+    // scheduleLeaveNowAlert already cancels its own identifier before writing.
     await cancelAllClassReminders();
-    await cancelAllLeaveNowAlerts();
     await scheduleClassReminders(classes as Parameters<typeof scheduleClassReminders>[0], buildingMap, walkingSpeedMps, bufferMinutes);
 
     // Also refresh widget data in background

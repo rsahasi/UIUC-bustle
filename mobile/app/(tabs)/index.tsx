@@ -5,7 +5,7 @@ import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsE
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { useLeaveBy } from "@/src/hooks/useLeaveBy";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
-import type { DepartureItem, RecommendationOption, RecommendationStep, ShareTripRequest, StopInfo } from "@/src/api/types";
+import type { DepartureItem, RecommendationOption, RecommendationStep, ShareTripRequest, StopWithDistance } from "@/src/api/types";
 import { cancelClassReminder, cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
 import { scheduleLeaveNowAlert, cancelLeaveNowAlert, cancelAllLeaveNowAlerts, buildLeaveNowBody } from "@/src/notifications/leaveNow";
 import { addFavoriteStop, addFavoritePlace, getAfterLastClassPlaceId, getFavoritePlaces, type SavedPlace } from "@/src/storage/favorites";
@@ -118,8 +118,6 @@ function LiveBadge() {
   );
 }
 
-type StopWithDistance = StopInfo & { distance_m: number };
-
 function optionCardTitle(index: number, opt: RecommendationOption): string {
   if (opt.type === "WALK") return "Walk";
   if (index === 0) return "Best option";
@@ -181,7 +179,6 @@ export default function HomeScreen() {
   const [afterLastClassRecs, setAfterLastClassRecs] = useState<RecommendationOption[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [highlightWalk, setHighlightWalk] = useState(false);
-  const [offlineBanner, setOfflineBanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -200,7 +197,6 @@ export default function HomeScreen() {
   const [searchDestPinned, setSearchDestPinned] = useState(false);
   const [leaveNowBanner, setLeaveNowBanner] = useState<{ option: RecommendationOption; classTitle: string } | null>(null);
   const [routeSort, setRouteSort] = useState<'earliest' | 'fastest' | 'least-walk'>('earliest');
-  const [departuresFetchedAt, setDeparturesFetchedAt] = useState<number | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const recommendationsY = useRef(0);
@@ -222,23 +218,40 @@ export default function HomeScreen() {
 
   // Classes — shared TQ cache (same key as useLeaveBy — zero duplicate requests)
   const { data: classesData } = useClasses();
-  const scheduleClasses = classesData?.classes ?? [];
+  const scheduleClasses = useMemo(() => classesData?.classes ?? [], [classesData]);
 
   const nextUp = getNextClassToday(scheduleClasses);
 
   // Nearby stops — depends on location
+  const placeholderStops = useMemo(
+    () => (cachedHomeData ? { stops: cachedHomeData.stops } : undefined),
+    [cachedHomeData]
+  );
   const { data: nearbyStopsData } = useNearbyStops(
     location?.lat ?? 0,
     location?.lng ?? 0,
     {
       enabled: !!location && location.lat !== 0,
-      placeholderData: cachedHomeData ? { stops: cachedHomeData.stops } : undefined,
+      placeholderData: placeholderStops,
     }
   );
-  const stops = (nearbyStopsData?.stops ?? []).slice(0, TOP_STOPS) as StopWithDistance[];
+  // The backend sorts by distance but never returns it, so measure it here.
+  const stops: StopWithDistance[] = useMemo(
+    () =>
+      (nearbyStopsData?.stops ?? [])
+        .map((s) => ({
+          ...s,
+          distance_m: Math.round(haversineMeters(location?.lat ?? 0, location?.lng ?? 0, s.lat, s.lng)),
+        }))
+        .sort((a, b) => a.distance_m - b.distance_m)
+        .slice(0, TOP_STOPS),
+    [nearbyStopsData, location]
+  );
 
-  // Departures — one query per stop, all in parallel
-  const departureQueries = useQueries({
+  // Departures — one query per stop, all in parallel. `combine` collapses the
+  // per-query results into a value with a stable identity (replaceEqualDeep),
+  // so downstream memos and effects only re-run when the data actually changes.
+  const departures = useQueries({
     queries: stops.map((stop) => ({
       queryKey: ["departures", stop.stop_id],
       queryFn: () => fetchDepartures(apiBaseUrl, stop.stop_id, 60, { apiKey }),
@@ -246,14 +259,26 @@ export default function HomeScreen() {
       refetchInterval: 30_000,
       enabled: !!apiBaseUrl && !!stop.stop_id,
     })),
+    combine: (results) => {
+      const byStop: Record<string, DepartureItem[]> = {};
+      const updatedAtByStop: Record<string, number> = {};
+      results.forEach((q, i) => {
+        const stop = stops[i];
+        if (!stop) return;
+        byStop[stop.stop_id] = q.data?.departures ?? [];
+        updatedAtByStop[stop.stop_id] = q.dataUpdatedAt;
+      });
+      return {
+        byStop,
+        updatedAtByStop,
+        isPending: results.some((q) => q.isPending),
+        isError: results.some((q) => q.isError),
+        hasData: results.some((q) => q.data !== undefined),
+      };
+    },
   });
-
-  // Build departuresByStop map from query results
-  const departuresByStop: Record<string, DepartureItem[]> = {};
-  departureQueries.forEach((q, i) => {
-    const stop = stops[i];
-    if (stop) departuresByStop[stop.stop_id] = q.data?.departures ?? [];
-  });
+  const departuresByStop = departures.byStop;
+  const offlineBanner = departures.isError && !departures.hasData;
 
   // Recommendation params
   const recParams = useMemo(() => {
@@ -280,7 +305,7 @@ export default function HomeScreen() {
   }, [scheduleClasses, location, walkingSpeedMps, bufferMinutes, rainMode]);
 
   const { data: recData } = useRecommendation(recParams);
-  const recommendations = recData?.options ?? [];
+  const recommendations = useMemo(() => recData?.options ?? [], [recData]);
 
   // Autocomplete — replaces the debounced fetchAutocomplete useEffect
   const [suppressAutocomplete, setSuppressAutocomplete] = useState(false);
@@ -401,20 +426,6 @@ export default function HomeScreen() {
     scheduleLeaveNowAlert(nextClass.class_id, nextClass.title, best).catch(() => {});
     setLeaveNowBanner(best.depart_in_minutes <= 2 ? { option: best, classTitle: nextClass.title } : null);
   }, [recommendations, classNotificationsEnabled, scheduleClasses]);
-
-  // ── Departures timestamp tracking ─────────────────────────────────
-  useEffect(() => {
-    if (departureQueries.some(q => q.isSuccess)) {
-      setDeparturesFetchedAt(Date.now());
-    }
-  }, [departureQueries]);
-
-  // ── Offline banner ────────────────────────────────────────────────
-  useEffect(() => {
-    const anyError = departureQueries.some(q => q.isError);
-    const hasNoData = departureQueries.every(q => q.data === undefined);
-    setOfflineBanner(anyError && hasNoData);
-  }, [departureQueries]);
 
   // ── After-last-class place recommendations ────────────────────────
   useEffect(() => {
@@ -697,7 +708,7 @@ export default function HomeScreen() {
     if (!nextClassStartTime) return 'on-time';
     const [h, m] = nextClassStartTime.split(':').map(Number);
     const classMins = (h ?? 0) * 60 + (m ?? 0);
-    const arrivalMins = nowMins + opt.depart_in_minutes + opt.eta_minutes;
+    const arrivalMins = nowMins + opt.eta_minutes;
     const margin = classMins - arrivalMins;
     if (margin >= 5) return 'on-time';
     if (margin >= 0) return 'tight';
@@ -861,6 +872,7 @@ export default function HomeScreen() {
     <ScrollView
       ref={scrollRef}
       contentContainerStyle={styles.scrollContent}
+      keyboardShouldPersistTaps="handled"
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.navy} />
       }
@@ -1137,6 +1149,16 @@ export default function HomeScreen() {
         </View>
       )}
 
+      {/* Search resolved but the backend had no route to offer */}
+      {searchDestinationName && searchResults.length === 0 && !searchLoading && !searchError && (
+        <View style={styles.searchEmptyCard}>
+          <Text style={styles.searchEmptyTitle}>No routes found</Text>
+          <Text style={styles.searchEmptyText}>
+            Nothing runs to {searchDestinationName.split(",")[0]} right now. Try again later, or search for a nearby landmark instead.
+          </Text>
+        </View>
+      )}
+
       {/* Leave By Smart Card */}
       {leaveBy.nextClass && leaveBy.options.length > 0 && (
         <View style={styles.leaveByCard}>
@@ -1355,7 +1377,7 @@ export default function HomeScreen() {
               const [ch, cm] = nextUp.start_time_local.split(':').map(Number);
               const classMins = (ch ?? 0) * 60 + (cm ?? 0);
               const bestBus = busOpts.reduce((a, b) => a.eta_minutes < b.eta_minutes ? a : b);
-              const arrivalMins = nowMins + bestBus.depart_in_minutes + bestBus.eta_minutes;
+              const arrivalMins = nowMins + bestBus.eta_minutes;
               const margin = classMins - arrivalMins;
               const destContainsClass = searchDestinationName
                 ? nextUp.title.toLowerCase().split(' ').some((w) => w.length > 3 && searchDestinationName.toLowerCase().includes(w))
@@ -1382,64 +1404,71 @@ export default function HomeScreen() {
 
       {/* Nearby stops */}
       <Text style={styles.stopsSectionTitle}>Nearby stops</Text>
-      {stops.length > 0 && Object.keys(departuresByStop).every((id) => (departuresByStop[id]?.length ?? 0) === 0) && (
-        <View style={styles.mtdHint}>
-          <Text style={styles.mtdHintText}>No upcoming departures at nearby stops. Buses may not be running at this time.</Text>
-        </View>
-      )}
+      {stops.length > 0 &&
+        !departures.isPending &&
+        !departures.isError &&
+        departures.hasData &&
+        stops.every((s) => (departuresByStop[s.stop_id]?.length ?? 0) === 0) && (
+          <View style={styles.mtdHint}>
+            <Text style={styles.mtdHintText}>No upcoming departures at nearby stops. Buses may not be running at this time.</Text>
+          </View>
+        )}
       {stops.length === 0 ? (
         <Text style={styles.empty}>No nearby stops in range.</Text>
       ) : (
-        stops.map((stop) => (
-          <View key={stop.stop_id} style={styles.card}>
-            <View style={styles.stopCardHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.stopName}>{stop.stop_name}</Text>
-                <Text style={styles.distance}>{formatDistance(stop.distance_m)} away</Text>
+        stops.map((stop) => {
+          const fetchedAt = departures.updatedAtByStop[stop.stop_id] ?? 0;
+          return (
+            <View key={stop.stop_id} style={styles.card}>
+              <View style={styles.stopCardHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.stopName}>{stop.stop_name}</Text>
+                  <Text style={styles.distance}>{formatDistance(stop.distance_m)} away</Text>
+                </View>
+                <Pressable
+                  style={styles.favoriteStopBtn}
+                  onPress={() => addFavoriteStop({ stop_id: stop.stop_id, stop_name: stop.stop_name })}
+                >
+                  <Star size={16} color="rgba(255,255,255,0.5)" />
+                </Pressable>
               </View>
-              <Pressable
-                style={styles.favoriteStopBtn}
-                onPress={() => addFavoriteStop({ stop_id: stop.stop_id, stop_name: stop.stop_name })}
-              >
-                <Star size={16} color="rgba(255,255,255,0.5)" />
-              </Pressable>
+              <View style={styles.departures}>
+                {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
+                  <Text style={styles.depText}>No departures</Text>
+                ) : (
+                  (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
+                    const isStale = d.is_realtime && fetchedAt > 0 && Date.now() - fetchedAt > 2 * 60 * 1000;
+                    const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
+                    const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
+                    const hasExtras = isStale || showDelayed || showEarly;
+                    return (
+                      <View key={i}>
+                        <Pressable
+                          onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
+                          accessibilityLabel={`Track route ${d.route}`}
+                        >
+                          <DepartureRow
+                            route={d.route}
+                            headsign={d.headsign || "—"}
+                            expectedMins={d.expected_mins}
+                            isRealtime={d.is_realtime && !isStale}
+                          />
+                        </Pressable>
+                        {hasExtras && (
+                          <View style={styles.depExtrasRow}>
+                            {isStale && <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>}
+                            {showDelayed && <Badge label={`+${d.delay_mins}m`} variant="delayed" size="sm" />}
+                            {showEarly && <Badge label={`${Math.abs(d.delay_mins!)}m early`} variant="early" size="sm" />}
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })
+                )}
+              </View>
             </View>
-            <View style={styles.departures}>
-              {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
-                <Text style={styles.depText}>No departures</Text>
-              ) : (
-                (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
-                  const isStale = d.is_realtime && departuresFetchedAt != null && Date.now() - departuresFetchedAt > 2 * 60 * 1000;
-                  const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
-                  const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
-                  const hasExtras = isStale || showDelayed || showEarly;
-                  return (
-                    <View key={i}>
-                      <Pressable
-                        onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
-                        accessibilityLabel={`Track route ${d.route}`}
-                      >
-                        <DepartureRow
-                          route={d.route}
-                          headsign={d.headsign || "—"}
-                          expectedMins={d.expected_mins}
-                          isRealtime={d.is_realtime && !isStale}
-                        />
-                      </Pressable>
-                      {hasExtras && (
-                        <View style={styles.depExtrasRow}>
-                          {isStale && <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>}
-                          {showDelayed && <Badge label={`+${d.delay_mins}m`} variant="delayed" size="sm" />}
-                          {showEarly && <Badge label={`${Math.abs(d.delay_mins!)}m early`} variant="early" size="sm" />}
-                        </View>
-                      )}
-                    </View>
-                  );
-                })
-              )}
-            </View>
-          </View>
-        ))
+          );
+        })
       )}
     </ScrollView>
   );
@@ -1500,6 +1529,17 @@ const styles = StyleSheet.create({
   searchBtnDisabled: { opacity: 0.7 },
   searchBtnText: { color: "#fff", fontFamily: "DMSans_600SemiBold", fontSize: 16 },
   searchError: { color: theme.colors.error, fontFamily: "DMSans_400Regular", fontSize: 13, marginTop: 8 },
+
+  // Empty search results
+  searchEmptyCard: {
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.lg,
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: theme.spacing.lg,
+  },
+  searchEmptyTitle: { fontFamily: "DMSans_700Bold", fontSize: 15, color: theme.colors.text, marginBottom: 4 },
+  searchEmptyText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary, lineHeight: 19 },
 
   // Schedule section divider (separates search results from class block)
   scheduleSectionDivider: {

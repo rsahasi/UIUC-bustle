@@ -16,12 +16,12 @@ import {
 import { DMSerifDisplay_400Regular } from "@expo-google-fonts/dm-serif-display";
 import { useFonts } from "expo-font";
 import { Redirect, Stack, useSegments } from "expo-router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { useAuth } from "@/src/auth/useAuth";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as TaskManager from 'expo-task-manager';
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import * as Sentry from "@sentry/react-native";
 import { PostHogProvider, usePostHog } from "posthog-react-native";
 
@@ -70,7 +70,9 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 30_000,
       gcTime: 300_000,
-      retry: 1,
+      // fetchWithRetry already retries with backoff; a second layer here multiplies both
+      // the request count and the time a failing query takes to settle.
+      retry: false,
     },
   },
 });
@@ -109,9 +111,23 @@ export default function RootLayout() {
     refreshWidgetData();
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') refreshWidgetData();
+      // React Native has no window focus event, so React Query needs AppState to know
+      // whether to honour refetchOnWindowFocus and to stop polling in the background.
+      focusManager.setFocused(state === 'active');
     });
     return () => sub.remove();
   }, []);
+
+  const lastUserIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (authLoading) return;
+    const userId = user?.id ?? null;
+    // Cached responses belong to whoever was signed in; the next account must not read them.
+    if (lastUserIdRef.current !== undefined && lastUserIdRef.current !== userId) {
+      queryClient.clear();
+    }
+    lastUserIdRef.current = userId;
+  }, [authLoading, user?.id]);
 
   useEffect(() => {
     if (fontsLoaded && !authLoading) {

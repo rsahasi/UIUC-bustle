@@ -11,7 +11,7 @@ export function useRecommendation(
   return useQuery({
     // Spread params object into key so any param change busts the cache.
     // TQ v5 deep-serializes objects in query keys.
-    queryKey: params ? ["recommendation", params] : ["recommendation"],
+    queryKey: params ? ["recommendation", params, apiBaseUrl] : ["recommendation", null, apiBaseUrl],
     queryFn: () => fetchRecommendation(apiBaseUrl, params!, { apiKey }),
     staleTime: 30_000,
     refetchInterval: 30_000,
