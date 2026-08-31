@@ -50,6 +50,28 @@ async def search_nearby(
     return stops[:limit]
 
 
+async def upsert_stops(
+    pool: asyncpg.Pool,
+    stops: "list[StopRecord]",
+) -> int:
+    """Bulk-upsert stops in one statement. Returns the number of rows written.
+
+    Loaders run over ~1000 stops, so issuing one round trip per row is the
+    difference between a second and a minute.
+    """
+    if not stops:
+        return 0
+    await pool.executemany(
+        """
+        INSERT INTO stops (stop_id, stop_name, lat, lng)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (stop_id) DO UPDATE SET stop_name = $2, lat = $3, lng = $4
+        """,
+        [(s.stop_id, s.stop_name, s.lat, s.lng) for s in stops],
+    )
+    return len(stops)
+
+
 async def upsert_stop(
     pool: asyncpg.Pool,
     stop_id: str,

@@ -18,10 +18,22 @@ from pathlib import Path
 backend = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(backend))
 
-from src.data.buildings_repo import init_app_db
 
 
 def main() -> int:
+    # init_app_db was removed in the asyncpg migration and this script was never
+    # ported, so it raised ImportError on every invocation. Buildings live in
+    # PostgreSQL now; seed them from OpenStreetMap instead.
+    print(
+        "seed_buildings.py is not available.\n\n"
+        "Buildings are stored in PostgreSQL. Seed them with:\n"
+        "    python scripts/seed_buildings_from_osm.py\n",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _unported_main() -> int:
     parser = argparse.ArgumentParser(description="Seed buildings (and init app DB)")
     parser.add_argument(
         "--csv",
