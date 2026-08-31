@@ -6,7 +6,10 @@ Copy and adjust for production. Development defaults are fine for local use.
 
 | Variable | Default | Production |
 |---------|---------|------------|
-| `CORS_ORIGINS` | `*` | Comma-separated origins, e.g. `https://yourapp.com` |
+| `DATABASE_URL` | (empty) | **Required.** PostgreSQL URL; every DB route 503s without it |
+| `SUPABASE_JWT_SECRET` | (empty) | **Required** for authenticated routes |
+| `DATA_DIR` | `<backend>/data` | Set to the mounted volume, e.g. `/mnt/data` |
+| `CORS_ORIGINS` | (empty — denies all) | Comma-separated origins, e.g. `https://yourapp.com` |
 | `API_KEY_REQUIRED` | `false` | `true` to require API key |
 | `API_KEYS` | (empty) | Comma-separated keys when `API_KEY_REQUIRED=true` |
 | `DEBUG` | `false` | Keep `false` |
@@ -20,7 +23,8 @@ Copy and adjust for production. Development defaults are fine for local use.
 
 ## CORS
 
-- **Development**: `CORS_ORIGINS=*` (default).
+- **Default**: empty, which allows **no** cross-origin requests. In debug mode
+  localhost origins are added automatically; there is no `*` default.
 - **Production**: Set `CORS_ORIGINS` to a comma-separated list of allowed origins (no spaces), e.g.:
   ```bash
   CORS_ORIGINS=https://yourapp.com,https://admin.yourapp.com
@@ -38,7 +42,8 @@ When you need to restrict access or support multiple tenants:
    ```
 2. Clients must send one of:
    - Header: `X-API-Key: your-secret-key`
-   - Header: `Authorization: Bearer your-secret-key`
+   (`Authorization: Bearer ...` is **not** accepted for the API key: that header
+   carries the Supabase JWT and is deliberately never treated as an API key.)
 3. **Exempt paths** (no key required): `/health`, `/metrics`.
 4. Invalid or missing key → `401` with `{"detail": "Invalid or missing API key. Provide X-API-Key or Authorization: Bearer <key>."}`.
 
@@ -63,11 +68,18 @@ When you need to restrict access or support multiple tenants:
    - `MTD_API_KEY=<your key>`
    - `CLAUDE_API_KEY=<your key>`
    - `SENTRY_DSN=<your dsn>` (optional)
-   - `APP_DB_PATH=/mnt/data/app.db`
-   - `STOPS_DB_PATH=/mnt/data/stops.db`
+   - `DATABASE_URL=<Railway Postgres URL>`
+   - `SUPABASE_JWT_SECRET=<Supabase JWT secret>`
+   - `DATA_DIR=/mnt/data`  (share links and crowding reports live here; on the
+     ephemeral layer they are wiped on every redeploy)
    - `CORS_ORIGINS=https://<your-subdomain>.up.railway.app`
    - `API_KEY_REQUIRED=false`
 6. Set **Health Check Path** to `/health`
+7. After the first deploy, populate stops (the recommendation engine returns
+   walk-only routes until this runs):
+   ```bash
+   python scripts/load_stops_pg.py
+   ```
 7. Deploy — Railway builds the Docker image and runs `load_gtfs.py` during the build
 
 ### After deploy

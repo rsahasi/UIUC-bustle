@@ -2,7 +2,31 @@
 # Start the UIUC Bus dev environment with location pinned to UIUC campus.
 # Run this instead of "npx expo start --ios" to keep location fixed at UIUC.
 
-UDID="7AC99C43-52BB-4225-9A99-58D47D94D230"
+# Device selection, in order of preference:
+#   1. $1 or $UIUC_SIM_UDID  — explicit override
+#   2. an already-booted simulator
+#   3. the newest available iPhone
+# The previous hardcoded UDID did not exist on any machine, including the
+# author's, so ./start-sim.sh failed for everyone.
+UDID="${1:-${UIUC_SIM_UDID:-}}"
+
+if [ -z "$UDID" ]; then
+  UDID=$(xcrun simctl list devices booted -j \
+    | python3 -c 'import json,sys;d=json.load(sys.stdin)["devices"];print(next((x["udid"] for v in d.values() for x in v),""))')
+fi
+
+if [ -z "$UDID" ]; then
+  UDID=$(xcrun simctl list devices available -j \
+    | python3 -c 'import json,sys;d=json.load(sys.stdin)["devices"];c=[x for v in d.values() for x in v if "iPhone" in x["name"]];print(c[-1]["udid"] if c else "")')
+fi
+
+if [ -z "$UDID" ]; then
+  echo "No iOS simulator found. Install one via Xcode > Settings > Platforms." >&2
+  exit 1
+fi
+
+echo "Using simulator $UDID"
+
 UIUC_LAT="40.1094"
 UIUC_LNG="-88.2273"
 

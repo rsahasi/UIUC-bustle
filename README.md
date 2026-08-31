@@ -37,18 +37,29 @@ pip install -r requirements.txt
 
 Create `backend/.env`:
 
+Copy `backend/.env.example` to `backend/.env` and fill it in. The essentials:
+
 ```env
+# Required — PostgreSQL. Without it every DB-backed route returns 503.
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/uiuc_bustle
+
 # Required for live bus departures and vehicle positions
 MTD_API_KEY=your_cumtd_api_key
+
+# Required for authenticated routes (Supabase: Settings -> API -> JWT Secret).
+# Unset yields 503 "Auth not configured".
+SUPABASE_JWT_SECRET=your_supabase_jwt_secret
 
 # Optional — enables AI route ranking, walk encouragement, EOD reports
 CLAUDE_API_KEY=your_anthropic_api_key
 
-# Leave defaults for local dev
-APP_DB_PATH=data/app.db
-STOPS_DB_PATH=data/stops.db
 CORS_ORIGINS=http://localhost:8081,exp://localhost:8081
 ```
+
+> The backend reads PostgreSQL via `DATABASE_URL`. `APP_DB_PATH` and
+> `STOPS_DB_PATH` are **not** settings fields — `Settings` uses
+> `extra="ignore"`, so setting them does nothing. See `backend/.env.example`
+> for the full list.
 
 Get an MTD key free at [developer.cumtd.com](https://developer.cumtd.com).
 
@@ -57,14 +68,15 @@ Get an MTD key free at [developer.cumtd.com](https://developer.cumtd.com).
 Run these once (or whenever you want fresh data):
 
 ```bash
-# 1. Load MTD stop locations into stops.db (~3 500 stops)
-python scripts/load_stops.py
-
-# 2. Seed 636 UIUC campus buildings from OpenStreetMap into app.db
-python scripts/seed_buildings_from_osm.py
-
-# 3. (Optional) Load GTFS schedule data
+# 1. Load GTFS schedule data (also the source for stops)
 python scripts/load_gtfs.py
+
+# 2. Load MTD stops into PostgreSQL (1040 stops, derived from GTFS).
+#    Until this runs, /stops/nearby is empty and every route is walk-only.
+python scripts/load_stops_pg.py
+
+# 3. Seed UIUC campus buildings from OpenStreetMap (627 rows in the seed CSV)
+python scripts/seed_buildings_from_osm.py
 ```
 
 ### Start the server
@@ -94,11 +106,12 @@ npm install
 ```
 
 This script:
-- Boots the iPhone 16e simulator (UDID `7AC99C43`)
+- Picks a simulator: `$1`, then `$UIUC_SIM_UDID`, then any booted device,
+  then the newest available iPhone
 - Pins the GPS to **UIUC Illini Union** (40.1094, -88.2273) using a persistent location scenario so it survives app relaunches
 - Starts the Expo dev server and opens the app
 
-> To use a different simulator UDID, edit `UDID=` at the top of `start-sim.sh`.
+> To force a specific device: `./start-sim.sh <UDID>` or set `UIUC_SIM_UDID`.
 
 ### Start (manual / other device)
 
@@ -125,7 +138,13 @@ Then open **Settings** tab in the app and set the API URL to your machine's loca
 ```bash
 cd backend
 python -m pytest tests/ -q
-# 35 passed
+# 91 passed
+```
+
+```bash
+cd mobile
+npm run typecheck   # tsc --noEmit
+npm test            # 56 passed
 ```
 
 ---
@@ -136,7 +155,7 @@ python -m pytest tests/ -q
 |---------|-------------|
 | Live departures | Real-time MTD bus times at nearby stops (Live badge) |
 | Route recommendations | Walk vs. bus options ranked by ETA to your next class |
-| Building search | 636 UIUC buildings from OSM — instant suggestions as you type |
+| Building search | UIUC buildings from OSM — instant suggestions as you type |
 | Internal walk navigation | Full-screen map HUD with pedometer, calories, ETA — no app switching |
 | Class schedule | Add classes with address search; get departure reminders |
 | Activity tracking | Steps, distance, calories per walk; 7-day bar chart |
@@ -153,12 +172,13 @@ backend/
   settings.py                    Pydantic settings (reads .env)
   requirements.txt
   data/
-    buildings_seed.csv           636 OSM buildings (regenerate with seed_buildings_from_osm.py)
+    buildings_seed.csv           627 OSM buildings (regenerate with seed_buildings_from_osm.py)
     stops_placeholder.csv        Placeholder — replaced by load_stops.py
   scripts/
     load_stops.py                Download MTD stops → stops.db
     seed_buildings_from_osm.py   Query Overpass API → buildings_seed.csv + app.db
-    seed_buildings.py            Re-seed app.db from an existing CSV
+    load_stops_pg.py             GTFS stops -> PostgreSQL stops table (run this)
+    seed_buildings.py            Retired; points at seed_buildings_from_osm.py
     load_gtfs.py                 Download GTFS zip → gtfs.db
   src/
     ai/                          Claude client, planner, encouragement
