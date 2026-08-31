@@ -4,8 +4,42 @@ Populated by scripts/load_gtfs.py.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _open_db(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """
+    Open a row-keyed connection that is both committed and closed on exit.
+    sqlite3's own connection context manager ends the transaction but leaves the
+    handle open, which exhausts file descriptors under sustained load.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    with closing(conn), conn:
+        yield conn
+
+
+def _stop_id_clause(column: str) -> str:
+    """
+    SQL predicate matching a bare stop ID against GTFS platform-suffixed IDs.
+
+    GTFS stop_times store "PAR:2" while app-side and MTD real-time IDs are bare
+    ("PAR"). Anchoring on the ":" delimiter keeps "PAR" from also matching the
+    physically unrelated "PARACE:1" and "PARKVIEW:2". Takes two bound params.
+    """
+    return f"({column} = ? OR {column} LIKE ? || ':%')"
+
+
+def _stop_id_matches(stop_id: str, wanted: str) -> bool:
+    """Python-side counterpart of _stop_id_clause."""
+    return stop_id == wanted or stop_id.startswith(wanted + ":")
 
 
 def _time_to_minutes(t: str) -> int | None:
@@ -30,17 +64,16 @@ def get_trips_serving_stop(
     if not db_path.exists():
         return []
     after_min = _time_to_minutes(after_time) or 0
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
+    with _open_db(db_path) as conn:
         cur = conn.execute(
-            """
+            f"""
             SELECT st.trip_id, t.route_id, t.headsign, st.departure_time, st.stop_sequence
             FROM gtfs_stop_times st
             JOIN gtfs_trips t ON t.trip_id = st.trip_id
-            WHERE st.stop_id = ?
+            WHERE {_stop_id_clause("st.stop_id")}
             ORDER BY st.departure_time
             """,
-            (stop_id,),
+            (stop_id, stop_id),
         )
         results = []
         for r in cur.fetchall():
@@ -70,15 +103,12 @@ def find_connecting_trips(
     if not db_path.exists():
         return []
     after_min = _time_to_minutes(after_time) or 0
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
+    with _open_db(db_path) as conn:
         # Pad after_time to HH:MM:SS for string comparison (GTFS times are zero-padded)
         padded_after = after_time.strip() if after_time.strip() else "00:00:00"
         # Find trips with both stops, origin before dest, departing at or after after_time.
-        # MTD real-time stop IDs (e.g. "GRGMUM") are the prefix of GTFS stop IDs (e.g. "GRGMUM:1"),
-        # so use LIKE prefix matching to handle both formats.
         cur = conn.execute(
-            """
+            f"""
             SELECT
                 o.trip_id,
                 t.route_id,
@@ -88,13 +118,13 @@ def find_connecting_trips(
                 o.stop_sequence AS o_seq,
                 d.stop_sequence AS d_seq
             FROM gtfs_stop_times o
-            JOIN gtfs_stop_times d ON d.trip_id = o.trip_id AND d.stop_id LIKE ? || '%' AND d.stop_sequence > o.stop_sequence
+            JOIN gtfs_stop_times d ON d.trip_id = o.trip_id AND {_stop_id_clause("d.stop_id")} AND d.stop_sequence > o.stop_sequence
             JOIN gtfs_trips t ON t.trip_id = o.trip_id
-            WHERE o.stop_id LIKE ? || '%' AND o.departure_time >= ?
+            WHERE {_stop_id_clause("o.stop_id")} AND o.departure_time >= ?
             ORDER BY o.departure_time
             LIMIT 10
             """,
-            (dest_stop_id, origin_stop_id, padded_after),
+            (dest_stop_id, dest_stop_id, origin_stop_id, origin_stop_id, padded_after),
         )
         results = []
         for r in cur.fetchall():
@@ -127,25 +157,33 @@ def get_stops_for_trip_between(
     db_path = Path(db_path)
     if not db_path.exists():
         return []
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
+    with _open_db(db_path) as conn:
         # Get sequence numbers for from/to stops.
-        # Use LIKE prefix matching so MTD IDs (e.g. "GRGMUM") match GTFS IDs (e.g. "GRGMUM:1").
         cur = conn.execute(
-            "SELECT stop_id, stop_sequence FROM gtfs_stop_times WHERE trip_id = ? AND (stop_id LIKE ? || '%' OR stop_id LIKE ? || '%')",
-            (trip_id, from_stop_id, to_stop_id),
+            f"""
+            SELECT stop_id, stop_sequence FROM gtfs_stop_times
+            WHERE trip_id = ? AND ({_stop_id_clause("stop_id")} OR {_stop_id_clause("stop_id")})
+            """,
+            (trip_id, from_stop_id, from_stop_id, to_stop_id, to_stop_id),
         )
         rows = cur.fetchall()
+        from_seqs = sorted(
+            r["stop_sequence"] for r in rows
+            if r["stop_sequence"] is not None and _stop_id_matches(r["stop_id"], from_stop_id)
+        )
+        to_seqs = sorted(
+            r["stop_sequence"] for r in rows
+            if r["stop_sequence"] is not None and _stop_id_matches(r["stop_id"], to_stop_id)
+        )
+        # Loop routes visit the same stop twice, so the destination is the first
+        # visit downstream of the origin rather than the earliest one overall.
         from_seq: int | None = None
         to_seq: int | None = None
-        for r in rows:
-            sid, seq = r["stop_id"], r["stop_sequence"]
-            if sid == from_stop_id or sid.startswith(from_stop_id + ":"):
-                if from_seq is None or seq < from_seq:
-                    from_seq = seq
-            if sid == to_stop_id or sid.startswith(to_stop_id + ":"):
-                if to_seq is None or seq < to_seq:
-                    to_seq = seq
+        for candidate in from_seqs:
+            later = [s for s in to_seqs if s > candidate]
+            if later:
+                from_seq, to_seq = candidate, later[0]
+                break
         if from_seq is None or to_seq is None:
             return []
         cur2 = conn.execute(
@@ -180,8 +218,7 @@ def get_shape_for_trip(
     db_path = Path(db_path)
     if not db_path.exists():
         return []
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
+    with _open_db(db_path) as conn:
         # Get shape_id for trip
         cur = conn.execute("SELECT shape_id FROM gtfs_trips WHERE trip_id = ?", (trip_id,))
         row = cur.fetchone()
@@ -215,19 +252,18 @@ def find_best_exit_stop_for_route(
     dep_min_floor = _time_to_minutes(after_time) or 0
     padded = after_time.strip() if after_time.strip() else "00:00:00"
     try:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        with _open_db(db_path) as conn:
             # Find the soonest trip for this route that serves from_stop_id
             cur = conn.execute(
-                """
+                f"""
                 SELECT st.trip_id, st.stop_sequence AS from_seq, st.departure_time
                 FROM gtfs_stop_times st
                 JOIN gtfs_trips t ON t.trip_id = st.trip_id
-                WHERE t.route_id = ? AND st.stop_id = ? AND st.departure_time >= ?
+                WHERE t.route_id = ? AND {_stop_id_clause("st.stop_id")} AND st.departure_time >= ?
                 ORDER BY st.departure_time
                 LIMIT 1
                 """,
-                (route_id, from_stop_id, padded),
+                (route_id, from_stop_id, from_stop_id, padded),
             )
             row = cur.fetchone()
             if row is None:
@@ -273,6 +309,12 @@ def find_best_exit_stop_for_route(
                     }
             return best
     except Exception:
+        logger.warning(
+            "gtfs exit stop lookup failed route=%s from_stop=%s",
+            route_id,
+            from_stop_id,
+            exc_info=True,
+        )
         return None
 
 
@@ -286,8 +328,7 @@ def get_all_stops_for_route(db_path: str | Path, route_id: str) -> list[dict]:
     if not db_path.exists():
         return []
     try:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        with _open_db(db_path) as conn:
             # Find the trip_id with the most stops for this route (canonical trip)
             cur = conn.execute(
                 """
@@ -328,4 +369,5 @@ def get_all_stops_for_route(db_path: str | Path, route_id: str) -> list[dict]:
                 if float(r["stop_lat"] or 0) != 0 or float(r["stop_lon"] or 0) != 0
             ]
     except Exception:
+        logger.warning("gtfs route stop list failed route=%s", route_id, exc_info=True)
         return []

@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import secrets
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Optional
 import sqlite3
 
+from settings import resolve_share_db_path
+
 HARD_CAP_SECONDS = 7200        # 2 hours
 LAZY_DELETE_GRACE = 86400      # delete rows 24h past expiry on next read
 
-SHARE_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "app.db"
+SHARE_DB_PATH = resolve_share_db_path()
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS shared_trips (
@@ -30,10 +33,9 @@ CREATE TABLE IF NOT EXISTS shared_trips (
 def init_share_schema(db_path: str | Path = SHARE_DB_PATH) -> None:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(_CREATE_TABLE_SQL)
-        conn.commit()
 
 
 def create_shared_trip(
@@ -49,16 +51,15 @@ def create_shared_trip(
     now = int(time.time())
     expires_at = now + HARD_CAP_SECONDS
     for _ in range(2):
-        token = secrets.token_urlsafe(6)[:8]
+        token = secrets.token_urlsafe(16)
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """INSERT INTO shared_trips
                        (id, destination, route_id, route_name, stop_name, phase, eta_epoch, created_at, expires_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (token, destination, route_id, route_name, stop_name, phase, eta_epoch, now, expires_at),
                 )
-                conn.commit()
             return token
         except sqlite3.IntegrityError:
             continue  # collision — retry with new token
@@ -73,7 +74,7 @@ def patch_shared_trip(
 ) -> bool:
     """Update phase/eta. Returns False if not found or expired."""
     now = int(time.time())
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         row = conn.execute(
             "SELECT expires_at FROM shared_trips WHERE id = ?", (token,)
         ).fetchone()
@@ -94,7 +95,6 @@ def patch_shared_trip(
             return True
         params.append(token)
         conn.execute(f"UPDATE shared_trips SET {', '.join(updates)} WHERE id = ?", params)
-        conn.commit()
     return True
 
 
@@ -104,7 +104,7 @@ def get_shared_trip_status(
 ) -> dict | None:
     """Return trip status dict, or None if not found. Lazy-deletes rows 24h past expiry."""
     now = int(time.time())
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         row = conn.execute(
             """SELECT destination, route_id, route_name, stop_name, phase, eta_epoch, expires_at
                FROM shared_trips WHERE id = ?""",
@@ -116,7 +116,6 @@ def get_shared_trip_status(
         # Lazy cleanup: delete if 24h past expiry
         if expires_at < now - LAZY_DELETE_GRACE:
             conn.execute("DELETE FROM shared_trips WHERE id = ?", (token,))
-            conn.commit()
             return None
         expired = expires_at <= now
         return {

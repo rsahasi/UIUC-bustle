@@ -5,8 +5,12 @@ GTFS-based exit stops used when available; falls back to heuristic.
 """
 from datetime import datetime, timezone
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from src.data.geo import haversine_distance_m
+
+# CUMTD GTFS stop_times are local agency time, not UTC.
+AGENCY_TZ = ZoneInfo("America/Chicago")
 
 # Heuristic: average bus speed (m/s) for straight-line ride time estimate
 BUS_SPEED_MPS = 6.0
@@ -83,7 +87,10 @@ def compute_recommendations(
 
     walk_option = None
     depart_in_walk = max(0.0, minutes_until_arrival - walk_only_min - buffer_minutes)
-    if now_ts + depart_in_walk * 60 <= arrive_by_ts + 1:
+    # depart_in_walk is clamped at 0, so testing it against arrive_by only asks
+    # "is arrive_by in the future" and offers a 60-minute walk for a class that
+    # starts in 5. Gate on the walk actually fitting, like the BUS branch does.
+    if walk_only_min <= minutes_until_arrival - buffer_minutes:
         walk_option = {
             "type": "WALK",
             "summary": f"Walk to {b_name} ({walk_only_min:.0f} min)",
@@ -116,7 +123,7 @@ def compute_recommendations(
         _walk_minutes(heuristic_exit_dist_m, walk_speed) if heuristic_exit else 5.0
     )
 
-    now_time_str = now.strftime("%H:%M:%S")
+    now_time_str = now.astimezone(AGENCY_TZ).strftime("%H:%M:%S")
 
     bus_candidates: list[tuple[float, dict]] = []
 

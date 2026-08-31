@@ -3,8 +3,8 @@
 Provides:
 - Schema initialisation (init_crowding_schema)
 - Pure decay algorithm (compute_weighted_level / _weight) — no DB dependency
-- Async DB helpers (insert_report, get_recent_reports, check_rate_limit,
-  get_reports_by_route, delete_old_reports)
+- Async DB helpers (insert_report, insert_report_if_allowed, get_recent_reports,
+  check_rate_limit, get_reports_by_route, delete_old_reports)
 """
 from __future__ import annotations
 
@@ -15,11 +15,13 @@ from typing import Literal, Optional, TypedDict
 
 import aiosqlite
 
+from settings import resolve_crowding_db_path
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-CROWDING_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "app.db"
+CROWDING_DB_PATH = resolve_crowding_db_path()
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -57,6 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_crowding_token_vehicle
 
 async def init_crowding_schema(db_path: Path = CROWDING_DB_PATH) -> None:
     """Create crowding_reports table and indexes if not exist."""
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(db_path) as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(_CREATE_TABLE_SQL)
@@ -175,6 +178,52 @@ async def insert_report(
             (vehicle_id, route_id, trip_id, crowding_level, user_token, lat, lon),
         )
         await db.commit()
+
+
+async def insert_report_if_allowed(
+    db_path: Path,
+    vehicle_id: str,
+    route_id: str,
+    trip_id: Optional[str],
+    crowding_level: int,
+    user_token: Optional[str],
+    lat: Optional[float],
+    lon: Optional[float],
+    window_minutes: int = 10,
+) -> bool:
+    """Insert a report unless *user_token* already reported this vehicle in the window.
+
+    Returns True when a row was written, False when the rate limit rejected it.
+
+    The recency check and the insert are a single statement so that simultaneous
+    submissions carrying the same token cannot all pass a separate SELECT before
+    any of them writes. A NULL token never matches the check, which keeps
+    anonymous reports unlimited, as they have always been.
+    """
+    modifier = f"-{window_minutes} minutes"
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO crowding_reports
+                (vehicle_id, route_id, trip_id, crowding_level,
+                 anonymous_user_token, lat, lon)
+            SELECT ?, ?, ?, ?, ?, ?, ?
+            WHERE  NOT EXISTS (
+                SELECT 1
+                FROM   crowding_reports
+                WHERE  anonymous_user_token = ?
+                  AND  vehicle_id = ?
+                  AND  reported_at > datetime('now', ?)
+            )
+            """,
+            (
+                vehicle_id, route_id, trip_id, crowding_level, user_token, lat, lon,
+                user_token, vehicle_id, modifier,
+            ),
+        )
+        inserted = cursor.rowcount == 1
+        await db.commit()
+    return inserted
 
 
 async def get_recent_reports(

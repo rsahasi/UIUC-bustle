@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from settings import get_settings
@@ -22,7 +23,7 @@ from src.data.buildings_repo import (
 )
 from src.data.stops_repo import search_nearby
 from src.data.crowding_repo import (
-    init_crowding_schema, insert_report, get_recent_reports,
+    init_crowding_schema, insert_report, insert_report_if_allowed, get_recent_reports,
     check_rate_limit, get_reports_by_route, delete_old_reports,
     compute_weighted_level, CROWDING_DB_PATH,
 )
@@ -84,6 +85,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s %(name)s %(message)s",
 )
+# httpx logs every request at INFO as `HTTP Request: GET <full url>`, and the
+# MTD API requires its key as a query parameter. At INFO that writes MTD_API_KEY
+# into application logs (and Sentry breadcrumbs) on every departures fetch.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
@@ -180,6 +186,9 @@ def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 # Order: last added = innermost. So RequestLogging runs first (outermost), then Auth, then CORS.
+# slowapi applies `default_limits` only from inside SlowAPIMiddleware. Without
+# it, the 100/minute default silently covered none of the undecorated routes.
+app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     OptionalAPIKeyMiddleware,
@@ -633,11 +642,10 @@ async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
     """Submit a crowding report. Rate limited. Server-side 10-min per-token rate limit."""
     if not 1 <= body.crowding_level <= 4:
         raise HTTPException(status_code=422, detail="crowding_level must be 1-4")
-    if body.user_token:
-        already_reported = await check_rate_limit(CROWDING_DB_PATH, body.user_token, body.vehicle_id)
-        if already_reported:
-            raise HTTPException(status_code=429, detail="You already reported this bus recently. Try again in 10 minutes.")
-    await insert_report(
+    # Single conditional INSERT: checking then inserting as two statements let
+    # concurrent posts with the same token all pass the check before any row
+    # landed, so one client could stack reports and dominate a bus's average.
+    inserted = await insert_report_if_allowed(
         CROWDING_DB_PATH,
         vehicle_id=body.vehicle_id,
         route_id=body.route_id,
@@ -647,6 +655,8 @@ async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
         lat=body.lat,
         lon=body.lon,
     )
+    if not inserted:
+        raise HTTPException(status_code=429, detail="You already reported this bus recently. Try again in 10 minutes.")
     reports = await get_recent_reports(CROWDING_DB_PATH, body.vehicle_id)
     agg = compute_weighted_level(reports)
     current = {"level": agg.level, "confidence": agg.confidence, "source": agg.source, "report_count": agg.report_count} if agg else None
@@ -1389,6 +1399,9 @@ def get_share_trip_status(request: Request, token: str):
 @limiter.exempt
 def share_trip_page(request: Request, token: str):
     """Serve the recipient share page."""
-    if not re.fullmatch(r'[A-Za-z0-9_\-]{6,16}', token):
+    # Load-bearing: share/page.py interpolates the token into a <script> block,
+    # so this character class is what keeps it from breaking out. Widened to
+    # cover token_urlsafe(16) (22 chars) while older 8-char tokens still resolve.
+    if not re.fullmatch(r'[A-Za-z0-9_\-]{6,32}', token):
         return HTMLResponse("<h1>Invalid link</h1>", status_code=400)
     return HTMLResponse(content=build_share_page(token))

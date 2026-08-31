@@ -1,4 +1,8 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BACKEND_ROOT = Path(__file__).resolve().parent
 
 
 class Settings(BaseSettings):
@@ -39,6 +43,29 @@ class Settings(BaseSettings):
     # Sentry error monitoring — set SENTRY_DSN in .env to enable
     sentry_dsn: str = ""
 
+    # Directory holding the SQLite databases this API writes (share links, crowding reports).
+    # The container filesystem is ephemeral, so production must point this at the mounted
+    # volume (on Railway, DATA_DIR=/mnt/data) or every redeploy starts from an empty database.
+    data_dir: str = str(_BACKEND_ROOT / "data")
+
+    # Explicit per-database overrides; empty means <data_dir>/share.db and <data_dir>/crowding.db.
+    # The two live in separate files on purpose: share uses the blocking sqlite3 driver and
+    # crowding uses aiosqlite, so one shared file would make their writers contend.
+    share_db_path: str = ""
+    crowding_db_path: str = ""
+
 
 def get_settings() -> Settings:
     return Settings()
+
+
+def resolve_share_db_path() -> Path:
+    """Location of the shared_trips database."""
+    settings = get_settings()
+    return Path(settings.share_db_path) if settings.share_db_path else Path(settings.data_dir) / "share.db"
+
+
+def resolve_crowding_db_path() -> Path:
+    """Location of the crowding_reports database."""
+    settings = get_settings()
+    return Path(settings.crowding_db_path) if settings.crowding_db_path else Path(settings.data_dir) / "crowding.db"

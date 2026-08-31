@@ -39,7 +39,7 @@ def test_shared_trips_table_created(tmp_path):
 
 def test_create_and_get_trip(share_db):
     token = create_shared_trip(share_db, "Siebel Center", "22", "Illini", "Green & Wright", "walking", 9999999999)
-    assert len(token) == 8
+    assert len(token) == 22
     status = get_shared_trip_status(share_db, token)
     assert status is not None
     assert status["destination"] == "Siebel Center"
@@ -87,7 +87,7 @@ def test_post_share_trip(client):
     assert r.status_code == 200
     data = r.json()
     assert "token" in data
-    assert len(data["token"]) == 8
+    assert len(data["token"]) == 22
     assert "/t/" in data["url"]
 
 
