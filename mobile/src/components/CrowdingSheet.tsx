@@ -147,7 +147,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: theme.colors.border,
     gap: theme.spacing.md,
   },
-  optionPressed: { backgroundColor: theme.colors.background },
+  optionPressed: { backgroundColor: theme.colors.surfaceAlt },
   dot: { width: 12, height: 12, borderRadius: 6 },
   optionText: { flex: 1 },
   optionLabel: {

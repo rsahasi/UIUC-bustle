@@ -782,8 +782,8 @@ export default function MapScreen() {
                               color: step.type === 'RIDE' ? theme.colors.orange : theme.colors.navy,
                             }}>
                               {step.type === 'RIDE'
-                                ? (step.route_short_name || step.route || 'Bus')
-                                : `${Math.round((step.walk_distance_m || 0) / 80)}m`}
+                                ? (step.route || 'Bus')
+                                : `${step.duration_minutes} min`}
                             </Text>
                           </View>
                         ))}

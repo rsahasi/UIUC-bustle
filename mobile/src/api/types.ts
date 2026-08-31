@@ -10,6 +10,17 @@ export interface NearbyStopsResponse {
   stops: StopInfo[];
 }
 
+/**
+ * A stop with its distance from the user.
+ *
+ * `distance_m` is computed CLIENT-SIDE (see haversineMeters). The backend's
+ * /stops/nearby uses distance only to sort and does not return it, so this
+ * must never be produced by casting a StopInfo.
+ */
+export interface StopWithDistance extends StopInfo {
+  distance_m: number;
+}
+
 /** GET /stops/{stop_id}/departures */
 export interface DepartureItem {
   route: string;

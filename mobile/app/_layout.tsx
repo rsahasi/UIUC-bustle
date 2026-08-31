@@ -157,7 +157,6 @@ export default function RootLayout() {
         options={{
           host: "https://us.i.posthog.com",
           disabled: !posthogKey || process.env.NODE_ENV === "test",
-          captureScreenViews: false,
         }}
       >
         <AnalyticsIdentifier userId={user?.id} />
