@@ -3,6 +3,7 @@ import {
   fetchPlaceDetails,
 } from "@/src/api/client";
 import { cancelClassReminder } from "@/src/notifications/classReminders";
+import { cancelLeaveNowAlert } from "@/src/notifications/leaveNow";
 import { disableClassNotif, enableClassNotif, getDisabledClassIds } from "@/src/storage/classNotifPrefs";
 import { getClassRouteData, type ClassRouteData } from "@/src/storage/classSummaryCache";
 import type { AutocompleteResult } from "@/src/api/client";
@@ -381,6 +382,12 @@ export default function ScheduleScreen() {
         style: "destructive",
         onPress: () => {
           deleteClassMutation(c.class_id, {
+            onSuccess: () => {
+              // Deleting the class does not touch the OS notification queue;
+              // without this its reminders stay armed for the rest of the horizon.
+              void cancelClassReminder(c.class_id);
+              void cancelLeaveNowAlert(c.class_id);
+            },
             onError: (e) => {
               Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete");
             },

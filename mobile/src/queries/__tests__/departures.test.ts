@@ -49,6 +49,18 @@ describe("useNearbyStops", () => {
     expect(client.fetchNearbyStops).toHaveBeenCalledWith("http://test", 40.11, -88.23, 800, { apiKey: null });
   });
 
+  it("rounds coordinates to 4 decimals in the query key", async () => {
+    (client.fetchNearbyStops as jest.Mock).mockResolvedValueOnce({ stops: [] });
+    const { result, client: qc } = renderHookWithQuery(() =>
+      useNearbyStops(40.110012, -88.229963)
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // A jittered GPS fix lands on the same cache entry...
+    expect(qc.getQueryCache().getAll()[0].queryKey).toEqual(["nearby-stops", 40.11, -88.23, "http://test"]);
+    // ...while the fetch itself still uses the precise fix.
+    expect(client.fetchNearbyStops).toHaveBeenCalledWith("http://test", 40.110012, -88.229963, 800, { apiKey: null });
+  });
+
   it("does not fetch when lat/lng are 0", () => {
     const { result } = renderHookWithQuery(() => useNearbyStops(0, 0));
     expect(result.current.fetchStatus).toBe("idle");

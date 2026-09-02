@@ -5,7 +5,7 @@ import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 export function useVehicles(options?: { enabled?: boolean }) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["vehicles"],
+    queryKey: ["vehicles", apiBaseUrl],
     queryFn: () => fetchVehicles(apiBaseUrl, undefined, { apiKey }),
     staleTime: 10_000,
     refetchInterval: 15_000,
@@ -22,7 +22,7 @@ export function useWalkingRoute(
 ) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["walking-route", origLat, origLng, destLat, destLng],
+    queryKey: ["walking-route", origLat, origLng, destLat, destLng, apiBaseUrl],
     queryFn: () =>
       fetchWalkingRoute(apiBaseUrl, origLat, origLng, destLat, destLng, { apiKey }),
     staleTime: 300_000,
@@ -45,7 +45,7 @@ export function useBusRouteStops(
 ) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["bus-route-stops", routeId, fromStopId, toStopId, afterTime],
+    queryKey: ["bus-route-stops", routeId, fromStopId, toStopId, afterTime, apiBaseUrl],
     queryFn: () =>
       fetchBusRouteStops(apiBaseUrl, routeId, fromStopId, toStopId, afterTime, { apiKey }),
     staleTime: 300_000,

@@ -34,12 +34,14 @@ import { Bus, Footprints, MapPin, Search, X } from "lucide-react-native";
 function MapLiveBadge({ count }: { count: number }) {
   const opacity = useRef(new Animated.Value(1)).current;
   useEffect(() => {
-    Animated.loop(
+    const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(opacity, { toValue: 0.4, duration: 900, useNativeDriver: true }),
         Animated.timing(opacity, { toValue: 1, duration: 900, useNativeDriver: true }),
       ])
-    ).start();
+    );
+    loop.start();
+    return () => loop.stop();
   }, [opacity]);
   return (
     <Animated.View style={[{ backgroundColor: theme.colors.orange, borderRadius: 4, paddingHorizontal: 7, paddingVertical: 3, flexDirection: "row", alignItems: "center", gap: 4 }, { opacity }]}>
@@ -185,10 +187,10 @@ export default function MapScreen() {
         }
         setLocation({ lat: latitude, lng: longitude });
       } catch {
-        // GPS unavailable (e.g. simulator) — silently fall back to UIUC centre
-        latitude = UIUC_FALLBACK.lat;
-        longitude = UIUC_FALLBACK.lng;
-        setLocation(UIUC_FALLBACK);
+        // GPS unavailable (e.g. simulator) — show the error UI; the
+        // "Use UIUC area instead" button remains the explicit fallback.
+        setStatus("error");
+        return;
       }
     }
 
@@ -511,7 +513,11 @@ export default function MapScreen() {
         >
           <Text style={styles.retryBtnText}>Open Location Settings</Text>
         </Pressable>
-        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => { setUseUiucArea(true); loadStops(); }}>
+        {/* Only flip the flag: the loadStops useCallback closes over the old
+            useUiucArea, so calling it here would retry GPS and its late
+            setStatus could clobber the effect-driven reload that the flag
+            change triggers via useEffect([loadStops]). */}
+        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => setUseUiucArea(true)}>
           <Text style={styles.retryBtnSecondaryText}>Use UIUC area (Champaign-Urbana)</Text>
         </Pressable>
       </View>
@@ -526,7 +532,10 @@ export default function MapScreen() {
         <Pressable style={styles.retryBtn} onPress={loadStops}>
           <Text style={styles.retryBtnText}>Retry</Text>
         </Pressable>
-        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => { setUseUiucArea(true); loadStops(); }}>
+        {/* Only flip the flag (see comment on the denied screen): the stale
+            loadStops closure would retry GPS, fail, and set "error" after the
+            effect-driven reload already set "ready". */}
+        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => setUseUiucArea(true)}>
           <Text style={styles.retryBtnSecondaryText}>Use UIUC area instead</Text>
         </Pressable>
       </View>
@@ -544,7 +553,6 @@ export default function MapScreen() {
   return (
     <View style={styles.container}>
       <MapView
-        key={`map-${mapCenter.lat}-${mapCenter.lng}`}
         ref={mapRef}
         style={styles.map}
         initialRegion={initialRegion}
@@ -570,6 +578,7 @@ export default function MapScreen() {
             title={selectedPlace.name}
             anchor={{ x: 0.5, y: 1.0 }}
             key="dest"
+            tracksViewChanges={false}
           >
             <View style={{ alignItems: 'center' }}>
               <View style={{
@@ -593,7 +602,11 @@ export default function MapScreen() {
           const ringColor = crowdingColor(crowding);
           return (
             <Marker
-              key={`vehicle-${v.vehicle_id}`}
+              // ringColor is baked into the bitmap, so key on it: the marker
+              // remounts (redrawing once) when crowding changes, instead of
+              // re-rasterizing on every frame to catch a color that rarely moves.
+              key={`vehicle-${v.vehicle_id}-${ringColor}`}
+              tracksViewChanges={false}
               coordinate={{ latitude: v.lat, longitude: v.lng }}
               title={`Bus ${v.route_id}`}
               description={v.headsign || undefined}

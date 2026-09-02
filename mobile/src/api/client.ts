@@ -48,6 +48,38 @@ const MAX_RETRIES = 2; // 3 attempts total
 const RETRY_BASE_MS = 1000;
 const RETRY_MAX_MS = 5000;
 
+/** Any non-2xx response or unusable body, so React Query records a failure instead of a success. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly path: string;
+  /** The backend's `detail` field, when the body carried one. */
+  readonly detail?: string;
+
+  constructor(message: string, status: number, path: string, detail?: string) {
+    super(message);
+    // Subclassing a built-in loses the prototype chain under the class transform, so instanceof needs this.
+    Object.setPrototypeOf(this, new.target.prototype);
+    this.name = new.target.name;
+    this.status = status;
+    this.path = path;
+    this.detail = detail;
+  }
+}
+
+/** 401 from the API-key gate, which runs before the route and is unrelated to the Supabase session. */
+export class ApiKeyError extends ApiError {
+  constructor(path: string, detail?: string) {
+    super(detail?.trim() || "Invalid or missing API key. Enter it in Settings.", 401, path, detail);
+  }
+}
+
+/** The request exceeded REQUEST_TIMEOUT_MS, as opposed to a caller cancelling it. */
+export class ApiTimeoutError extends ApiError {
+  constructor(path: string) {
+    super(`Request timed out after ${REQUEST_TIMEOUT_MS}ms`, 0, path);
+  }
+}
+
 function isRetryable(status: number, err: unknown): boolean {
   if (status >= 500 && status < 600) return true;
   if (status === 429) return true;
@@ -59,81 +91,164 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Whether a failed request can be safely re-sent.
+ *
+ * A timeout or a dropped connection says nothing about whether the server
+ * processed the request, so re-sending a POST/PATCH/DELETE can duplicate the
+ * write: a second class, a second share trip, a second crowding report. Only
+ * replay methods that are idempotent by definition.
+ */
+function isIdempotent(method: string | undefined): boolean {
+  const m = (method ?? "GET").toUpperCase();
+  return m === "GET" || m === "HEAD" || m === "OPTIONS";
+}
+
+/**
+ * A caller-supplied signal must not displace the timeout signal, so both feed one
+ * signal that aborts as soon as either of them does. Uses AbortSignal.any where
+ * the runtime provides it; otherwise bridges the two by hand.
+ */
+function combineSignals(
+  userSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal
+): { signal: AbortSignal; release: () => void } {
+  if (!userSignal) return { signal: timeoutSignal, release: () => {} };
+  if (userSignal.aborted) return { signal: userSignal, release: () => {} };
+  if (typeof AbortSignal.any === "function") {
+    return { signal: AbortSignal.any([userSignal, timeoutSignal]), release: () => {} };
+  }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  userSignal.addEventListener("abort", abort);
+  timeoutSignal.addEventListener("abort", abort);
+  return {
+    signal: controller.signal,
+    release: () => {
+      userSignal.removeEventListener("abort", abort);
+      timeoutSignal.removeEventListener("abort", abort);
+    },
+  };
+}
+
+async function readDetail(res: Response): Promise<string> {
+  try {
+    const body = (await res.clone().json()) as { detail?: unknown };
+    return typeof body?.detail === "string" ? body.detail : "";
+  } catch {
+    return "";
+  }
+}
+
+function isApiKeyRejection(detail: string): boolean {
+  return /api[\s-]?key/i.test(detail);
+}
+
+/** Only a complaint about the token itself justifies refreshing or dropping the session. */
+function isJwtRejection(res: Response, detail: string): boolean {
+  if (/bearer/i.test(res.headers.get("WWW-Authenticate") ?? "")) return true;
+  return /token|jwt|session|credential/i.test(detail);
+}
+
+/** Read the body's detail (if any) and build the typed error for a non-2xx response. */
+async function apiErrorFromResponse(res: Response, pathLabel: string, fallback: string): Promise<ApiError> {
+  const detail = await readDetail(res);
+  return new ApiError(detail || fallback, res.status, pathLabel, detail || undefined);
+}
+
 async function fetchWithRetry(
   url: string,
   pathLabel: string,
-  init?: RequestInit & { signal?: AbortSignal; apiKey?: string | null }
+  init?: RequestInit & { signal?: AbortSignal; apiKey?: string | null; retryOn429?: boolean }
 ): Promise<Response> {
-  const { signal: userSignal, apiKey, ...rest } = init ?? {};
+  const { signal: userSignal, apiKey, retryOn429 = true, ...rest } = init ?? {};
+  const replayable = isIdempotent(rest.method);
   const headers = await mergeHeaders(rest, apiKey);
   let requestInit: RequestInit & { signal?: AbortSignal } = { ...rest, headers };
   let lastError: unknown;
+  let lastResponse: Response | undefined;
   let refreshAttempted = false;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const timeoutController = new AbortController();
-    const timeoutId = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS);
-    const signal = userSignal ?? timeoutController.signal;
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, REQUEST_TIMEOUT_MS);
+    const { signal, release } = combineSignals(userSignal, timeoutController.signal);
     try {
       log.info(`api_request path=${pathLabel} attempt=${attempt + 1}`, { path: pathLabel });
       const res = await fetch(url, { ...requestInit, signal });
       clearTimeout(timeoutId);
+      release();
       if (!res.ok) {
         log.warn(`api_response path=${pathLabel} status=${res.status}`, { path: pathLabel, status: res.status });
-        if (attempt < MAX_RETRIES && isRetryable(res.status, null)) {
+        // 429 is backpressure on most routes, but some use it as a definitive
+        // rejection; retrying those only delays the answer and burns the budget.
+        const statusRetryable = isRetryable(res.status, null) && (retryOn429 || res.status !== 429);
+        if (attempt < MAX_RETRIES && statusRetryable) {
           const backoff = Math.min(RETRY_BASE_MS * Math.pow(2, attempt) + Math.random() * 300, RETRY_MAX_MS);
           await delay(backoff);
           continue;
         }
         if (res.status === 401) {
-          const { data: sessionData } = await supabase.auth.getSession();
-          if (!sessionData.session) {
-            // Not signed in — a 401 is expected; signing out here would wipe
-            // auth storage, including a PKCE code verifier for an in-flight
-            // OAuth/magic-link login
-            return res;
-          }
-          if (!refreshAttempted) {
-            refreshAttempted = true;
-            await supabase.auth.refreshSession();
-            const refreshedHeaders = await mergeHeaders(rest, apiKey);
-            requestInit = { ...requestInit, headers: refreshedHeaders };
-            continue; // retry with refreshed token
-          } else {
+          lastResponse = res;
+          const detail = await readDetail(res);
+          if (isApiKeyRejection(detail)) throw new ApiKeyError(pathLabel, detail);
+          if (isJwtRejection(res, detail)) {
+            const { data: sessionData } = await supabase.auth.getSession();
+            if (!sessionData.session) {
+              // Not signed in — a 401 is expected; signing out here would wipe
+              // auth storage, including a PKCE code verifier for an in-flight
+              // OAuth/magic-link login
+              return res;
+            }
+            if (!refreshAttempted) {
+              refreshAttempted = true;
+              await supabase.auth.refreshSession();
+              const refreshedHeaders = await mergeHeaders(rest, apiKey);
+              requestInit = { ...requestInit, headers: refreshedHeaders };
+              attempt--; // the refresh replay must not consume one of the retry slots
+              continue; // retry with refreshed token
+            }
             // Second 401 after refresh — session is truly invalid, sign out
             await supabase.auth.signOut(); // AuthGate in _layout.tsx will redirect to /sign-in
-            return res;
           }
+          return res;
         }
         return res;
       }
       return res;
     } catch (e) {
       clearTimeout(timeoutId);
-      lastError = e;
-      const aborted = userSignal?.aborted ?? (e instanceof Error && e.name === "AbortError");
-      if (aborted) {
+      release();
+      if (e instanceof ApiError) throw e;
+      if (userSignal?.aborted) {
         log.info(`api_aborted path=${pathLabel}`, { path: pathLabel });
         throw e;
       }
-      log.error(`api_error path=${pathLabel} attempt=${attempt + 1}`, { path: pathLabel, error: e instanceof Error ? e.message : String(e) });
-      if (attempt < MAX_RETRIES && isRetryable(0, e)) {
+      const err = timedOut ? new ApiTimeoutError(pathLabel) : e;
+      lastError = err;
+      log.error(`api_error path=${pathLabel} attempt=${attempt + 1}`, { path: pathLabel, error: err instanceof Error ? err.message : String(err) });
+      if (attempt < MAX_RETRIES && replayable && (timedOut || isRetryable(0, err))) {
         const backoff = Math.min(RETRY_BASE_MS * Math.pow(2, attempt) + Math.random() * 300, RETRY_MAX_MS);
         await delay(backoff);
       } else {
-        throw e;
+        throw err;
       }
     }
   }
-  throw lastError;
+  // Defensive: the loop only exits via the retry budget, but never rethrow undefined.
+  if (lastResponse) return lastResponse;
+  throw lastError ?? new ApiError(`${pathLabel}: request failed`, 0, pathLabel);
 }
 
-async function safeJson<T>(res: Response, pathLabel: string, fallback: T): Promise<T> {
+async function parseJson<T>(res: Response, pathLabel: string): Promise<T> {
   try {
-    const data = await res.json();
-    return data as T;
+    return (await res.json()) as T;
   } catch {
     log.warn(`api_json_parse_failed path=${pathLabel}`, { path: pathLabel });
-    return fallback;
+    throw new ApiError(`${pathLabel}: malformed response body`, res.status, pathLabel);
   }
 }
 
@@ -148,8 +263,8 @@ export async function fetchNearbyStops(
   const base = baseUrl.replace(/\/$/, "");
   const url = `${base}/stops/nearby?lat=${lat}&lng=${lng}&radius_m=${radiusM}`;
   const res = await fetchWithRetry(url, "/stops/nearby", options);
-  if (!res.ok) throw new Error(`Stops: ${res.status}`);
-  return safeJson(res, "/stops/nearby", { stops: [] });
+  if (!res.ok) throw new ApiError(`Stops: ${res.status}`, res.status, "/stops/nearby");
+  return parseJson<NearbyStopsResponse>(res, "/stops/nearby");
 }
 
 export async function fetchDepartures(
@@ -164,22 +279,22 @@ export async function fetchDepartures(
     "/stops/:id/departures",
     options
   );
-  if (!res.ok) throw new Error(`Departures: ${res.status}`);
-  return safeJson(res, "/stops/:id/departures", { stop_id: stopId, departures: [] });
+  if (!res.ok) throw new ApiError(`Departures: ${res.status}`, res.status, "/stops/:id/departures");
+  return parseJson<DeparturesResponse>(res, "/stops/:id/departures");
 }
 
 export async function fetchBuildings(baseUrl: string, options?: RequestOptions): Promise<BuildingsResponse> {
   const base = baseUrl.replace(/\/$/, "");
   const res = await fetchWithRetry(`${base}/buildings`, "/buildings", options);
-  if (!res.ok) throw new Error(`Buildings: ${res.status}`);
-  return safeJson(res, "/buildings", { buildings: [] });
+  if (!res.ok) throw new ApiError(`Buildings: ${res.status}`, res.status, "/buildings");
+  return parseJson<BuildingsResponse>(res, "/buildings");
 }
 
 export async function fetchClasses(baseUrl: string, options?: RequestOptions): Promise<ClassesResponse> {
   const base = baseUrl.replace(/\/$/, "");
   const res = await fetchWithRetry(`${base}/schedule/classes`, "/schedule/classes", options);
-  if (!res.ok) throw new Error(`Classes: ${res.status}`);
-  return safeJson(res, "/schedule/classes", { classes: [] });
+  if (!res.ok) throw new ApiError(`Classes: ${res.status}`, res.status, "/schedule/classes");
+  return parseJson<ClassesResponse>(res, "/schedule/classes");
 }
 
 export async function createClass(
@@ -204,10 +319,7 @@ export async function createClass(
     signal: options?.signal,
     apiKey: options?.apiKey,
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `Classes: ${res.status}`);
-  }
+  if (!res.ok) throw await apiErrorFromResponse(res, "POST /schedule/classes", `Classes: ${res.status}`);
   try {
     return (await res.json()) as ScheduleClass;
   } catch {
@@ -229,11 +341,8 @@ export async function fetchRecommendation(
     signal: options?.signal,
     apiKey: options?.apiKey,
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `Recommendation: ${res.status}`);
-  }
-  const data = await safeJson(res, "/recommendation", { options: [] });
+  if (!res.ok) throw await apiErrorFromResponse(res, "/recommendation", `Recommendation: ${res.status}`);
+  const data = await parseJson<RecommendationResponse>(res, "/recommendation");
   return { options: Array.isArray(data.options) ? data.options : [] };
 }
 
@@ -241,8 +350,8 @@ export async function fetchRecommendation(
 export async function fetchHealth(baseUrl: string, options?: RequestOptions): Promise<{ status: string }> {
   const base = baseUrl.replace(/\/$/, "");
   const res = await fetchWithRetry(`${base}/health`, "/health", options);
-  if (!res.ok) throw new Error(`Health: ${res.status}`);
-  return safeJson(res, "/health", { status: "ok" });
+  if (!res.ok) throw new ApiError(`Health: ${res.status}`, res.status, "/health");
+  return parseJson<{ status: string }>(res, "/health");
 }
 
 /** GET /vehicles?route_id=... - live vehicle positions */
@@ -254,8 +363,8 @@ export async function fetchVehicles(
   const base = baseUrl.replace(/\/$/, "");
   const params = routeId ? `?route_id=${encodeURIComponent(routeId)}` : "";
   const res = await fetchWithRetry(`${base}/vehicles${params}`, "/vehicles", options);
-  if (!res.ok) throw new Error(`Vehicles: ${res.status}`);
-  return safeJson(res, "/vehicles", { vehicles: [] });
+  if (!res.ok) throw new ApiError(`Vehicles: ${res.status}`, res.status, "/vehicles");
+  return parseJson<VehiclesResponse>(res, "/vehicles");
 }
 
 /** GET /crowding/:vehicle_id - fetch crowding info for a vehicle */
@@ -268,12 +377,11 @@ export async function fetchCrowding(
   try {
     const params = routeId ? `?route_id=${encodeURIComponent(routeId)}` : "";
     const url = `${baseUrl.replace(/\/$/, "")}/crowding/${encodeURIComponent(vehicleId)}${params}`;
-    const res = await fetch(url, {
-      headers: options?.apiKey ? { "X-API-Key": options.apiKey } : {},
-    });
+    const res = await fetchWithRetry(url, "/crowding/:vehicle_id", { apiKey: options?.apiKey });
     if (!res.ok) return null;
-    return (await res.json()) as CrowdingInfo;
+    return await parseJson<CrowdingInfo>(res, "/crowding/:vehicle_id");
   } catch {
+    // Crowding is supplementary; its absence must not fail the surrounding view.
     return null;
   }
 }
@@ -284,19 +392,17 @@ export async function submitCrowdingReport(
   body: CrowdingReportRequest,
   options?: { apiKey?: string },
 ): Promise<{ success: boolean; current_aggregate: CrowdingInfo | null }> {
-  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/crowding/report`, {
+  const res = await fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/crowding/report`, "POST /crowding/report", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options?.apiKey ? { "X-API-Key": options.apiKey } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    apiKey: options?.apiKey,
+    // The backend answers "you already reported this bus recently" with 429, so a
+    // retry cannot succeed — it just makes the message take three round trips to show.
+    retryOn429: false,
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).detail ?? `HTTP ${res.status}`);
-  }
-  return res.json();
+  if (!res.ok) throw await apiErrorFromResponse(res, "POST /crowding/report", `HTTP ${res.status}`);
+  return parseJson<{ success: boolean; current_aggregate: CrowdingInfo | null }>(res, "POST /crowding/report");
 }
 
 /** PATCH /schedule/classes/:id */
@@ -318,10 +424,7 @@ export async function updateClass(
       apiKey: options?.apiKey,
     }
   );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `Update class: ${res.status}`);
-  }
+  if (!res.ok) throw await apiErrorFromResponse(res, "PATCH /schedule/classes/:id", `Update class: ${res.status}`);
   try {
     return (await res.json()) as ScheduleClass;
   } catch {
@@ -343,8 +446,7 @@ export async function deleteClass(
     { method: "DELETE", signal: options?.signal, apiKey: options?.apiKey }
   );
   if (!res.ok && res.status !== 204) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `Delete class: ${res.status}`);
+    throw await apiErrorFromResponse(res, "DELETE /schedule/classes/:id", `Delete class: ${res.status}`);
   }
 }
 
@@ -362,11 +464,8 @@ export async function fetchEodReport(
     signal: options?.signal,
     apiKey: options?.apiKey,
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `EOD report: ${res.status}`);
-  }
-  return safeJson(res, "POST /ai/eod-report", { report: "" });
+  if (!res.ok) throw await apiErrorFromResponse(res, "POST /ai/eod-report", `EOD report: ${res.status}`);
+  return parseJson<{ report: string; encouragement?: string; highlights?: string[] }>(res, "POST /ai/eod-report");
 }
 
 /** GET /buildings/search?q=... - search buildings by name (ranked: exact → starts-with → contains) */
@@ -381,8 +480,8 @@ export async function fetchBuildingSearch(
     "/buildings/search",
     options
   );
-  if (!res.ok) return { buildings: [] };
-  return safeJson(res, "/buildings/search", { buildings: [] });
+  if (!res.ok) throw new ApiError(`Building search: ${res.status}`, res.status, "/buildings/search");
+  return parseJson<BuildingsResponse>(res, "/buildings/search");
 }
 
 /** GET /autocomplete - combined buildings + Nominatim suggestions */
@@ -419,8 +518,8 @@ export async function fetchPlacesAutocomplete(
     signal: options?.signal,
     apiKey: options?.apiKey,
   });
-  if (!res.ok) return { predictions: [] };
-  return safeJson(res, "/places/autocomplete", { predictions: [] });
+  if (!res.ok) throw new ApiError(`Places autocomplete: ${res.status}`, res.status, "/places/autocomplete");
+  return parseJson<{ predictions: PlacePrediction[] }>(res, "/places/autocomplete");
 }
 
 /** GET /places/details - resolve a place_id to lat/lng */
@@ -435,8 +534,8 @@ export async function fetchPlaceDetails(
     "/places/details",
     options
   );
-  if (!res.ok) throw new Error(`Places details: ${res.status}`);
-  return safeJson(res, "/places/details", { lat: 0, lng: 0, display_name: "" });
+  if (!res.ok) throw new ApiError(`Places details: ${res.status}`, res.status, "/places/details");
+  return parseJson<{ lat: number; lng: number; display_name: string }>(res, "/places/details");
 }
 
 export async function fetchAutocomplete(
@@ -450,8 +549,8 @@ export async function fetchAutocomplete(
     "/autocomplete",
     options
   );
-  if (!res.ok) return { results: [] };
-  return safeJson(res, "/autocomplete", { results: [] });
+  if (!res.ok) throw new ApiError(`Autocomplete: ${res.status}`, res.status, "/autocomplete");
+  return parseJson<{ results: AutocompleteResult[] }>(res, "/autocomplete");
 }
 
 /** GET /directions/walk - real walking route via OSRM proxy */
@@ -466,8 +565,8 @@ export async function fetchWalkingRoute(
   const base = baseUrl.replace(/\/$/, "");
   const url = `${base}/directions/walk?orig_lat=${origLat}&orig_lng=${origLng}&dest_lat=${destLat}&dest_lng=${destLng}`;
   const res = await fetchWithRetry(url, "/directions/walk", options);
-  if (!res.ok) return { coords: [] };
-  return safeJson(res, "/directions/walk", { coords: [] });
+  if (!res.ok) throw new ApiError(`Walking route: ${res.status}`, res.status, "/directions/walk");
+  return parseJson<{ coords: [number, number][] }>(res, "/directions/walk");
 }
 
 export interface BusStop {
@@ -495,8 +594,8 @@ export async function fetchBusRouteStops(
     after_time: afterTime,
   });
   const res = await fetchWithRetry(`${base}/gtfs/route-stops?${params}`, "/gtfs/route-stops", options);
-  if (!res.ok) return { trip_id: null, stops: [], shape_points: [] };
-  return safeJson(res, "/gtfs/route-stops", { trip_id: null, stops: [], shape_points: [] });
+  if (!res.ok) throw new ApiError(`Route stops: ${res.status}`, res.status, "/gtfs/route-stops");
+  return parseJson<{ trip_id: string | null; stops: BusStop[]; shape_points: [number, number][] }>(res, "/gtfs/route-stops");
 }
 
 /** GET /gtfs/route-all-stops - all stops in order for a route (canonical trip) */
@@ -511,8 +610,8 @@ export async function fetchAllStopsForRoute(
     "/gtfs/route-all-stops",
     options
   );
-  if (!res.ok) return { stops: [] };
-  return safeJson(res, "/gtfs/route-all-stops", { stops: [] });
+  if (!res.ok) throw new ApiError(`Route stops: ${res.status}`, res.status, "/gtfs/route-all-stops");
+  return parseJson<{ stops: BusStop[] }>(res, "/gtfs/route-all-stops");
 }
 
 /** GET /geocode?q=... - resolve place/address to lat, lng, display_name */
@@ -532,11 +631,8 @@ export async function fetchGeocode(
     "/geocode",
     options
   );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `Geocode: ${res.status}`);
-  }
-  return res.json() as Promise<GeocodeResult>;
+  if (!res.ok) throw await apiErrorFromResponse(res, "/geocode", `Geocode: ${res.status}`);
+  return parseJson<GeocodeResult>(res, "/geocode");
 }
 
 export async function createShareTrip(
@@ -551,8 +647,8 @@ export async function createShareTrip(
     apiKey: opts?.apiKey,
     signal: opts?.signal,
   });
-  if (!res.ok) throw new Error(`share_create_failed status=${res.status}`);
-  return res.json();
+  if (!res.ok) throw new ApiError(`share_create_failed status=${res.status}`, res.status, "/share/trips");
+  return parseJson<ShareTripResponse>(res, "/share/trips");
 }
 
 /** Fire-and-forget: silently updates phase/eta. Call without await. */
@@ -562,7 +658,8 @@ export function patchShareTrip(
   body: PatchShareTripRequest,
   opts?: RequestOptions
 ): void {
-  fetchWithRetry(`${baseUrl}/share/trips/${token}`, `/share/trips/${token}`, {
+  // Static label: pathLabel is logged, and the token grants access to the trip.
+  fetchWithRetry(`${baseUrl}/share/trips/${token}`, "/share/trips/:token", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

@@ -37,6 +37,15 @@ describe("useClasses", () => {
     expect(result.current.data?.classes[0].title).toBe("CS 101");
   });
 
+  it("scopes the cache key to the user and API host", async () => {
+    (client.fetchClasses as jest.Mock).mockResolvedValueOnce({ classes: [] });
+    const { useClasses } = getHooks();
+    const { result, client: qc } = renderHookWithQuery(() => useClasses());
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // No signed-in user in tests, so the user-id slot is null.
+    expect(qc.getQueryCache().getAll()[0].queryKey).toEqual(["classes", null, "http://test"]);
+  });
+
   it("is in loading state before fetch completes", async () => {
     (client.fetchClasses as jest.Mock).mockReturnValue(new Promise(() => {}));
     const { useClasses } = getHooks();

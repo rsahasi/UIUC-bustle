@@ -7,7 +7,7 @@ import { useLeaveBy } from "@/src/hooks/useLeaveBy";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
 import type { DepartureItem, RecommendationOption, RecommendationStep, ShareTripRequest, StopInfo } from "@/src/api/types";
 import { cancelClassReminder, cancelAllClassReminders, scheduleClassReminders } from "@/src/notifications/classReminders";
-import { scheduleLeaveNowAlert, cancelLeaveNowAlert, cancelAllLeaveNowAlerts, buildLeaveNowBody } from "@/src/notifications/leaveNow";
+import { scheduleLeaveNowAlert, cancelLeaveNowAlert, buildLeaveNowBody } from "@/src/notifications/leaveNow";
 import { addFavoriteStop, addFavoritePlace, getAfterLastClassPlaceId, getFavoritePlaces, type SavedPlace } from "@/src/storage/favorites";
 import { getPinnedRoutes, addPinnedRoute, removePinnedRoute, type PinnedRoute } from "@/src/storage/pinnedRoutes";
 import { getLastKnownHomeData, setLastKnownHomeData } from "@/src/storage/lastKnownHome";
@@ -187,7 +187,6 @@ export default function HomeScreen() {
   const [afterLastClassRecs, setAfterLastClassRecs] = useState<RecommendationOption[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [highlightWalk, setHighlightWalk] = useState(false);
-  const [bannerText, setBannerText] = useState<string | null>(null);
   const { online } = useNetworkStatus();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
@@ -207,7 +206,6 @@ export default function HomeScreen() {
   const [searchDestPinned, setSearchDestPinned] = useState(false);
   const [leaveNowBanner, setLeaveNowBanner] = useState<{ option: RecommendationOption; classTitle: string } | null>(null);
   const [routeSort, setRouteSort] = useState<'earliest' | 'fastest' | 'least-walk'>('earliest');
-  const [departuresFetchedAt, setDeparturesFetchedAt] = useState<number | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const recommendationsY = useRef(0);
@@ -236,33 +234,63 @@ export default function HomeScreen() {
   const nextUp = getNextClassToday(scheduleClasses);
 
   // Nearby stops — depends on location
+  const placeholderStops = useMemo(
+    () => (cachedHomeData ? { stops: cachedHomeData.stops } : undefined),
+    [cachedHomeData]
+  );
   const { data: nearbyStopsData } = useNearbyStops(
     location?.lat ?? 0,
     location?.lng ?? 0,
     {
       enabled: !!location && location.lat !== 0,
-      placeholderData: cachedHomeData ? { stops: cachedHomeData.stops } : undefined,
+      placeholderData: placeholderStops,
     }
   );
-  const stops = (nearbyStopsData?.stops ?? []).slice(0, TOP_STOPS) as StopWithDistance[];
+  // The backend sorts by distance but never returns it, so measure it here.
+  const stops: StopWithDistance[] = useMemo(
+    () =>
+      (nearbyStopsData?.stops ?? [])
+        .map((s) => ({
+          ...s,
+          distance_m: Math.round(haversineMeters(location?.lat ?? 0, location?.lng ?? 0, s.lat, s.lng)),
+        }))
+        .sort((a, b) => a.distance_m - b.distance_m)
+        .slice(0, TOP_STOPS),
+    [nearbyStopsData, location]
+  );
 
-  // Departures — one query per stop, all in parallel
-  const departureQueries = useQueries({
+  // Departures — one query per stop, all in parallel. `combine` collapses the
+  // per-query results into a value with a stable identity (replaceEqualDeep),
+  // so downstream memos and effects only re-run when the data actually changes.
+  const departures = useQueries({
     queries: stops.map((stop) => ({
-      queryKey: ["departures", stop.stop_id],
+      // Same key shape as useDepartures in src/queries/departures.ts — one
+      // cache entry per (stop, server), not a second parallel entry.
+      queryKey: ["departures", stop.stop_id, apiBaseUrl],
       queryFn: () => fetchDepartures(apiBaseUrl, stop.stop_id, 60, { apiKey }),
       staleTime: 30_000,
       refetchInterval: 30_000,
       enabled: !!apiBaseUrl && !!stop.stop_id,
     })),
+    combine: (results) => {
+      const byStop: Record<string, DepartureItem[]> = {};
+      const updatedAtByStop: Record<string, number> = {};
+      results.forEach((q, i) => {
+        const stop = stops[i];
+        if (!stop) return;
+        byStop[stop.stop_id] = q.data?.departures ?? [];
+        updatedAtByStop[stop.stop_id] = q.dataUpdatedAt;
+      });
+      return {
+        byStop,
+        updatedAtByStop,
+        anyPending: results.some((q) => q.isPending),
+        anyError: results.some((q) => q.isError),
+        hasData: results.some((q) => q.data !== undefined),
+      };
+    },
   });
-
-  // Build departuresByStop map from query results
-  const departuresByStop: Record<string, DepartureItem[]> = {};
-  departureQueries.forEach((q, i) => {
-    const stop = stops[i];
-    if (stop) departuresByStop[stop.stop_id] = q.data?.departures ?? [];
-  });
+  const departuresByStop = departures.byStop;
 
   // Recommendation params
   const recParams = useMemo(() => {
@@ -289,7 +317,9 @@ export default function HomeScreen() {
   }, [scheduleClasses, location, walkingSpeedMps, bufferMinutes, rainMode]);
 
   const { data: recData } = useRecommendation(recParams);
-  const recommendations = recData?.options ?? [];
+  // Stable identity: a bare `?? []` would mint a fresh array every render and
+  // re-fire every effect (incl. the AsyncStorage write) that depends on it
+  const recommendations = useMemo(() => recData?.options ?? [], [recData]);
 
   // Autocomplete — replaces the debounced fetchAutocomplete useEffect
   const [suppressAutocomplete, setSuppressAutocomplete] = useState(false);
@@ -355,7 +385,11 @@ export default function HomeScreen() {
     (async () => {
       try {
         await cancelAllClassReminders();
-        await cancelAllLeaveNowAlerts();
+        // Deliberately NOT cancelAllLeaveNowAlerts() here: scheduleClassReminders
+        // never writes leave-now identifiers, so a blanket cancel would leave the
+        // live departure alert dead until the next recommendation poll (or forever
+        // if the app backgrounds first). scheduleLeaveNowAlert cancels its own
+        // identifier before rewriting, and per-class cancels cover delete/mute.
         const buildingsRes = await fetchBuildings(apiBaseUrl, { apiKey: apiKey ?? undefined }).catch(() => ({ buildings: [] }));
         const buildingMap: Record<string, string> = {};
         for (const b of buildingsRes.buildings ?? []) buildingMap[b.building_id] = b.name;
@@ -411,29 +445,18 @@ export default function HomeScreen() {
     setLeaveNowBanner(best.depart_in_minutes <= 2 ? { option: best, classTitle: nextClass.title } : null);
   }, [recommendations, classNotificationsEnabled, scheduleClasses]);
 
-  // ── Departures timestamp tracking ─────────────────────────────────
-  useEffect(() => {
-    // departureQueries is a new array each render; Date.now() here would
-    // change state every run and loop. dataUpdatedAt is stable per fetch.
-    const latest = Math.max(0, ...departureQueries.map((q) => q.dataUpdatedAt ?? 0));
-    if (latest > 0) {
-      setDeparturesFetchedAt((prev) => (prev === latest ? prev : latest));
-    }
-  }, [departureQueries]);
-
   // ── Offline / stale-data banner ───────────────────────────────────
   // Honest state: when offline or the live fetch errors, show the age of the
   // cached snapshot we're falling back to (or an empty state if there's none).
-  useEffect(() => {
-    const anyError = departureQueries.some(q => q.isError);
-    const status = dataStatus({
+  // Derived straight from the combined query state — no effect or state needed.
+  const bannerText = useMemo(() => {
+    return dataStatus({
       online,
-      isError: anyError,
-      hasLiveData: online && !anyError,
+      isError: departures.anyError,
+      hasLiveData: online && !departures.anyError,
       cacheAgeMs: cachedHomeData ? Date.now() - cachedHomeData.savedAt : null,
-    });
-    setBannerText(status.banner);
-  }, [departureQueries, online, cachedHomeData]);
+    }).banner;
+  }, [departures.anyError, online, cachedHomeData]);
 
   // ── After-last-class place recommendations ────────────────────────
   useEffect(() => {
@@ -770,7 +793,9 @@ export default function HomeScreen() {
     if (!nextClassStartTime) return 'on-time';
     const [h, m] = nextClassStartTime.split(':').map(Number);
     const classMins = (h ?? 0) * 60 + (m ?? 0);
-    const arrivalMins = nowMins + opt.depart_in_minutes + opt.eta_minutes;
+    // eta_minutes is already total door-to-door time (incl. the wait), so
+    // arrival is now + eta — adding depart_in would double-count the wait
+    const arrivalMins = nowMins + opt.eta_minutes;
     const margin = classMins - arrivalMins;
     if (margin >= 5) return 'on-time';
     if (margin >= 0) return 'tight';
@@ -915,6 +940,7 @@ export default function HomeScreen() {
     <ScrollView
       ref={scrollRef}
       contentContainerStyle={styles.scrollContent}
+      keyboardShouldPersistTaps="handled"
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />
       }
@@ -1446,7 +1472,8 @@ export default function HomeScreen() {
               const [ch, cm] = nextUp.start_time_local.split(':').map(Number);
               const classMins = (ch ?? 0) * 60 + (cm ?? 0);
               const bestBus = busOpts.reduce((a, b) => a.eta_minutes < b.eta_minutes ? a : b);
-              const arrivalMins = nowMins + bestBus.depart_in_minutes + bestBus.eta_minutes;
+              // eta_minutes already includes the wait — arrival is now + eta
+              const arrivalMins = nowMins + bestBus.eta_minutes;
               const margin = classMins - arrivalMins;
               const destContainsClass = searchDestinationName
                 ? nextUp.title.toLowerCase().split(' ').some((w) => w.length > 3 && searchDestinationName.toLowerCase().includes(w))
@@ -1473,11 +1500,15 @@ export default function HomeScreen() {
 
       {/* Nearby stops */}
       <Text style={styles.stopsSectionTitle}>Nearby stops</Text>
-      {stops.length > 0 && Object.keys(departuresByStop).every((id) => (departuresByStop[id]?.length ?? 0) === 0) && (
-        <View style={styles.mtdHint}>
-          <Text style={styles.mtdHintText}>No upcoming departures at nearby stops. Buses may not be running at this time.</Text>
-        </View>
-      )}
+      {stops.length > 0 &&
+        !departures.anyPending &&
+        !departures.anyError &&
+        departures.hasData &&
+        stops.every((s) => (departuresByStop[s.stop_id]?.length ?? 0) === 0) && (
+          <View style={styles.mtdHint}>
+            <Text style={styles.mtdHintText}>No upcoming departures at nearby stops. Buses may not be running at this time.</Text>
+          </View>
+        )}
       {stops.length === 0 ? (
         <Text style={styles.empty}>No nearby stops in range.</Text>
       ) : (
@@ -1505,7 +1536,8 @@ export default function HomeScreen() {
                 <Text style={styles.depText}>No departures</Text>
               ) : (
                 (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
-                  const isStale = d.is_realtime && departuresFetchedAt != null && Date.now() - departuresFetchedAt > 2 * 60 * 1000;
+                  const fetchedAt = departures.updatedAtByStop[stop.stop_id] ?? 0;
+                  const isStale = d.is_realtime && fetchedAt > 0 && Date.now() - fetchedAt > 2 * 60 * 1000;
                   const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
                   const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
                   const hasExtras = isStale || showDelayed || showEarly;

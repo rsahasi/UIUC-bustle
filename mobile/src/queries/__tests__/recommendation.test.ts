@@ -36,6 +36,14 @@ describe("useRecommendation", () => {
     expect(client.fetchRecommendation).toHaveBeenCalledWith("http://test", PARAMS, { apiKey: null });
   });
 
+  it("scopes the cache key to the user and API host", async () => {
+    (client.fetchRecommendation as jest.Mock).mockResolvedValueOnce({ options: [] });
+    const { result, client: qc } = renderHookWithQuery(() => useRecommendation(PARAMS));
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // No signed-in user in tests, so the user-id slot is null.
+    expect(qc.getQueryCache().getAll()[0].queryKey).toEqual(["recommendation", PARAMS, null, "http://test"]);
+  });
+
   it("does not fetch when params are null", () => {
     const { result } = renderHookWithQuery(() => useRecommendation(null));
     expect(result.current.fetchStatus).toBe("idle");

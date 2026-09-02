@@ -15,12 +15,22 @@ logger = logging.getLogger(__name__)
 # log injection / unbounded values); otherwise generate one.
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._\-]{1,64}$")
 
+# Share-trip routes carry the capability token in the path itself (/t/<token>,
+# /share/trips/<token>, /share/trips/<token>/status). Anyone holding the token
+# can read or update the trip, so it must never land in logs or Sentry.
+_TOKEN_PATH_RE = re.compile(r"^/(t|share/trips)/[^/]+")
+
 
 def _resolve_request_id(request: Request) -> str:
     incoming = request.headers.get("X-Request-ID", "")
     if incoming and _SAFE_REQUEST_ID.match(incoming):
         return incoming
     return uuid.uuid4().hex
+
+
+def _redact_path(path: str) -> str:
+    """Replace the share-token segment of a path with <redacted>; other paths pass through."""
+    return _TOKEN_PATH_RE.sub(lambda m: f"/{m.group(1)}/<redacted>", path)
 
 
 def _anonymize_ip(ip: str) -> str:
@@ -54,9 +64,22 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         request_id = _resolve_request_id(request)
         request.state.request_id = request_id
         start = time.perf_counter()
-        response = await call_next(request)
-        duration_ms = (time.perf_counter() - start) * 1000
         client = _client_ip(request)
+        path = _redact_path(request.url.path)
+        try:
+            response = await call_next(request)
+        except Exception:
+            # Without this, an unhandled handler exception skips record_request
+            # entirely and /metrics reports requests_5xx = 0 forever. Re-raise so
+            # the app-level exception handler still builds the 500 response.
+            duration_ms = (time.perf_counter() - start) * 1000
+            record_request(500)
+            logger.exception(
+                "request id=%s method=%s path=%s status=500 duration_ms=%.1f client=%s",
+                request_id, request.method, path, duration_ms, client,
+            )
+            raise
+        duration_ms = (time.perf_counter() - start) * 1000
         record_request(response.status_code)
         # Echo the correlation id so clients/proxies can tie their logs to ours.
         response.headers["X-Request-ID"] = request_id
@@ -64,7 +87,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             "request id=%s method=%s path=%s status=%s duration_ms=%.1f client=%s",
             request_id,
             request.method,
-            request.url.path,
+            path,
             response.status_code,
             duration_ms,
             client,

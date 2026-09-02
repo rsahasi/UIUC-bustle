@@ -18,7 +18,7 @@ export function useAutocomplete(query: string) {
   }, [query]);
 
   return useQuery({
-    queryKey: ["autocomplete", debouncedQuery],
+    queryKey: ["autocomplete", debouncedQuery, apiBaseUrl],
     queryFn: () => fetchAutocomplete(apiBaseUrl, debouncedQuery, { apiKey }),
     staleTime: 10_000,
     enabled: !!apiBaseUrl && debouncedQuery.length >= 2,
@@ -28,7 +28,7 @@ export function useAutocomplete(query: string) {
 export function usePlacesAutocomplete(query: string, sessionToken?: string) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["places-autocomplete", query],
+    queryKey: ["places-autocomplete", query, apiBaseUrl],
     queryFn: () =>
       fetchPlacesAutocomplete(apiBaseUrl, query, sessionToken, { apiKey }),
     staleTime: 10_000,
@@ -39,7 +39,7 @@ export function usePlacesAutocomplete(query: string, sessionToken?: string) {
 export function usePlaceDetails(placeId: string | null) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["place-details", placeId],
+    queryKey: ["place-details", placeId, apiBaseUrl],
     queryFn: () => fetchPlaceDetails(apiBaseUrl, placeId!, { apiKey }),
     staleTime: Infinity,
     enabled: !!apiBaseUrl && !!placeId,
@@ -49,7 +49,7 @@ export function usePlaceDetails(placeId: string | null) {
 export function useGeocode(query: string | null) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["geocode", query],
+    queryKey: ["geocode", query, apiBaseUrl],
     queryFn: () => fetchGeocode(apiBaseUrl, query!, { apiKey }),
     staleTime: 86_400_000,
     enabled: !!apiBaseUrl && !!query,
