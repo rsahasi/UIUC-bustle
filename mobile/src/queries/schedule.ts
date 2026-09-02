@@ -8,12 +8,15 @@ import {
   fetchClasses,
 } from "@/src/api/client";
 import type { UpdateClassRequest } from "@/src/api/types";
+import { useCurrentUserId } from "@/src/auth/useAuth";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 
 export function useClasses() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
+  const userId = useCurrentUserId();
   return useQuery({
-    queryKey: ["classes"],
+    // /schedule/classes is JWT-scoped server-side, so the response belongs to one account.
+    queryKey: ["classes", userId, apiBaseUrl],
     queryFn: () => fetchClasses(apiBaseUrl, { apiKey }),
     staleTime: 60_000,
     enabled: !!apiBaseUrl,
@@ -23,7 +26,7 @@ export function useClasses() {
 export function useBuildings() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["buildings"],
+    queryKey: ["buildings", apiBaseUrl],
     queryFn: () => fetchBuildings(apiBaseUrl, { apiKey }),
     staleTime: Infinity,
     enabled: !!apiBaseUrl,
@@ -33,7 +36,7 @@ export function useBuildings() {
 export function useBuildingSearch(query: string) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["building-search", query],
+    queryKey: ["building-search", query, apiBaseUrl],
     queryFn: () => fetchBuildingSearch(apiBaseUrl, query, { apiKey }),
     staleTime: 30_000,
     enabled: !!apiBaseUrl && query.length >= 2,

@@ -1,6 +1,11 @@
 """
 Claude AI client for UIUC Bus App.
 Wraps anthropic.Anthropic to provide domain-specific AI capabilities.
+
+Every method here is best-effort: AI output is decoration on top of a
+deterministic result, so a failure must degrade to a useful fallback rather
+than propagate. Failures are logged per-cause so AI health is observable
+instead of being flattened into one anonymous warning.
 """
 from __future__ import annotations
 
@@ -12,11 +17,89 @@ logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
 
+# These calls are one-shot generations of at most 512 tokens and sit on a
+# user-facing request path. The SDK default is a 600s read timeout with 2
+# retries, which lets a single hung upstream stall a request for 30 minutes.
+REQUEST_TIMEOUT_SECONDS = 8.0
+MAX_RETRIES = 1
+
+
+def _text_of(msg: Any) -> str:
+    """Return the first text block, ignoring any non-text content blocks."""
+    for block in getattr(msg, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    return ""
+
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    """
+    Parse a JSON object from a model response.
+
+    The prompts ask for bare JSON, but models occasionally wrap output in a
+    markdown fence. Recover from that rather than discarding a good response.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        # Drop the opening fence ("```" or "```json") and the closing fence;
+        # json.loads tolerates the surrounding newlines that remain.
+        text = text[3:]
+        if text.startswith("json"):
+            text = text[4:]
+        if text.endswith("```"):
+            text = text[:-3]
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+    return data
+
 
 class ClaudeClient:
     def __init__(self, api_key: str):
         import anthropic
-        self._client = anthropic.Anthropic(api_key=api_key)
+
+        self._client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            max_retries=MAX_RETRIES,
+        )
+
+    def close(self) -> None:
+        """Release the underlying HTTP connection pool."""
+        try:
+            self._client.close()
+        except Exception:  # pragma: no cover - close must never raise
+            pass
+
+    def __enter__(self) -> "ClaudeClient":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+    def _log_failure(self, op: str, exc: Exception) -> None:
+        """Log an AI failure under a cause-specific event name."""
+        import anthropic
+
+        # AuthenticationError and RateLimitError subclass APIStatusError, so
+        # the specific checks must come before the generic status branch.
+        if isinstance(exc, anthropic.AuthenticationError):
+            # Distinct level: a revoked or unbilled key disables every AI
+            # feature silently, since all call sites fall back cleanly.
+            logger.error("claude_auth_failed op=%s", op)
+        elif isinstance(exc, anthropic.RateLimitError):
+            response = getattr(exc, "response", None)
+            retry_after = response.headers.get("retry-after") if response is not None else None
+            logger.warning("claude_rate_limited op=%s retry_after=%s", op, retry_after)
+        elif isinstance(exc, anthropic.APIConnectionError):
+            # Covers APITimeoutError too: the 8s budget above was exhausted.
+            logger.warning("claude_unreachable op=%s error=%s", op, exc)
+        elif isinstance(exc, anthropic.APIStatusError):
+            logger.warning("claude_api_error op=%s status=%s", op, exc.status_code)
+        elif isinstance(exc, (json.JSONDecodeError, ValueError)):
+            logger.warning("claude_bad_json op=%s error=%s", op, exc)
+        else:
+            logger.warning("claude_error op=%s type=%s error=%s", op, type(exc).__name__, exc)
 
     def _ask(self, system: str, user: str, max_tokens: int = 512) -> str:
         """Make a single Claude call and return the text response."""
@@ -26,7 +109,11 @@ class ClaudeClient:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return msg.content[0].text if msg.content else ""
+        if getattr(msg, "stop_reason", None) == "max_tokens":
+            # Truncated output cannot be valid JSON; say so explicitly rather
+            # than letting json.loads fail with a confusing parse error.
+            raise ValueError(f"response truncated at max_tokens={max_tokens}")
+        return _text_of(msg)
 
     def get_best_route(
         self,
@@ -39,10 +126,12 @@ class ClaudeClient:
         Rank route options and return ai_explanation for the best one.
         Returns: { ranked_options: [...], ai_explanation: str }
         """
+        identity = list(range(len(route_options)))
         system = (
             "You are a campus transit assistant for UIUC. Given route options "
             "to a destination, rank them and explain the best choice concisely. "
             "Respond ONLY with valid JSON: {\"ranked_order\": [0,1,2], \"ai_explanation\": \"...\"}. "
+            "ranked_order must be a permutation of every option index, each used exactly once. "
             "Keep ai_explanation under 100 chars."
         )
         user = (
@@ -52,15 +141,28 @@ class ClaudeClient:
         )
         try:
             raw = self._ask(system, user, max_tokens=256)
-            data = json.loads(raw)
+            data = _parse_json_object(raw)
+            ranked = data.get("ranked_order", identity)
+            # A non-permutation would silently drop or duplicate routes for the
+            # user, so reject anything that is not an exact reordering. The
+            # element check keeps floats and bools (which compare equal to
+            # ints) from reaching the caller's list indexing.
+            if not (
+                isinstance(ranked, list)
+                and all(isinstance(i, int) and not isinstance(i, bool) for i in ranked)
+                and sorted(ranked) == identity
+            ):
+                logger.warning("claude_bad_ranking op=get_best_route ranked=%s", ranked)
+                ranked = identity
+            explanation = data.get("ai_explanation", "")
             return {
-                "ranked_order": data.get("ranked_order", list(range(len(route_options)))),
-                "ai_explanation": data.get("ai_explanation", ""),
+                "ranked_order": ranked,
+                "ai_explanation": explanation if isinstance(explanation, str) else "",
             }
         except Exception as e:
-            logger.warning("claude_get_best_route_error error=%s", str(e))
+            self._log_failure("get_best_route", e)
             return {
-                "ranked_order": list(range(len(route_options))),
+                "ranked_order": identity,
                 "ai_explanation": "",
             }
 
@@ -89,13 +191,13 @@ class ClaudeClient:
         )
         try:
             raw = self._ask(system, user, max_tokens=512)
-            data = json.loads(raw)
+            data = _parse_json_object(raw)
             return {
                 "narrative": data.get("narrative", ""),
                 "destination_sequence": data.get("destination_sequence", []),
             }
         except Exception as e:
-            logger.warning("claude_after_class_plan_error error=%s", str(e))
+            self._log_failure("get_after_class_plan", e)
             return {
                 "narrative": f"Here's a plan for: {freetext_plan}",
                 "destination_sequence": [{"dest": freetext_plan, "options": []}],
@@ -127,14 +229,14 @@ class ClaudeClient:
         )
         try:
             raw = self._ask(system, user, max_tokens=400)
-            data = json.loads(raw)
+            data = _parse_json_object(raw)
             return {
                 "report": data.get("report", ""),
                 "encouragement": data.get("encouragement", ""),
                 "highlights": data.get("highlights", []),
             }
         except Exception as e:
-            logger.warning("claude_eod_report_error error=%s", str(e))
+            self._log_failure("get_eod_activity_report", e)
             return {
                 "report": f"You walked {distance_m:.0f} m, burned {calories:.0f} kcal, and took {steps} steps today!",
                 "encouragement": "Keep up the great work!",
@@ -161,5 +263,5 @@ class ClaudeClient:
         try:
             return self._ask(system, user, max_tokens=60).strip()
         except Exception as e:
-            logger.warning("claude_walk_encouragement_error error=%s", str(e))
+            self._log_failure("get_walk_encouragement", e)
             return f"Great job walking to {dest_name}!"

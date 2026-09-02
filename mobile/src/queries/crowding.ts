@@ -7,7 +7,8 @@ import type { CrowdingReportRequest } from "@/src/api/types";
 export function useCrowding(vehicleId: string | null, routeId?: string) {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   return useQuery({
-    queryKey: ["crowding", vehicleId],
+    // The backend falls back to a route-specific estimate, so routeId changes the answer.
+    queryKey: ["crowding", vehicleId, routeId ?? null, apiBaseUrl],
     queryFn: () =>
       vehicleId ? fetchCrowding(apiBaseUrl, vehicleId, routeId, { apiKey: apiKey ?? undefined }) : null,
     enabled: !!vehicleId && !!apiBaseUrl,

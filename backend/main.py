@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from settings import get_settings
@@ -30,6 +31,7 @@ from src.data.crowding_repo import (
 from src.data.crowding_estimate import estimate_crowding_level
 from src.auth.jwt import get_current_user
 from src.middleware import OptionalAPIKeyMiddleware, RequestLoggingMiddleware, get_valid_api_keys
+from src.middleware.request_logging import _redact_path
 from src.monitoring import get_metrics
 from src.mtd.client import MTDClient
 from src.mtd.models import DeparturesResponse, NearbyStopsResponse, StopInfo
@@ -85,6 +87,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s %(name)s %(message)s",
 )
+# httpx logs every request at INFO as `HTTP Request: GET <full url>`, and the
+# MTD API requires its key as a query parameter. At INFO that writes MTD_API_KEY
+# into application logs (and Sentry breadcrumbs) on every departures fetch.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
@@ -214,14 +221,20 @@ def unhandled_exception_handler(request: Request, exc: Exception):
     from fastapi.exceptions import RequestValidationError
     if isinstance(exc, (HTTPException, RequestValidationError)):
         raise exc
-    logger.exception("telemetry unhandled_exception path=%s", request.url.path)
+    logger.exception("telemetry unhandled_exception path=%s", _redact_path(request.url.path))
     return JSONResponse(
         status_code=500,
         content={"detail": "An unexpected error occurred. Please try again later."},
     )
 
 
-# Order: last added = innermost. So RequestLogging runs first (outermost), then Auth, then CORS.
+# Order: add_middleware prepends, so the last added is outermost:
+# CORS -> Auth -> RequestLogging -> SlowAPI -> routes.
+# slowapi applies `default_limits` only from inside SlowAPIMiddleware (the
+# decorator covers decorated routes only). Without it the 100/minute default
+# silently covered none of the undecorated routes. Innermost so its 429s are
+# still logged/counted by RequestLogging and get CORS headers.
+app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     OptionalAPIKeyMiddleware,
