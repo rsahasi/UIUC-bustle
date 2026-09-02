@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -100,8 +100,17 @@ const DEMO_DEPARTURES = [
  * accessibility and untouchable.
  */
 function DepartureVignette() {
-  // Anchor targets once on mount so the board ticks live from realistic offsets.
-  const [targets] = useState(() => DEMO_DEPARTURES.map((d) => Date.now() + d.offsetMs));
+  // Anchor targets on mount, then reseed whenever the soonest row runs out —
+  // a decorative board stuck on three "Now"s reads as broken, not live.
+  const [targets, setTargets] = useState(() => DEMO_DEPARTURES.map((d) => Date.now() + d.offsetMs));
+  useEffect(() => {
+    const soonest = Math.min(...targets);
+    const t = setTimeout(
+      () => setTargets(DEMO_DEPARTURES.map((d) => Date.now() + d.offsetMs)),
+      Math.max(soonest - Date.now(), 0) + 12_000,
+    );
+    return () => clearTimeout(t);
+  }, [targets]);
   return (
     <View
       style={styles.boardFrame}
