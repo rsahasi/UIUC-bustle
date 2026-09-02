@@ -59,7 +59,7 @@ const styles = StyleSheet.create({
     marginHorizontal: theme.spacing.lg,
     marginVertical: theme.spacing.xs,
     overflow: "hidden",
-    ...theme.shadows.md,
+    ...theme.elevation[2],
   },
   highlighted: {
     borderColor: theme.colors.orange,
@@ -81,22 +81,19 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.xs,
   },
   eta: {
-    fontFamily: "DMSans_600SemiBold",
+    ...theme.text.numeric,
     fontSize: 14,
     color: theme.colors.text,
   },
   depart: {
-    fontFamily: "DMSans_400Regular",
-    fontSize: 13,
+    ...theme.text.caption,
     color: theme.colors.textSecondary,
     marginBottom: theme.spacing.xs,
   },
   summary: {
-    fontFamily: "DMSans_400Regular",
-    fontSize: 13,
+    ...theme.text.caption,
     color: theme.colors.textSecondary,
     marginBottom: theme.spacing.md,
-    lineHeight: 18,
   },
   actions: {
     flexDirection: "row",

@@ -60,7 +60,6 @@ function OptionCardWithCrowding({ option, children }: OptionCardWithCrowdingProp
 import {
   ActivityIndicator,
   Alert,
-  Animated,
   LayoutChangeEvent,
   Linking,
   Pressable,
@@ -73,10 +72,11 @@ import {
   View,
 } from "react-native";
 import { theme } from "@/src/constants/theme";
-import { FadeInView, PressableScale, PulseView, Skeleton } from "@/src/components/ui/motion";
+import { AnimatedNumber, FadeInView, PressableScale, PulseView, Skeleton, TickingCountdown } from "@/src/components/ui/motion";
+import { EmptyState } from "@/src/components/ui/EmptyState";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ArrowRight, ChevronRight, Clock, MapPin, Search, Star, X } from "lucide-react-native";
+import { ArrowRight, Clock, Footprints, MapPin, Search, Star, X } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 
 const TOP_STOPS = 3;
@@ -89,37 +89,12 @@ function getGreeting(): string {
   return "Good evening";
 }
 
+/** Gently breathing beckon arrow — PulseView obeys reduce-motion internally. */
 function NextUpArrow() {
-  const translateX = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(translateX, { toValue: 4, duration: 500, useNativeDriver: true }),
-        Animated.timing(translateX, { toValue: 0, duration: 500, useNativeDriver: true }),
-      ])
-    ).start();
-  }, [translateX]);
   return (
-    <Animated.View style={{ transform: [{ translateX }] }}>
-      <ArrowRight size={16} color={theme.colors.orange} />
-    </Animated.View>
-  );
-}
-
-function LiveBadge() {
-  const opacity = useRef(new Animated.Value(1)).current;
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(opacity, { toValue: 0.35, duration: 800, useNativeDriver: true }),
-        Animated.timing(opacity, { toValue: 1, duration: 800, useNativeDriver: true }),
-      ])
-    ).start();
-  }, [opacity]);
-  return (
-    <Animated.View style={[{ backgroundColor: theme.colors.orange, borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1 }, { opacity }]}>
-      <Text style={{ fontFamily: "DMSans_600SemiBold", fontSize: 10, color: "#fff" }}>Live</Text>
-    </Animated.View>
+    <PulseView minOpacity={0.55} duration={1200}>
+      <ArrowRight size={16} color={theme.colors.brandInk} />
+    </PulseView>
   );
 }
 
@@ -316,7 +291,7 @@ export default function HomeScreen() {
     } as import("@/src/api/types").RecommendationRequest;
   }, [scheduleClasses, location, walkingSpeedMps, bufferMinutes, rainMode]);
 
-  const { data: recData } = useRecommendation(recParams);
+  const { data: recData, isPending: recPending } = useRecommendation(recParams);
   // Stable identity: a bare `?? []` would mint a fresh array every render and
   // re-fire every effect (incl. the AsyncStorage write) that depends on it
   const recommendations = useMemo(() => recData?.options ?? [], [recData]);
@@ -819,6 +794,28 @@ export default function HomeScreen() {
     return copy;
   };
 
+  // ── Hero "next departure" marquee ─────────────────────────────────
+  // The single most useful bus right now, derived purely from data the
+  // component already fetched (nearby stops + their departures). No hooks,
+  // no extra requests — just a render-time scan of at most 3 stops.
+  let nextDeparture: { stop: StopWithDistance; dep: DepartureItem } | null = null;
+  for (const stop of stops) {
+    for (const dep of departuresByStop[stop.stop_id] ?? []) {
+      if (dep.expected_mins < 0) continue;
+      if (!nextDeparture || dep.expected_mins < nextDeparture.dep.expected_mins) {
+        nextDeparture = { stop, dep };
+      }
+    }
+  }
+  const nextDepParsedMs = nextDeparture?.dep.expected_time_iso
+    ? Date.parse(nextDeparture.dep.expected_time_iso)
+    : NaN;
+  const nextDepTargetMs = Number.isFinite(nextDepParsedMs) ? nextDepParsedMs : null;
+  // Share of a 30-minute departure-board window already elapsed (0..1)
+  const nextDepProgress = nextDeparture
+    ? Math.min(Math.max(1 - nextDeparture.dep.expected_mins / 30, 0), 1)
+    : 0;
+
   /** Render a single option card — shared between search results, after-class recs, and class recommendations. */
   const renderOptionCard = (
     opt: RecommendationOption,
@@ -837,10 +834,11 @@ export default function HomeScreen() {
     const departNow = departMins <= 1;
     const accentColor = isWalk || isBestBus ? theme.colors.orange : theme.colors.border;
     const status = optionStatus(opt, classStartTime);
+    // Deep status tokens — AA-safe as fills behind white pill text
     const statusColors: Record<string, string> = {
-      'on-time': theme.colors.success,
-      'tight': theme.colors.warning,
-      'late': theme.colors.error,
+      'on-time': theme.colors.successDeep,
+      'tight': theme.colors.warningDeep,
+      'late': theme.colors.errorDeep,
       'walk-only': theme.colors.navy,
     };
     const statusLabels: Record<string, string> = {
@@ -849,6 +847,16 @@ export default function HomeScreen() {
       'late': 'LATE',
       'walk-only': 'WALK',
     };
+    const walkMins = Math.round(sumWalkingMinutes(opt.steps));
+    // Status pill is ALWAYS rendered as text — the tinted border is never the
+    // only signal. Without a class deadline the pill states the trip length.
+    const hasDeadlineStatus = !!classStartTime;
+    const pillBg = hasDeadlineStatus ? statusColors[status] : theme.colors.navyLight;
+    const pillLabel = hasDeadlineStatus
+      ? statusLabels[status]
+      : isWalk
+        ? 'WALK'
+        : `${opt.eta_minutes} MIN TRIP`;
 
     return (
       <FadeInView
@@ -856,7 +864,7 @@ export default function HomeScreen() {
         delay={index * 80}
         style={[
           styles.optionCard,
-          { borderLeftColor: statusColors[status] },
+          { borderLeftColor: hasDeadlineStatus ? statusColors[status] : accentColor },
           isHighlighted && styles.optionCardHighlight,
         ]}
       >
@@ -868,9 +876,13 @@ export default function HomeScreen() {
               <View style={[styles.cardTypeBadge, isWalk ? styles.cardTypeBadgeWalk : styles.cardTypeBadgeBus]}>
                 <Text style={styles.cardTypeBadgeText}>{label}</Text>
               </View>
-              {classStartTime && (
-                <View style={[styles.optionStatusPill, { backgroundColor: statusColors[status] }]}>
-                  <Text style={styles.optionStatusText}>{statusLabels[status]}</Text>
+              <View style={[styles.optionStatusPill, { backgroundColor: pillBg }]}>
+                <Text style={styles.optionStatusText}>{pillLabel}</Text>
+              </View>
+              {walkMins > 0 && (
+                <View style={styles.walkBadge}>
+                  <Footprints size={11} color={theme.colors.textSecondary} strokeWidth={2.2} />
+                  <Text style={styles.walkBadgeText}>{walkMins} min walk</Text>
                 </View>
               )}
             </View>
@@ -882,29 +894,37 @@ export default function HomeScreen() {
             </Text>
           </View>
 
-          {/* Right column: hero countdown */}
+          {/* Right column: hero countdown (tabular digits roll on refresh) */}
           <View style={styles.cardCountdownCol}>
             {departNow && !isWalk ? (
               <PulseView minOpacity={0.55} duration={700}>
                 <Text style={styles.cardDepartNow}>Now</Text>
               </PulseView>
             ) : (
-              <Text style={departNow ? styles.cardDepartNow : styles.cardDepartTime}>
-                {isWalk ? opt.eta_minutes : departMins}
-              </Text>
+              <AnimatedNumber
+                value={isWalk ? opt.eta_minutes : departMins}
+                style={departNow ? styles.cardDepartNow : styles.cardDepartTime}
+                accessibilityLabel={
+                  isWalk ? `${opt.eta_minutes} minute walk` : `departs in ${departMins} minutes`
+                }
+              />
             )}
-            {!departNow && (
-              <Text style={styles.cardDepartUnit}>{isWalk ? "min walk" : "min"}</Text>
-            )}
+            <Text style={styles.cardDepartUnit}>
+              {isWalk ? "min walk" : departNow ? "departing" : "min"}
+            </Text>
           </View>
         </View>
 
-        {/* Footer row: MTD free + AI hint + actions */}
+        {/* AI explanation — clamped, quoted */}
+        {opt.ai_explanation && (
+          <View style={styles.aiQuoteWrap}>
+            <Text style={styles.aiExplanation} numberOfLines={2}>{'“'}{opt.ai_explanation}{'”'}</Text>
+          </View>
+        )}
+
+        {/* Footer row: MTD free + actions */}
         <View style={styles.cardBottomRow}>
           {!isWalk && <Text style={styles.mtdFree}>MTD · Free</Text>}
-          {opt.ai_explanation && (
-            <Text style={styles.aiExplanation} numberOfLines={1}>{opt.ai_explanation}</Text>
-          )}
           <View style={{ flex: 1 }} />
           <View style={styles.cardActions}>
             <PressableScale
@@ -971,6 +991,75 @@ export default function HomeScreen() {
             </View>
           )}
         </FadeInView>
+
+        {/* Next-departure marquee — the one bus that matters right now */}
+        <FadeInView delay={90} dy={12}>
+          {nextDeparture ? (
+            <View
+              style={styles.heroMarquee}
+              accessible
+              accessibilityLabel={`Next departure: route ${nextDeparture.dep.route} to ${nextDeparture.dep.headsign || "campus"}, from ${nextDeparture.stop.stop_name}, ${nextDeparture.dep.expected_mins <= 0 ? "departing now" : `in ${nextDeparture.dep.expected_mins} minutes`}${nextDeparture.dep.is_realtime ? ", live tracking" : ", scheduled time"}`}
+            >
+              <View style={styles.heroMarqueeLeft}>
+                <Text style={styles.heroMarqueeEyebrow}>Next departure</Text>
+                <View style={styles.heroMarqueeRouteRow}>
+                  <View style={styles.heroRoutePill}>
+                    <Text style={styles.heroRoutePillText}>{nextDeparture.dep.route}</Text>
+                  </View>
+                  <Text style={styles.heroMarqueeHeadsign} numberOfLines={1}>
+                    {nextDeparture.dep.headsign || "—"}
+                  </Text>
+                </View>
+                <View style={styles.heroMarqueeStopRow}>
+                  <MapPin size={11} color={theme.colors.textOnNavyMuted} />
+                  <Text style={styles.heroMarqueeStop} numberOfLines={1}>
+                    {nextDeparture.stop.stop_name} · {formatDistance(nextDeparture.stop.distance_m)}
+                  </Text>
+                </View>
+                <View style={styles.heroProgressTrack}>
+                  <View style={[styles.heroProgressFill, { width: `${Math.round(nextDepProgress * 100)}%` }]} />
+                </View>
+              </View>
+              <View style={styles.heroMarqueeRight}>
+                <TickingCountdown
+                  targetMs={nextDepTargetMs}
+                  minutes={nextDeparture.dep.expected_mins}
+                  style={styles.heroMarqueeCountdown}
+                />
+                <Badge
+                  label={nextDeparture.dep.is_realtime ? "LIVE" : "Scheduled"}
+                  variant={nextDeparture.dep.is_realtime ? "live" : "info"}
+                  size="sm"
+                />
+              </View>
+            </View>
+          ) : departures.anyPending ? (
+            <View style={styles.heroMarquee}>
+              <View style={styles.heroMarqueeLeft}>
+                <Text style={styles.heroMarqueeEyebrow}>Next departure</Text>
+                <Skeleton width="72%" height={20} style={styles.heroMarqueeSkeleton} />
+                <Skeleton width="46%" height={12} style={styles.heroMarqueeSkeleton} />
+              </View>
+            </View>
+          ) : (
+            <View
+              style={styles.heroMarquee}
+              accessible
+              accessibilityLabel="Departure board: no buses due at your nearby stops right now"
+            >
+              <View style={styles.heroMarqueeLeft}>
+                <Text style={styles.heroMarqueeEyebrow}>Departure board</Text>
+                <Text style={styles.heroMarqueeHeadsign}>All quiet at your stops</Text>
+                <Text style={styles.heroMarqueeStop} numberOfLines={2}>
+                  No buses due nearby right now — campus is very walkable
+                </Text>
+              </View>
+              <View style={styles.heroMarqueeRight}>
+                <Footprints size={26} color={theme.colors.textOnNavyMuted} strokeWidth={1.8} />
+              </View>
+            </View>
+          )}
+        </FadeInView>
       </LinearGradient>
 
       {/* Search card — floats up over the hero */}
@@ -992,6 +1081,8 @@ export default function HomeScreen() {
               <PressableScale
                 key={pin.id}
                 style={styles.pinnedChip}
+                accessibilityRole="button"
+                accessibilityLabel={`Get routes to pinned destination ${pin.destName}. Long press to unpin.`}
                 onPress={async () => {
                   setSearchQuery(pin.destName);
                   setSearchLoading(true);
@@ -1035,7 +1126,12 @@ export default function HomeScreen() {
             editable={!searchLoading}
           />
           {searchQuery.length > 0 && (
-            <Pressable onPress={() => { setSearchQuery(""); setSuppressAutocomplete(true); setSearchError(null); }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+              hitSlop={14}
+              onPress={() => { setSearchQuery(""); setSuppressAutocomplete(true); setSearchError(null); }}
+            >
               <X size={16} color={theme.colors.textMuted} />
             </Pressable>
           )}
@@ -1047,8 +1143,17 @@ export default function HomeScreen() {
                 <Pressable
                   style={styles.suggestionMain}
                   onPress={() => onSelectSuggestion(item)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Get routes to ${item.name}`}
                 >
                   <View style={styles.suggestionRow}>
+                    <View style={styles.suggestionIconWrap}>
+                      {item.type === "building" ? (
+                        <MapPin size={14} color={theme.colors.brandInk} />
+                      ) : (
+                        <Search size={14} color={theme.colors.textMuted} />
+                      )}
+                    </View>
                     <Text style={styles.suggestionText} numberOfLines={1}>
                       {item.name}
                     </Text>
@@ -1064,7 +1169,9 @@ export default function HomeScreen() {
                 </Pressable>
                 <Pressable
                   style={styles.suggestionSaveBtn}
+                  accessibilityRole="button"
                   accessibilityLabel={`Save ${item.name} as favorite`}
+                  hitSlop={6}
                   onPress={async () => {
                     const name = item.name;
                     let lat = item.lat;
@@ -1109,33 +1216,50 @@ export default function HomeScreen() {
         {recentSearches.length > 0 && !searchResults.length && !autocompleteSuggestions.length && (
           <View style={styles.recentSearches}>
             <View style={styles.recentHeader}>
-              <Text style={styles.recentLabel}>Recent:</Text>
-              <Pressable onPress={async () => {
+              <Text style={styles.recentLabel}>Recent</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Clear recent searches"
+                hitSlop={14}
+                onPress={async () => {
                 await clearRecentSearches();
                 setRecentSearches([]);
               }}>
                 <Text style={styles.recentClearBtn}>Clear</Text>
               </Pressable>
             </View>
-            {recentSearches.map((r, i) => (
-              <Pressable
-                key={i}
-                style={styles.recentItem}
-                onPress={() => setSearchQuery(r.query)}
-              >
-                <Clock size={14} color={theme.colors.textMuted} style={{ marginRight: 8 }} />
-                <Text style={styles.recentItemText}>{r.displayName.split(",")[0]}</Text>
-                <ChevronRight size={14} color={theme.colors.textMuted} />
-              </Pressable>
-            ))}
+            <View style={styles.recentChipsWrap}>
+              {recentSearches.map((r, i) => (
+                <PressableScale
+                  key={i}
+                  scaleTo={0.94}
+                  style={styles.recentChip}
+                  onPress={() => setSearchQuery(r.query)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Search again for ${r.displayName.split(",")[0]}`}
+                  hitSlop={{ top: 4, bottom: 4 }}
+                >
+                  <Clock size={13} color={theme.colors.textMuted} />
+                  <Text style={styles.recentChipText} numberOfLines={1}>{r.displayName.split(",")[0]}</Text>
+                </PressableScale>
+              ))}
+            </View>
           </View>
         )}
       </FadeInView>
 
+      {/* Search in flight — skeleton route cards, not spinners */}
+      {searchLoading && (
+        <View style={styles.searchSkeletonWrap}>
+          <Skeleton height={128} radius={theme.radius.xl} />
+          <Skeleton height={128} radius={theme.radius.xl} />
+        </View>
+      )}
+
       {bannerText && (
         <View style={styles.offlineBanner}>
           <Text style={styles.offlineBannerText}>{bannerText}</Text>
-          <Pressable onPress={onRefresh} accessibilityRole="button" accessibilityLabel="Retry loading">
+          <Pressable onPress={onRefresh} accessibilityRole="button" accessibilityLabel="Retry loading" hitSlop={14}>
             <Text style={styles.offlineBannerRetry}>Retry</Text>
           </Pressable>
         </View>
@@ -1143,7 +1267,12 @@ export default function HomeScreen() {
       {useUiucArea && (
         <View style={styles.uiucBanner}>
           <Text style={styles.uiucBannerText}>Showing UIUC area (Champaign-Urbana) for testing</Text>
-          <Pressable onPress={() => { setUseUiucArea(false); onRefresh(); }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Use my location"
+            hitSlop={14}
+            onPress={() => { setUseUiucArea(false); onRefresh(); }}
+          >
             <Text style={styles.uiucBannerLink}>Use my location</Text>
           </Pressable>
         </View>
@@ -1168,6 +1297,9 @@ export default function HomeScreen() {
             {lastSearchGeo && (
               <View style={styles.searchResultActions}>
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={searchDestPinned ? "Destination pinned" : "Pin this destination for quick access"}
+                  hitSlop={10}
                   onPress={async () => {
                     if (searchDestPinned) return;
                     await addPinnedRoute({ destName: searchDestinationName.split(",")[0], destLat: lastSearchGeo.lat, destLng: lastSearchGeo.lng });
@@ -1181,6 +1313,9 @@ export default function HomeScreen() {
                   </View>
                 </Pressable>
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={searchDestSaved ? "Destination saved to favorites" : "Save this destination to favorites"}
+                  hitSlop={10}
                   onPress={async () => {
                     if (searchDestSaved) return;
                     const name = searchDestinationName.split(",")[0];
@@ -1208,6 +1343,10 @@ export default function HomeScreen() {
                   scaleTo={0.93}
                   style={[styles.sortPill, active && styles.sortPillActive]}
                   onPress={() => setRouteSort(s)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Sort routes: ${labels[s]}`}
+                  accessibilityState={{ selected: active }}
+                  hitSlop={{ top: 8, bottom: 8 }}
                 >
                   <Text style={[styles.sortPillText, active && styles.sortPillTextActive]}>{labels[s]}</Text>
                 </PressableScale>
@@ -1259,7 +1398,7 @@ export default function HomeScreen() {
           </View>
           {leaveBy.options.slice(0, 2).map((opt, i) => (
             <View key={i} style={styles.leaveByRow}>
-              <View style={[styles.leaveByStatusPill, { backgroundColor: opt.status === 'on-time' ? theme.colors.success : opt.status === 'tight' ? theme.colors.warning : theme.colors.error }]}>
+              <View style={[styles.leaveByStatusPill, { backgroundColor: opt.status === 'on-time' ? theme.colors.successDeep : opt.status === 'tight' ? theme.colors.warningDeep : theme.colors.errorDeep }]}>
                 <Text style={styles.leaveByStatusText}>{opt.status === 'on-time' ? 'ON TIME' : opt.status === 'tight' ? 'TIGHT' : 'LATE'}</Text>
               </View>
               <Text style={styles.leaveByRouteText}>Route {opt.routeId}</Text>
@@ -1300,6 +1439,8 @@ export default function HomeScreen() {
           </View>
           <Pressable
             style={styles.leaveNowStartBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Start this route now"
             onPress={() => {
               setLeaveNowBanner(null);
               if (leaveNowBanner.option.type === "WALK") onStartWalk(leaveNowBanner.option);
@@ -1308,8 +1449,14 @@ export default function HomeScreen() {
           >
             <Text style={styles.leaveNowStartBtnText}>Start</Text>
           </Pressable>
-          <Pressable style={styles.leaveNowDismiss} onPress={() => setLeaveNowBanner(null)}>
-            <X size={16} color="rgba(255,255,255,0.75)" />
+          <Pressable
+            style={styles.leaveNowDismiss}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss leave-now alert"
+            hitSlop={8}
+            onPress={() => setLeaveNowBanner(null)}
+          >
+            <X size={16} color={theme.colors.textOnNavyMuted} />
           </Pressable>
         </View>
       )}
@@ -1335,6 +1482,9 @@ export default function HomeScreen() {
                 <Text style={styles.nextUpTime}>{nextUp.start_time_local}</Text>
                 <Pressable
                   style={styles.walkingToClassBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Scroll to route options for this class"
+                  hitSlop={{ top: 14, bottom: 14 }}
                   onPress={() => scrollRef.current?.scrollTo({ y: recommendationsY.current, animated: true })}
                 >
                   <Text style={styles.walkingToClassBtnText}>How are you getting there? →</Text>
@@ -1353,6 +1503,9 @@ export default function HomeScreen() {
             <Text style={styles.nextUpText}>No more classes today.</Text>
             <Pressable
               style={styles.planEveningBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Plan my evening"
+              hitSlop={{ top: 14, bottom: 14 }}
               onPress={() => router.push("/after-class-planner")}
             >
               <Text style={styles.planEveningBtnText}>Plan my evening →</Text>
@@ -1362,11 +1515,18 @@ export default function HomeScreen() {
       </FadeInView>
 
       {nextUp && recommendations.length === 0 && (
-        <View style={styles.recommendationsUnavailable}>
-          <Text style={styles.recommendationsUnavailableText}>
-            Route options unavailable. Pull down to refresh.
-          </Text>
-        </View>
+        recPending ? (
+          <View style={styles.recSkeletonWrap}>
+            <Skeleton height={132} radius={theme.radius.xl} />
+            <Skeleton height={132} radius={theme.radius.xl} />
+          </View>
+        ) : (
+          <View style={styles.recommendationsUnavailable}>
+            <Text style={styles.recommendationsUnavailableText}>
+              Route options unavailable. Pull down to refresh.
+            </Text>
+          </View>
+        )
       )}
 
       {/* After-last-class recommendations */}
@@ -1417,6 +1577,10 @@ export default function HomeScreen() {
                   scaleTo={0.93}
                   style={[styles.sortPill, active && styles.sortPillActive]}
                   onPress={() => setRouteSort(s)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Sort routes: ${labels[s]}`}
+                  accessibilityState={{ selected: active }}
+                  hitSlop={{ top: 8, bottom: 8 }}
                 >
                   <Text style={[styles.sortPillText, active && styles.sortPillTextActive]}>{labels[s]}</Text>
                 </PressableScale>
@@ -1510,7 +1674,11 @@ export default function HomeScreen() {
           </View>
         )}
       {stops.length === 0 ? (
-        <Text style={styles.empty}>No nearby stops in range.</Text>
+        <EmptyState
+          icon={MapPin}
+          title="No stops in range"
+          subtitle="Move closer to campus or pull down to refresh."
+        />
       ) : (
         stops.map((stop, stopIdx) => (
           <FadeInView key={stop.stop_id} delay={stopIdx * 90} style={styles.card}>
@@ -1526,25 +1694,35 @@ export default function HomeScreen() {
               </View>
               <PressableScale
                 style={styles.favoriteStopBtn}
+                accessibilityRole="button"
+                accessibilityLabel={`Save ${stop.stop_name} to favorite stops`}
+                hitSlop={8}
                 onPress={() => addFavoriteStop({ stop_id: stop.stop_id, stop_name: stop.stop_name })}
               >
-                <Star size={16} color="rgba(255,255,255,0.5)" />
+                <Star size={16} color={theme.colors.textOnNavyMuted} />
               </PressableScale>
             </LinearGradient>
             <View style={styles.departures}>
               {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
-                <Text style={styles.depText}>No departures</Text>
+                departures.anyPending ? (
+                  <View style={styles.depSkeletonWrap}>
+                    <Skeleton width="88%" height={14} />
+                    <Skeleton width="66%" height={14} />
+                  </View>
+                ) : (
+                  <Text style={styles.depText}>No departures due</Text>
+                )
               ) : (
                 (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
                   const fetchedAt = departures.updatedAtByStop[stop.stop_id] ?? 0;
                   const isStale = d.is_realtime && fetchedAt > 0 && Date.now() - fetchedAt > 2 * 60 * 1000;
                   const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
                   const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
-                  const hasExtras = isStale || showDelayed || showEarly;
                   return (
                     <View key={i}>
                       <Pressable
                         onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
+                        accessibilityRole="button"
                         accessibilityLabel={`Track route ${d.route}`}
                       >
                         <DepartureRow
@@ -1552,13 +1730,16 @@ export default function HomeScreen() {
                           headsign={d.headsign || "—"}
                           expectedMins={d.expected_mins}
                           isRealtime={d.is_realtime && !isStale}
+                          expectedTimeIso={isStale ? null : d.expected_time_iso}
+                          delayStatus={showDelayed ? "delayed" : showEarly ? "early" : null}
+                          delayMins={showDelayed || showEarly ? d.delay_mins : null}
                         />
                       </Pressable>
-                      {hasExtras && (
+                      {isStale && (
                         <View style={styles.depExtrasRow}>
-                          {isStale && <View style={styles.staleBadge}><Text style={styles.staleBadgeText}>⚠ Estimated</Text></View>}
-                          {showDelayed && <Badge label={`+${d.delay_mins}m`} variant="delayed" size="sm" />}
-                          {showEarly && <Badge label={`${Math.abs(d.delay_mins!)}m early`} variant="early" size="sm" />}
+                          <View style={styles.staleBadge}>
+                            <Text style={styles.staleBadgeText}>⚠ Estimated</Text>
+                          </View>
                         </View>
                       )}
                     </View>
@@ -1606,6 +1787,53 @@ const styles = StyleSheet.create({
   heroNextDotInner: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.orangeBright },
   heroNextText: { fontFamily: "DMSans_500Medium", fontSize: 12, color: theme.colors.textOnNavy, maxWidth: 280 },
 
+  // Next-departure marquee — frosted signage card on the navy hero
+  heroMarquee: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.layout.cardGap,
+    marginTop: theme.spacing.lg,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    borderRadius: theme.radius.xl,
+    paddingHorizontal: theme.layout.gutter,
+    paddingVertical: 14,
+  },
+  heroMarqueeLeft: { flex: 1, minWidth: 0 },
+  heroMarqueeRight: { alignItems: "flex-end", justifyContent: "center", gap: theme.spacing.sm },
+  heroMarqueeEyebrow: { ...theme.text.eyebrow, color: theme.colors.textOnNavyMuted, marginBottom: 6 },
+  heroMarqueeRouteRow: { flexDirection: "row", alignItems: "center", gap: theme.spacing.sm, marginBottom: 4 },
+  heroRoutePill: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.sm,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  heroRoutePillText: { ...theme.text.badge, color: theme.colors.navy, fontVariant: ["tabular-nums" as const] },
+  heroMarqueeHeadsign: { ...theme.text.subhead, color: theme.colors.textOnNavy, flexShrink: 1 },
+  heroMarqueeStopRow: { flexDirection: "row", alignItems: "center", gap: 4 },
+  heroMarqueeStop: { ...theme.text.caption, color: theme.colors.textOnNavyMuted, flexShrink: 1, fontVariant: ["tabular-nums" as const] },
+  heroProgressTrack: {
+    height: 3,
+    borderRadius: theme.radius.pill,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    marginTop: 10,
+    overflow: "hidden",
+  },
+  heroProgressFill: {
+    height: 3,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.orangeBright,
+  },
+  heroMarqueeCountdown: {
+    ...theme.text.display,
+    fontSize: 30,
+    lineHeight: 34,
+    color: theme.colors.textOnNavy,
+  },
+  heroMarqueeSkeleton: { marginTop: 8 },
+
   // Search card — floats over the hero gradient
   searchCard: {
     backgroundColor: theme.colors.surface,
@@ -1618,7 +1846,7 @@ const styles = StyleSheet.create({
     marginBottom: 0,
     ...theme.shadows.lg,
   },
-  searchLabel: { fontFamily: "DMSans_700Bold", fontSize: 10, letterSpacing: 1.2, color: theme.colors.textMuted, marginBottom: 10, textTransform: "uppercase" as const },
+  searchLabel: { ...theme.text.eyebrow, color: theme.colors.textMuted, marginBottom: 10 },
   searchInputWrapper: {
     flexDirection: "row",
     alignItems: "center",
@@ -1656,13 +1884,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   scheduleSectionLine: { flex: 1, height: 1, backgroundColor: theme.colors.border },
-  scheduleSectionLabel: {
-    fontFamily: "DMSans_600SemiBold",
-    fontSize: 10,
-    letterSpacing: 1.2,
-    textTransform: "uppercase" as const,
-    color: theme.colors.textMuted,
-  },
+  scheduleSectionLabel: { ...theme.text.eyebrow, color: theme.colors.textMuted },
 
   // Next up card
   nextUpLabelRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
@@ -1677,23 +1899,23 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: theme.colors.orange,
   },
-  nextUpLabel: { fontFamily: "DMSans_600SemiBold", fontSize: 10, letterSpacing: 1.2, textTransform: "uppercase" as const, color: theme.colors.orange },
+  nextUpLabel: { ...theme.text.eyebrow, color: theme.colors.brandInk },
   nextUpBodyRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
   nextUpClassInfo: { flex: 1 },
   nextUpText: { fontFamily: "DMSans_700Bold", fontSize: 18, color: theme.colors.navy },
   nextUpTime: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.textSecondary, marginTop: 2 },
   walkingToClassBtn: { marginTop: 10, alignSelf: "flex-start" },
-  walkingToClassBtnText: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange },
+  walkingToClassBtnText: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.brandInk },
   nextUpWalkBadge: {
-    backgroundColor: "#FFF3EE",
-    borderRadius: 12,
+    backgroundColor: theme.colors.orangeSoft,
+    borderRadius: theme.radius.lg,
     paddingHorizontal: 12,
     paddingVertical: 10,
     alignItems: "center",
     justifyContent: "center",
     minWidth: 64,
   },
-  nextUpWalkBadgeNum: { fontFamily: "DMSans_700Bold", fontSize: 24, color: theme.colors.orange, lineHeight: 26 },
+  nextUpWalkBadgeNum: { fontFamily: "DMSans_700Bold", fontSize: 24, color: theme.colors.brandInk, lineHeight: 26, fontVariant: ["tabular-nums" as const] },
   nextUpWalkBadgeUnit: { fontFamily: "DMSans_400Regular", fontSize: 10, color: theme.colors.textMuted, textAlign: "center" as const, lineHeight: 13, marginTop: 2 },
 
   // Recommendations section
@@ -1705,15 +1927,15 @@ const styles = StyleSheet.create({
 
   // Option card — transit board redesign
   optionCard: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
-    marginHorizontal: 16,
+    marginHorizontal: theme.layout.gutter,
     marginBottom: 10,
     marginTop: 0,
     borderLeftWidth: 5,
     borderLeftColor: theme.colors.orange,
-    padding: 16,
-    ...theme.shadows.md,
+    padding: theme.layout.gutter,
+    ...theme.elevation[2],
   },
   optionCardHighlight: { ...theme.shadows.glowOrange, shadowOpacity: 0.25 },
 
@@ -1728,26 +1950,44 @@ const styles = StyleSheet.create({
   cardTypeBadgeBus: { backgroundColor: theme.colors.navy },
   cardTypeBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 10, color: "#fff", letterSpacing: 0.8 },
 
-  // Hero countdown
-  cardDepartTime: { fontFamily: "DMSans_700Bold", fontSize: 44, color: theme.colors.orange, lineHeight: 48, letterSpacing: -1 },
-  cardDepartNow: { fontFamily: "DMSans_700Bold", fontSize: 28, color: theme.colors.success, lineHeight: 32 },
+  // Hero countdown — brandInk keeps the big numeral AA on white
+  cardDepartTime: { fontFamily: "DMSans_700Bold", fontSize: 44, color: theme.colors.brandInk, lineHeight: 48, letterSpacing: -1, fontVariant: ["tabular-nums" as const] },
+  cardDepartNow: { fontFamily: "DMSans_700Bold", fontSize: 28, color: theme.colors.successDeep, lineHeight: 32, fontVariant: ["tabular-nums" as const] },
   cardDepartUnit: { fontFamily: "DMSans_500Medium", fontSize: 11, color: theme.colors.textMuted, textAlign: "right" as const, marginTop: 1 },
 
   // Step flow
-  stepFlowText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary, marginBottom: 6, lineHeight: 19 },
+  stepFlowText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary, marginBottom: 6, lineHeight: 19, fontVariant: ["tabular-nums" as const] },
 
-  // AI explanation
-  aiExplanation: { fontFamily: "DMSans_400Regular", fontSize: 11, color: theme.colors.orange, fontStyle: "italic", flex: 1, marginRight: 8 },
+  // Walking-minutes badge
+  walkBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  walkBadgeText: { ...theme.text.badge, fontSize: 10, color: theme.colors.textSecondary, fontVariant: ["tabular-nums" as const] },
+
+  // AI explanation — clamped quote
+  aiQuoteWrap: {
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.orangeSoft,
+    paddingLeft: theme.spacing.md,
+    marginBottom: 10,
+  },
+  aiExplanation: { fontFamily: "DMSans_400Regular", fontSize: 12, lineHeight: 17, color: theme.colors.brandInk, fontStyle: "italic" },
 
   // Card footer row
-  cardBottomRow: { flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderTopColor: "#F0F2F5", paddingTop: 10 },
-  cardTotalTime: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textMuted },
+  cardBottomRow: { flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderTopColor: theme.colors.borderSoft, paddingTop: 8 },
+  cardTotalTime: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textMuted, fontVariant: ["tabular-nums" as const] },
   startBtnInline: {
     borderRadius: theme.radius.lg,
     overflow: "hidden",
     ...theme.shadows.glowOrange,
   },
-  startBtnInlineGradient: { paddingHorizontal: 18, paddingVertical: 9, alignItems: "center", justifyContent: "center" },
+  startBtnInlineGradient: { minHeight: theme.layout.tapMin, minWidth: theme.layout.tapMin, paddingHorizontal: 18, alignItems: "center", justifyContent: "center" },
   startBtnInlineText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff" },
 
   // MTD hint
@@ -1762,31 +2002,23 @@ const styles = StyleSheet.create({
   mtdHintText: { fontSize: 13, color: theme.colors.textSecondary },
 
   // Stops section — departure board aesthetic
-  stopsSectionTitle: { fontFamily: "DMSans_700Bold", fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginBottom: 0, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 10 },
+  stopsSectionTitle: { ...theme.text.eyebrow, color: theme.colors.textMuted, marginBottom: 0, paddingHorizontal: theme.spacing.lg, paddingTop: 20, paddingBottom: 10 },
   card: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
-    marginHorizontal: 16,
+    marginHorizontal: theme.layout.gutter,
     marginBottom: 10,
     overflow: "hidden",
-    ...theme.shadows.md,
+    ...theme.elevation[2],
   },
   stopCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingHorizontal: 14, paddingTop: 11, paddingBottom: 9 },
   stopName: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff", flex: 1 },
-  favoriteStopBtn: { paddingVertical: 4, paddingHorizontal: 6 },
-  favoriteStopBtnText: { fontFamily: "DMSans_500Medium", fontSize: 16, color: "rgba(255,255,255,0.6)" },
-  distance: { fontFamily: "DMSans_400Regular", fontSize: 11, color: "rgba(255,255,255,0.55)", marginTop: 0 },
-  departures: { paddingHorizontal: 14, paddingVertical: 4 },
+  favoriteStopBtn: { minWidth: theme.layout.tapMin, minHeight: 36, alignItems: "center", justifyContent: "center" },
+  distance: { fontFamily: "DMSans_400Regular", fontSize: 11, color: theme.colors.textOnNavyMuted, marginTop: 0, fontVariant: ["tabular-nums" as const] },
+  departures: { paddingVertical: 4 },
   depExtrasRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: theme.spacing.lg, paddingBottom: 6 },
   depText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textMuted, padding: 14 },
-  liveBadge: {
-    backgroundColor: theme.colors.orange,
-    borderRadius: 3,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-  },
-  liveBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 9, color: "#fff", letterSpacing: 0.5 },
-  empty: { fontFamily: "DMSans_400Regular", fontSize: 15, color: theme.colors.textSecondary, textAlign: "center", marginTop: 24, padding: theme.spacing.lg },
+  depSkeletonWrap: { padding: 14, gap: 8 },
 
   // Error / permission screens
   errorText: { fontFamily: "DMSans_600SemiBold", fontSize: 17, color: theme.colors.error },
@@ -1832,7 +2064,7 @@ const styles = StyleSheet.create({
     ...theme.shadows.sm,
   },
   uiucBannerText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary, flex: 1 },
-  uiucBannerLink: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange },
+  uiucBannerLink: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.brandInk },
   offlineBanner: {
     backgroundColor: theme.colors.navy,
     paddingVertical: 10,
@@ -1846,29 +2078,31 @@ const styles = StyleSheet.create({
     ...theme.shadows.sm,
   },
   offlineBannerText: { fontFamily: "DMSans_400Regular", fontSize: 13, color: "#fff", flex: 1 },
-  offlineBannerRetry: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange, paddingLeft: 8 },
+  offlineBannerRetry: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orangeBright, paddingLeft: 8 },
 
-  // Leave Now banner
+  // Leave Now banner — ctaEnd ground keeps white copy AA
   leaveNowBanner: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.colors.orange,
+    backgroundColor: theme.colors.ctaEnd,
     paddingVertical: 12,
     paddingHorizontal: theme.spacing.lg,
     marginBottom: 0,
   },
   leaveNowLeft: { flex: 1, marginRight: theme.spacing.sm },
   leaveNowTitle: { fontFamily: "DMSans_600SemiBold", fontSize: 15, color: "#fff", marginBottom: 2 },
-  leaveNowBody: { fontFamily: "DMSans_400Regular", fontSize: 13, color: "rgba(255,255,255,0.88)" },
+  leaveNowBody: { fontFamily: "DMSans_400Regular", fontSize: 13, color: "rgba(255,255,255,0.88)", fontVariant: ["tabular-nums" as const] },
   leaveNowStartBtn: {
     backgroundColor: "#fff",
-    borderRadius: theme.radius.sm,
-    paddingVertical: 9,
+    borderRadius: theme.radius.md,
+    minHeight: theme.layout.tapMin,
+    minWidth: theme.layout.tapMin,
     paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  leaveNowStartBtnText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: theme.colors.orange },
-  leaveNowDismiss: { padding: 8 },
-  leaveNowDismissText: { fontFamily: "DMSans_600SemiBold", fontSize: 15, color: "rgba(255,255,255,0.75)" },
+  leaveNowStartBtnText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: theme.colors.brandInk },
+  leaveNowDismiss: { padding: 8, minWidth: 36, minHeight: 36, alignItems: "center", justifyContent: "center" },
 
   // Leave By smart card — navy gradient
   leaveByCard: {
@@ -1880,13 +2114,13 @@ const styles = StyleSheet.create({
   },
   leaveByHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
   leaveByTitle: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: "#fff", flex: 1 },
-  leaveByTime: { fontSize: 13, fontFamily: "DMSans_500Medium", color: "rgba(255,255,255,0.65)" },
+  leaveByTime: { fontSize: 13, fontFamily: "DMSans_500Medium", color: theme.colors.textOnNavyMuted, fontVariant: ["tabular-nums" as const] },
   leaveByRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 5 },
   leaveByStatusPill: { borderRadius: 3, paddingHorizontal: 6, paddingVertical: 2 },
   leaveByStatusText: { fontSize: 10, fontFamily: "DMSans_700Bold", color: "#fff" },
   leaveByRouteText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff" },
-  leaveBySummary: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.7)", flex: 1 },
-  leaveByWalkFallback: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.orange, marginTop: 6 },
+  leaveBySummary: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textOnNavyMuted, flex: 1, fontVariant: ["tabular-nums" as const] },
+  leaveByWalkFallback: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.orangeBright, marginTop: 6, fontVariant: ["tabular-nums" as const] },
 
   // Autocomplete
   suggestionsList: {
@@ -1905,24 +2139,41 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  suggestionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  suggestionRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  suggestionIconWrap: { width: 22, alignItems: "center" },
   suggestionText: { fontFamily: "DMSans_400Regular", fontSize: 14, color: theme.colors.text, flex: 1 },
   suggestionType: { fontFamily: "DMSans_600SemiBold", fontSize: 10, color: theme.colors.navy, backgroundColor: theme.colors.surfaceAlt, paddingHorizontal: 5, paddingVertical: 1, borderRadius: theme.radius.xs, marginLeft: 6 },
-  suggestionSub: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textMuted, marginTop: 1, paddingBottom: 2 },
+  suggestionSub: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textMuted, marginTop: 1, paddingBottom: 2, marginLeft: 30 },
 
-  // Recent searches
+  // Recent searches — pill chips
   recentSearches: { marginTop: 8 },
-  recentLabel: { fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textMuted, marginBottom: 4 },
-  recentItem: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
-  recentItemText: { fontFamily: "DMSans_400Regular", fontSize: 14, color: theme.colors.navy, flex: 1 },
+  recentLabel: { ...theme.text.eyebrow, color: theme.colors.textMuted },
+  recentChipsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  recentChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minHeight: 36,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    maxWidth: 220,
+  },
+  recentChipText: { fontFamily: "DMSans_500Medium", fontSize: 13, color: theme.colors.navy, flexShrink: 1 },
+
+  // In-flight search skeleton cards
+  searchSkeletonWrap: { marginHorizontal: theme.layout.gutter, marginTop: theme.layout.cardGap, gap: theme.layout.cardGap },
 
   // Search results header
   searchResultsHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg, marginBottom: 4 },
-  saveFavBtn: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange, paddingTop: 2 },
+  saveFavBtn: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.brandInk, paddingTop: 2 },
 
   // Plan evening
   planEveningBtn: { marginTop: 8, alignSelf: "flex-start" },
-  planEveningBtnText: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.orange },
+  planEveningBtnText: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.brandInk },
 
   // Recommendations unavailable
   recommendationsUnavailable: {
@@ -1935,6 +2186,7 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
   },
   recommendationsUnavailableText: { fontFamily: "DMSans_400Regular", fontSize: 14, color: theme.colors.textSecondary },
+  recSkeletonWrap: { marginHorizontal: theme.layout.gutter, marginVertical: theme.layout.cardGap, gap: theme.layout.cardGap },
 
   // Option meta (kept for compatibility, not used in new card layout)
   optionMeta: { fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.textSecondary, marginTop: 4 },
@@ -1943,11 +2195,14 @@ const styles = StyleSheet.create({
   // Card actions row (share + start)
   cardActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   shareBtn: {
+    minHeight: theme.layout.tapMin,
+    minWidth: theme.layout.tapMin,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
+    alignItems: "center",
+    justifyContent: "center",
   },
   shareBtnText: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.textSecondary },
 
@@ -1957,7 +2212,8 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.navy,
     borderRadius: theme.radius.pill,
     paddingHorizontal: 16,
-    paddingVertical: 9,
+    minHeight: theme.layout.tapMin,
+    justifyContent: "center",
     ...theme.shadows.glowNavy,
   },
   homePlaceChipText: { fontFamily: "DMSans_600SemiBold", fontSize: 14, color: "#fff" },
@@ -1965,20 +2221,20 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.orangeSoft,
     borderRadius: theme.radius.pill,
     paddingHorizontal: 14,
-    paddingVertical: 9,
+    minHeight: theme.layout.tapMin,
+    justifyContent: "center",
     borderWidth: 1,
     borderColor: "rgba(232,74,39,0.25)",
   },
-  pinnedChipText: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.orange },
+  pinnedChipText: { fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.brandInk },
 
   // Search result action buttons
   searchResultActions: { flexDirection: "row", alignItems: "center", gap: 10 },
   pinBtn: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.textSecondary },
 
   // Suggestion save button (star)
-  suggestionMain: { flex: 1, paddingVertical: 10 },
-  suggestionSaveBtn: { paddingHorizontal: 12, paddingVertical: 8, justifyContent: "center" },
-  suggestionSaveBtnText: { fontFamily: "DMSans_500Medium", fontSize: 18, color: theme.colors.orange },
+  suggestionMain: { flex: 1, minHeight: theme.layout.tapMin, justifyContent: "center", paddingVertical: 8 },
+  suggestionSaveBtn: { minWidth: theme.layout.tapMin, minHeight: theme.layout.tapMin, alignItems: "center", justifyContent: "center" },
 
   // F2: Sort pills
   sortRow: { flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap', marginTop: 8 },
@@ -1987,26 +2243,27 @@ const styles = StyleSheet.create({
   sortPillText: { fontSize: 12, fontFamily: "DMSans_500Medium", color: theme.colors.textSecondary },
   sortPillTextActive: { color: '#fff' },
 
-  // F2: Status pill on option cards
-  optionStatusPill: { borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1, marginRight: 4 },
-  optionStatusText: { fontSize: 9, fontFamily: "DMSans_700Bold", color: '#fff' },
+  // F2: Status pill on option cards — always text, deep AA fills
+  optionStatusPill: { borderRadius: theme.radius.xs, paddingHorizontal: 6, paddingVertical: 2 },
+  optionStatusText: { fontSize: 10, fontFamily: "DMSans_700Bold", color: '#fff', letterSpacing: 0.4, fontVariant: ["tabular-nums" as const] },
 
   // F2: MTD free caption
   mtdFree: { fontSize: 11, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 2 },
 
   // F2: Smart callouts
-  smartCallout: { fontSize: 13, fontFamily: "DMSans_400Regular", fontStyle: 'italic', color: theme.colors.orange, marginTop: 6, paddingHorizontal: theme.spacing.lg },
-  smartCalloutGreen: { color: theme.colors.success },
+  smartCallout: { fontSize: 13, fontFamily: "DMSans_400Regular", fontStyle: 'italic', color: theme.colors.brandInk, marginTop: 6, paddingHorizontal: theme.spacing.lg, fontVariant: ["tabular-nums" as const] },
+  smartCalloutGreen: { color: theme.colors.successDeep },
 
-  // F3: Running late pill trigger
+  // F3: Running late pill trigger — errorDeep keeps the white label AA
   runningLatePill: {
     alignSelf: 'flex-start',
     marginHorizontal: theme.spacing.lg,
     marginTop: theme.spacing.sm,
     marginBottom: theme.spacing.sm,
-    backgroundColor: theme.colors.error,
-    borderRadius: 20,
-    paddingVertical: 7,
+    backgroundColor: theme.colors.errorDeep,
+    borderRadius: theme.radius.pill,
+    minHeight: theme.layout.tapMin,
+    justifyContent: 'center',
     paddingHorizontal: 16,
     shadowColor: theme.colors.error,
     shadowOffset: { width: 0, height: 2 },
@@ -2015,9 +2272,9 @@ const styles = StyleSheet.create({
   },
   runningLatePillText: { fontFamily: "DMSans_700Bold", fontSize: 13, color: '#fff', letterSpacing: 0.3 },
 
-  // Stale departure badge
-  staleBadge: { backgroundColor: '#F5A623', borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1 },
-  staleBadgeText: { fontFamily: 'DMSans_600SemiBold', fontSize: 10, color: '#fff' },
+  // Stale departure badge — warning glyph + label on a soft AA-safe tint
+  staleBadge: { backgroundColor: theme.colors.warningSoft, borderRadius: theme.radius.xs, paddingHorizontal: 6, paddingVertical: 2 },
+  staleBadgeText: { fontFamily: 'DMSans_600SemiBold', fontSize: 10, color: theme.colors.warningDeep },
 
   // Recent searches header row
   recentHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },

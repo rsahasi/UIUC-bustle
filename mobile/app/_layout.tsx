@@ -26,6 +26,7 @@ import * as TaskManager from 'expo-task-manager';
 import { useEffect } from "react";
 import * as Sentry from "@sentry/react-native";
 import { PostHogProvider, usePostHog } from "posthog-react-native";
+import { theme } from "@/src/constants/theme";
 
 // Sentry — init before anything else; no-ops silently when DSN is absent
 if (process.env.NODE_ENV !== "test" && process.env.EXPO_PUBLIC_SENTRY_DSN) {
@@ -169,10 +170,10 @@ export default function RootLayout() {
           <Stack
             screenOptions={{
               headerShown: false,
-              headerStyle: { backgroundColor: "#13294B" },
+              headerStyle: { backgroundColor: theme.colors.navy },
               headerShadowVisible: false,
-              headerTintColor: "#fff",
-              headerTitleStyle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 20 },
+              headerTintColor: theme.colors.surface,
+              headerTitleStyle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 20, color: theme.colors.surface },
             }}
           >
             <Stack.Screen name="(tabs)" />

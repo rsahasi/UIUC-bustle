@@ -8,7 +8,6 @@ import * as Location from "expo-location";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,6 +15,9 @@ import {
   View,
 } from "react-native";
 import { theme } from "@/src/constants/theme";
+import { FadeInView, PressableScale, Skeleton } from "@/src/components/ui/motion";
+import { LinearGradient } from "expo-linear-gradient";
+import { Bus, Footprints, Heart, Sparkles } from "lucide-react-native";
 
 const PRESET_CHIPS = ["Home", "Gym", "Library", "Groceries"];
 
@@ -79,9 +81,14 @@ export default function AfterClassPlannerScreen() {
     }
   }, [apiBaseUrl, apiKey, freeText, selectedDest]);
 
+  const canPlan = !loading && (!!freeText.trim() || !!selectedDest);
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.intro}>What are your plans after class?</Text>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
+      <FadeInView>
+        <Text style={styles.eyebrow}>After class</Text>
+        <Text style={styles.intro}>What are your plans after class?</Text>
+      </FadeInView>
       <TextInput
         style={styles.input}
         value={freeText}
@@ -92,135 +99,237 @@ export default function AfterClassPlannerScreen() {
         placeholderTextColor={theme.colors.textMuted}
       />
 
-      <Text style={styles.orLabel}>— or pick a destination —</Text>
+      <Text style={styles.orLabel}>or pick a destination</Text>
 
       {/* Preset chips */}
       <View style={styles.chipsRow}>
-        {PRESET_CHIPS.map((chip) => (
-          <Pressable
-            key={chip}
-            style={[styles.chip, selectedDest === chip && styles.chipActive]}
-            onPress={() => {
-              setSelectedDest(selectedDest === chip ? null : chip);
-              setFreeText("");
-            }}
-          >
-            <Text style={[styles.chipText, selectedDest === chip && styles.chipTextActive]}>{chip}</Text>
-          </Pressable>
-        ))}
+        {PRESET_CHIPS.map((chip) => {
+          const on = selectedDest === chip;
+          return (
+            <PressableScale
+              key={chip}
+              scaleTo={0.93}
+              style={[styles.chip, on && styles.chipActive]}
+              onPress={() => {
+                setSelectedDest(selectedDest === chip ? null : chip);
+                setFreeText("");
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={chip}
+              accessibilityState={{ selected: on }}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextActive]}>{chip}</Text>
+            </PressableScale>
+          );
+        })}
       </View>
 
       {/* Saved favorites */}
       {favorites.length > 0 && (
         <View style={styles.favRow}>
-          {favorites.map((f) => (
-            <Pressable
-              key={f.id}
-              style={[styles.chip, selectedDest === f.name && styles.chipActive]}
-              onPress={() => {
-                setSelectedDest(selectedDest === f.name ? null : f.name);
-                setFreeText("");
-              }}
-            >
-              <Text style={[styles.chipText, selectedDest === f.name && styles.chipTextActive]}>♥ {f.name}</Text>
-            </Pressable>
-          ))}
+          {favorites.map((f) => {
+            const on = selectedDest === f.name;
+            return (
+              <PressableScale
+                key={f.id}
+                scaleTo={0.93}
+                style={[styles.chip, on && styles.chipActive]}
+                onPress={() => {
+                  setSelectedDest(selectedDest === f.name ? null : f.name);
+                  setFreeText("");
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`Favorite: ${f.name}`}
+                accessibilityState={{ selected: on }}
+              >
+                <View style={styles.chipInner}>
+                  <Heart
+                    size={13}
+                    color={on ? theme.colors.surface : theme.colors.brandInk}
+                    fill={on ? theme.colors.surface : theme.colors.brandInk}
+                  />
+                  <Text style={[styles.chipText, on && styles.chipTextActive]}>{f.name}</Text>
+                </View>
+              </PressableScale>
+            );
+          })}
         </View>
       )}
 
-      <Pressable
-        style={[styles.planBtn, (loading || (!freeText.trim() && !selectedDest)) && styles.planBtnDisabled]}
+      <PressableScale
+        scaleTo={0.97}
+        style={[styles.planBtn, !canPlan && styles.planBtnDisabled]}
         onPress={onGetPlan}
         disabled={loading || (!freeText.trim() && !selectedDest)}
+        accessibilityRole="button"
+        accessibilityLabel="Get Plan"
+        accessibilityState={{ disabled: !canPlan, busy: loading }}
       >
-        {loading ? (
-          <ActivityIndicator size="small" color="#fff" />
-        ) : (
-          <Text style={styles.planBtnText}>Get Plan</Text>
-        )}
-      </Pressable>
+        <LinearGradient
+          colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.planBtnFill}
+        >
+          {loading ? (
+            <ActivityIndicator size="small" color={theme.colors.surface} />
+          ) : (
+            <Text style={styles.planBtnText}>Get Plan</Text>
+          )}
+        </LinearGradient>
+      </PressableScale>
+
+      {loading && (
+        <View style={styles.skeletonStack}>
+          <Skeleton height={92} radius={theme.radius.xl} />
+          <Skeleton height={92} radius={theme.radius.xl} />
+        </View>
+      )}
 
       {error && <Text style={styles.error}>{error}</Text>}
 
       {narrative && (
-        <View style={styles.narrativeCard}>
-          <Text style={styles.narrativeText}>{narrative}</Text>
-        </View>
+        <FadeInView>
+          <View style={styles.narrativeCard}>
+            <View style={styles.narrativeHeader}>
+              <Sparkles size={14} color={theme.colors.brandInk} strokeWidth={2.2} />
+              <Text style={styles.narrativeEyebrow}>Your plan</Text>
+            </View>
+            <Text style={styles.narrativeText}>{narrative}</Text>
+          </View>
+        </FadeInView>
       )}
 
       {results.map((item, idx) => (
-        <View key={idx} style={styles.destBlock}>
-          <Text style={styles.destTitle}>{idx + 1}. {item.dest}</Text>
-          {item.options.map((opt, oidx) => (
-            <View key={oidx} style={styles.optCard}>
-              <Text style={styles.optType}>{opt.type === "WALK" ? "Walk" : "Bus"}</Text>
-              <Text style={styles.optMeta}>Leave in {opt.depart_in_minutes} min · {opt.eta_minutes} min total</Text>
+        <FadeInView key={idx} delay={idx * 90}>
+          <View style={styles.destBlock}>
+            <View style={styles.destHeader}>
+              <View style={styles.destStep}>
+                <Text style={styles.destStepText}>{idx + 1}</Text>
+              </View>
+              <Text style={styles.destTitle}>{item.dest}</Text>
             </View>
-          ))}
-        </View>
+            {item.options.map((opt, oidx) => (
+              <View
+                key={oidx}
+                style={styles.optCard}
+                accessible
+                accessibilityLabel={`${opt.type === "WALK" ? "Walk" : "Bus"}: leave in ${opt.depart_in_minutes} minutes, ${opt.eta_minutes} minutes total`}
+              >
+                <View style={styles.optIconHalo}>
+                  {opt.type === "WALK"
+                    ? <Footprints size={18} color={theme.colors.brandInk} strokeWidth={2} />
+                    : <Bus size={18} color={theme.colors.brandInk} strokeWidth={2} />}
+                </View>
+                <View style={styles.optBody}>
+                  <Text style={styles.optType}>{opt.type === "WALK" ? "Walk" : "Bus"}</Text>
+                  <Text style={styles.optMeta}>Leave in {opt.depart_in_minutes} min · {opt.eta_minutes} min total</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </FadeInView>
       ))}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16, paddingBottom: 40 },
-  intro: { fontSize: 16, fontWeight: "600", color: theme.colors.primary, marginBottom: 12 },
+  screen: { flex: 1, backgroundColor: theme.colors.surfaceAlt },
+  container: { padding: theme.layout.gutter, paddingBottom: 40 },
+  eyebrow: { ...theme.text.eyebrow, color: theme.colors.textMuted, marginBottom: theme.spacing.sm },
+  intro: { ...theme.text.title1, color: theme.colors.navy, marginBottom: theme.layout.gutter },
   input: {
+    backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: theme.colors.cardBorder,
-    borderRadius: theme.radius.sm,
-    padding: 12,
-    fontSize: 15,
+    borderColor: theme.colors.borderSoft,
+    borderRadius: theme.radius.xl,
+    padding: theme.layout.gutter,
+    fontSize: 16,
+    fontFamily: "DMSans_400Regular",
     color: theme.colors.text,
-    marginBottom: 12,
-    minHeight: 72,
+    marginBottom: theme.layout.gutter,
+    minHeight: 96,
     textAlignVertical: "top",
+    ...theme.elevation[1],
   },
-  orLabel: { textAlign: "center", color: theme.colors.textMuted, fontSize: 13, marginBottom: 10 },
-  chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
-  favRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 },
+  orLabel: { ...theme.text.eyebrow, textAlign: "center", color: theme.colors.textMuted, marginBottom: theme.layout.cardGap },
+  chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing.sm, marginBottom: theme.spacing.sm },
+  favRow: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing.sm, marginBottom: theme.layout.gutter },
   chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: theme.colors.surfaceAlt,
+    minHeight: theme.layout.tapMin,
+    paddingHorizontal: theme.layout.gutter,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: theme.colors.cardBorder,
+    borderColor: theme.colors.border,
+    justifyContent: "center",
   },
-  chipActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  chipText: { fontSize: 14, color: theme.colors.text },
-  chipTextActive: { color: "#fff" },
+  chipActive: { backgroundColor: theme.colors.navy, borderColor: theme.colors.navy, ...theme.elevation[1] },
+  chipInner: { flexDirection: "row", alignItems: "center", gap: 6 },
+  chipText: { ...theme.text.subhead, fontSize: 14, color: theme.colors.text },
+  chipTextActive: { color: theme.colors.surface },
+
+  // Primary CTA — white label rides the gradient's darker ctaEnd stop
   planBtn: {
-    backgroundColor: theme.colors.secondary,
-    padding: 14,
-    borderRadius: theme.radius.md,
-    alignItems: "center",
-    marginTop: 8,
-    marginBottom: 16,
+    borderRadius: theme.radius.lg,
+    overflow: "hidden",
+    marginTop: theme.spacing.sm,
+    marginBottom: theme.layout.gutter,
+    minHeight: 52,
+    ...theme.shadows.glowOrange,
   },
-  planBtnDisabled: { opacity: 0.6 },
-  planBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
-  error: { color: theme.colors.error, fontSize: 14, marginBottom: 12 },
+  planBtnDisabled: { opacity: 0.55 },
+  planBtnFill: { minHeight: 52, paddingVertical: 14, alignItems: "center", justifyContent: "center" },
+  planBtnText: { color: theme.colors.surface, fontFamily: "DMSans_700Bold", fontSize: 16, letterSpacing: 0.2 },
+
+  skeletonStack: { gap: theme.layout.cardGap, marginBottom: theme.layout.gutter },
+  error: { ...theme.text.body, fontSize: 14, color: theme.colors.errorDeep, marginBottom: theme.layout.cardGap },
+
   narrativeCard: {
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
-    padding: 14,
-    marginBottom: 16,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: theme.layout.gutter,
+    marginBottom: theme.layout.gutter,
     borderLeftWidth: 4,
-    borderLeftColor: theme.colors.secondary,
+    borderLeftColor: theme.colors.orange,
+    ...theme.elevation[1],
   },
-  narrativeText: { fontSize: 14, color: theme.colors.text, lineHeight: 22, fontStyle: "italic" },
-  destBlock: { marginBottom: 16 },
-  destTitle: { fontSize: 16, fontWeight: "700", color: theme.colors.primary, marginBottom: 6 },
+  narrativeHeader: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: theme.spacing.sm },
+  narrativeEyebrow: { ...theme.text.eyebrow, color: theme.colors.brandInk },
+  narrativeText: { ...theme.text.body, fontSize: 14, color: theme.colors.text, fontStyle: "italic" },
+
+  destBlock: { marginBottom: theme.layout.gutter },
+  destHeader: { flexDirection: "row", alignItems: "center", gap: theme.spacing.md, marginBottom: theme.spacing.sm },
+  destStep: {
+    width: 26,
+    height: 26,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.navy,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  destStepText: { ...theme.text.numeric, fontSize: 13, color: theme.colors.textOnNavy },
+  destTitle: { ...theme.text.title2, color: theme.colors.navy, flex: 1 },
   optCard: {
-    backgroundColor: theme.colors.card,
-    borderRadius: theme.radius.sm,
-    padding: 10,
-    marginBottom: 6,
-    borderWidth: 1,
-    borderColor: theme.colors.cardBorder,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.layout.cardGap,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.layout.cardGap,
+    marginBottom: theme.spacing.sm,
+    ...theme.elevation[1],
   },
-  optType: { fontSize: 13, fontWeight: "600", color: theme.colors.text },
-  optMeta: { fontSize: 12, color: theme.colors.textSecondary, marginTop: 2 },
+  optIconHalo: {
+    width: 38,
+    height: 38,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.orangeSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  optBody: { flex: 1 },
+  optType: { ...theme.text.subhead, color: theme.colors.text },
+  optMeta: { ...theme.text.caption, fontSize: 13, color: theme.colors.textSecondary, marginTop: 1, fontVariant: ["tabular-nums"] },
 });

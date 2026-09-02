@@ -1,7 +1,10 @@
 /**
  * AnimatedTabBar — custom bottom tab bar with a springy orange pill that
  * glides under the active tab, bouncing icons, and haptic feedback.
+ * Labels stay >= 11pt in AA-safe tokens on navy; every target >= 44pt;
+ * transitions snap instantly under reduce-motion.
  */
+import { useReducedMotion } from "@/src/components/ui/motion";
 import { theme } from "@/src/constants/theme";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import * as Haptics from "expo-haptics";
@@ -22,15 +25,17 @@ function TabIcon({
   icon: React.ReactNode;
   label: string;
 }) {
+  const reduceMotion = useReducedMotion();
   const scale = useSharedValue(focused ? 1 : 0);
   useEffect(() => {
-    scale.value = withSpring(focused ? 1 : 0, SPRING);
-  }, [focused, scale]);
+    const target = focused ? 1 : 0;
+    scale.value = reduceMotion ? withTiming(target, { duration: 0 }) : withSpring(target, SPRING);
+  }, [focused, scale, reduceMotion]);
   const iconStyle = useAnimatedStyle(() => ({
     transform: [{ scale: 1 + scale.value * 0.18 }, { translateY: -scale.value * 2 }],
   }));
   const labelStyle = useAnimatedStyle(() => ({
-    opacity: 0.55 + scale.value * 0.45,
+    opacity: 0.72 + scale.value * 0.28,
   }));
   return (
     <View style={styles.tabContent}>
@@ -44,6 +49,7 @@ function TabIcon({
 
 export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
+  const reduceMotion = useReducedMotion();
   const [barWidth, setBarWidth] = useState(0);
   const tabCount = state.routes.length;
   const slotWidth = tabCount > 0 ? barWidth / tabCount : 0;
@@ -52,10 +58,11 @@ export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarP
   const indicatorOpacity = useSharedValue(0);
   useEffect(() => {
     if (slotWidth > 0) {
-      indicatorX.value = withSpring(state.index * slotWidth, SPRING);
-      indicatorOpacity.value = withTiming(1, { duration: theme.motion.base });
+      const target = state.index * slotWidth;
+      indicatorX.value = reduceMotion ? withTiming(target, { duration: 0 }) : withSpring(target, SPRING);
+      indicatorOpacity.value = withTiming(1, { duration: reduceMotion ? 0 : theme.motion.base });
     }
-  }, [state.index, slotWidth, indicatorX, indicatorOpacity]);
+  }, [state.index, slotWidth, indicatorX, indicatorOpacity, reduceMotion]);
 
   const indicatorStyle = useAnimatedStyle(() => ({
     opacity: indicatorOpacity.value,
@@ -81,7 +88,7 @@ export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarP
           const { options } = descriptors[route.key];
           const label = typeof options.title === "string" ? options.title : route.name;
           const focused = state.index === index;
-          const color = focused ? theme.colors.orangeBright : "rgba(255,255,255,0.5)";
+          const color = focused ? theme.colors.orangeBright : theme.colors.textOnNavyMuted;
           const icon = options.tabBarIcon?.({ focused, color, size: 22 });
 
           return (
@@ -120,7 +127,7 @@ const styles = StyleSheet.create({
   },
   bar: {
     flexDirection: "row",
-    height: 62,
+    height: 64,
     alignItems: "stretch",
   },
   indicator: {
@@ -129,11 +136,11 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: "center",
     justifyContent: "flex-start",
-    paddingTop: 6,
+    paddingTop: 7,
   },
   indicatorPill: {
-    width: 44,
-    height: 32,
+    width: 48,
+    height: 33,
     borderRadius: theme.radius.pill,
     backgroundColor: "rgba(232,74,39,0.18)",
     borderWidth: 1,
@@ -141,6 +148,7 @@ const styles = StyleSheet.create({
   },
   tab: {
     flex: 1,
+    minHeight: theme.layout.tapMin,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -151,8 +159,8 @@ const styles = StyleSheet.create({
   },
   tabLabel: {
     fontFamily: "DMSans_500Medium",
-    fontSize: 10,
-    color: "rgba(255,255,255,0.55)",
+    fontSize: 11,
+    color: theme.colors.textOnNavyMuted,
   },
   tabLabelActive: {
     color: theme.colors.orangeBright,

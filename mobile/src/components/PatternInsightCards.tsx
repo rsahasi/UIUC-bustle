@@ -1,12 +1,16 @@
 import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
+import { AlarmClock, ChevronDown, ChevronUp, Footprints, Route, Sparkles } from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
 import { theme } from '@/src/constants/theme';
+import { FadeInView, PressableScale } from '@/src/components/ui/motion';
 import type { PatternInsights } from '@/src/utils/patternEngine';
 
 interface InsightCardData {
   key: string;
   title: string;
   body: string;
+  icon: LucideIcon;
 }
 
 interface Props {
@@ -16,6 +20,38 @@ interface Props {
 }
 
 const MAX_VISIBLE = 2;
+
+/** One insight card — icon halo keyed to the insight type, never color-only. */
+function InsightCard({ card, dimmed, onDismiss }: {
+  card: InsightCardData;
+  dimmed?: boolean;
+  onDismiss?: (key: string) => void;
+}) {
+  const Icon = card.icon;
+  return (
+    <View style={[styles.card, dimmed && styles.cardDismissed]}>
+      <View style={[styles.iconHalo, dimmed && styles.iconHaloDismissed]}>
+        <Icon size={15} color={dimmed ? theme.colors.textMuted : theme.colors.brandInk} strokeWidth={2} />
+      </View>
+      <View style={styles.cardContent}>
+        <Text style={[styles.cardTitle, dimmed && styles.cardTitleDismissed]}>{card.title}</Text>
+        <Text style={[styles.cardBody, dimmed && styles.cardBodyDismissed]}>{card.body}</Text>
+      </View>
+      {onDismiss && (
+        <PressableScale
+          haptic={false}
+          onPress={() => onDismiss(card.key)}
+          hitSlop={8}
+          style={styles.dismissBtn}
+          accessibilityRole="button"
+          accessibilityLabel={`Got it, dismiss ${card.title}`}
+        >
+          <Text style={styles.dismissBtnText}>Got it</Text>
+        </PressableScale>
+      )}
+    </View>
+  );
+}
 
 export default function PatternInsightCards({ insights, dismissedKeys, onDismiss }: Props) {
   const [showAllNew, setShowAllNew] = useState(false);
@@ -31,7 +67,7 @@ export default function PatternInsightCards({ insights, dismissedKeys, onDismiss
     const body = faster
       ? `Your walk to ${w.destinationLabel} takes ~${Math.round(w.personalMinutes)} min, not the estimated ${Math.round(w.estimatedMinutes)}. We've updated your leave times.`
       : `Your walk to ${w.destinationLabel} takes ~${Math.round(w.personalMinutes)} min — ${absDiff.toFixed(0)} min longer than estimated. We've adjusted your leave times.`;
-    allCards.push({ key, title: 'Walk time updated', body });
+    allCards.push({ key, title: 'Walk time updated', body, icon: Footprints });
   }
 
   for (const h of insights.departureHabits) {
@@ -39,14 +75,14 @@ export default function PatternInsightCards({ insights, dismissedKeys, onDismiss
       const key = `habit_${h.classId}`;
       const mins = Math.abs(Math.round(h.avgLatenessMinutes));
       const body = `You tend to leave ${mins}min after we suggest — we've adjusted your alerts to account for this.`;
-      allCards.push({ key, title: 'Departure habit noticed', body });
+      allCards.push({ key, title: 'Departure habit noticed', body, icon: AlarmClock });
     }
   }
 
   for (const r of insights.routePreferences) {
     const key = `route_${r.context}`;
     const body = `You usually take Route ${r.preferredRoute} — we'll always show it first.`;
-    allCards.push({ key, title: 'Route preference learned', body });
+    allCards.push({ key, title: 'Route preference learned', body, icon: Route });
   }
 
   const newCards = allCards.filter((c) => !dismissedKeys.includes(c.key));
@@ -61,47 +97,61 @@ export default function PatternInsightCards({ insights, dismissedKeys, onDismiss
     <View style={styles.container}>
       {newCards.length > 0 && (
         <>
-          <Text style={styles.sectionHeader}>Your patterns</Text>
+          <View style={styles.sectionHeader}>
+            <Sparkles size={12} color={theme.colors.brandInk} strokeWidth={2.2} />
+            <Text style={styles.sectionHeaderText} accessibilityRole="header">Your patterns</Text>
+          </View>
 
-          {visibleNew.map((card) => (
-            <View key={card.key} style={styles.card}>
-              <View style={styles.cardContent}>
-                <Text style={styles.cardTitle}>{card.title}</Text>
-                <Text style={styles.cardBody}>{card.body}</Text>
-              </View>
-              <Pressable onPress={() => onDismiss(card.key)} hitSlop={8}>
-                <Text style={styles.dismissBtn}>Got it</Text>
-              </Pressable>
-            </View>
+          {visibleNew.map((card, i) => (
+            <FadeInView key={card.key} delay={i * 60} dy={10}>
+              <InsightCard card={card} onDismiss={onDismiss} />
+            </FadeInView>
           ))}
 
           {!showAllNew && hiddenNewCount > 0 && (
-            <Pressable onPress={() => setShowAllNew(true)} style={styles.seeMoreBtn}>
+            <PressableScale
+              haptic={false}
+              onPress={() => setShowAllNew(true)}
+              style={styles.seeMoreBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`See ${hiddenNewCount} more insights`}
+            >
+              <ChevronDown size={14} color={theme.colors.brandInk} strokeWidth={2.2} />
               <Text style={styles.seeMoreText}>See {hiddenNewCount} more</Text>
-            </Pressable>
+            </PressableScale>
           )}
         </>
       )}
 
       {dismissedCards.length > 0 && (
         <View style={styles.dismissedSection}>
-          <Pressable
+          <PressableScale
+            haptic={false}
             onPress={() => setShowDismissed((v) => !v)}
             style={styles.dismissedToggle}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showDismissed }}
+            accessibilityLabel={
+              showDismissed
+                ? 'Hide learnings about your commute'
+                : `Show all ${dismissedCards.length} learnings about your commute`
+            }
           >
+            {showDismissed ? (
+              <ChevronUp size={14} color={theme.colors.textSecondary} strokeWidth={2.2} />
+            ) : (
+              <ChevronDown size={14} color={theme.colors.textSecondary} strokeWidth={2.2} />
+            )}
             <Text style={styles.dismissedToggleText}>
               {showDismissed ? 'Hide' : `Show all ${dismissedCards.length} learning${dismissedCards.length > 1 ? 's' : ''}`} — About your commute
             </Text>
-          </Pressable>
+          </PressableScale>
 
           {showDismissed &&
-            dismissedCards.map((card) => (
-              <View key={card.key} style={[styles.card, styles.cardDismissed]}>
-                <View style={styles.cardContent}>
-                  <Text style={[styles.cardTitle, styles.cardTitleDismissed]}>{card.title}</Text>
-                  <Text style={[styles.cardBody, styles.cardBodyDismissed]}>{card.body}</Text>
-                </View>
-              </View>
+            dismissedCards.map((card, i) => (
+              <FadeInView key={card.key} delay={i * 50} dy={8}>
+                <InsightCard card={card} dimmed />
+              </FadeInView>
             ))}
         </View>
       )}
@@ -111,81 +161,103 @@ export default function PatternInsightCards({ insights, dismissedKeys, onDismiss
 
 const styles = StyleSheet.create({
   container: {
-    marginBottom: 8,
+    marginBottom: theme.spacing.sm,
   },
   sectionHeader: {
-    fontFamily: 'DMSans_700Bold',
-    fontSize: 16,
-    color: theme.colors.navy,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     marginBottom: 10,
+  },
+  sectionHeaderText: {
+    ...theme.text.eyebrow,
+    color: theme.colors.textMuted,
   },
   card: {
     backgroundColor: theme.colors.surface,
-    borderRadius: 8,
+    borderRadius: theme.radius.lg,
     padding: 14,
-    marginBottom: 8,
+    marginBottom: theme.spacing.sm,
     borderLeftWidth: 3,
     borderLeftColor: theme.colors.orange,
     flexDirection: 'row',
     alignItems: 'flex-start',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 2,
-    elevation: 1,
+    ...theme.elevation[1],
   },
   cardDismissed: {
     borderLeftColor: theme.colors.border,
     opacity: 0.75,
+  },
+  iconHalo: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: theme.colors.orangeSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  iconHaloDismissed: {
+    backgroundColor: theme.colors.surfaceAlt,
   },
   cardContent: {
     flex: 1,
     marginRight: 10,
   },
   cardTitle: {
-    fontFamily: 'DMSans_600SemiBold',
+    ...theme.text.subhead,
     fontSize: 14,
     color: theme.colors.navy,
-    marginBottom: 4,
+    marginBottom: 3,
   },
   cardTitleDismissed: {
     color: theme.colors.textSecondary,
   },
   cardBody: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 13,
+    ...theme.text.caption,
     color: theme.colors.textSecondary,
-    lineHeight: 18,
   },
   cardBodyDismissed: {
     color: theme.colors.textMuted,
   },
   dismissBtn: {
-    fontFamily: 'DMSans_500Medium',
-    fontSize: 12,
-    color: theme.colors.orange,
-    paddingTop: 2,
+    minHeight: theme.layout.tapMin,
+    justifyContent: 'center',
+  },
+  dismissBtnText: {
+    ...theme.text.badge,
+    color: theme.colors.brandInk,
   },
   seeMoreBtn: {
     alignSelf: 'flex-start',
-    paddingVertical: 6,
-    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: theme.layout.tapMin,
+    paddingVertical: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
   },
   seeMoreText: {
-    fontFamily: 'DMSans_500Medium',
+    ...theme.text.badge,
     fontSize: 13,
-    color: theme.colors.orange,
+    color: theme.colors.brandInk,
   },
   dismissedSection: {
     marginTop: 4,
   },
   dismissedToggle: {
-    paddingVertical: 8,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: theme.layout.tapMin,
+    paddingVertical: theme.spacing.sm,
     marginBottom: 4,
   },
   dismissedToggleText: {
-    fontFamily: 'DMSans_500Medium',
+    ...theme.text.badge,
     fontSize: 13,
+    fontFamily: 'DMSans_500Medium',
     color: theme.colors.textSecondary,
   },
 });

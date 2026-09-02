@@ -12,11 +12,12 @@ import { MET_BY_MODE, calcCalories } from "@/src/utils/activity";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { Pedometer } from "expo-sensors";
+import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Bus, Flame, Footprints, Share2, Timer, X } from "lucide-react-native";
+import { AlertTriangle, Bus, Check, Flame, Footprints, MapPin, PartyPopper, Share2, Timer, X } from "lucide-react-native";
+import type { LucideIcon } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -27,6 +28,8 @@ import {
 } from "react-native";
 import MapView, { Callout, Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { theme } from "@/src/constants/theme";
+import { Button } from "@/src/components/ui/Button";
+import { AnimatedNumber, CelebrationBurst, FadeInView, PressableScale, TickingCountdown } from "@/src/components/ui/motion";
 import { getEntranceCoords } from "@/src/utils/buildingEntrance";
 
 const ARRIVAL_THRESHOLD_M = 30;
@@ -55,6 +58,34 @@ function minDistToPolylineM(lat: number, lng: number, coords: { latitude: number
     if (d < min) min = d;
   }
   return min;
+}
+
+/** m:ss display for the elapsed-time readout (tabular styles keep it steady). */
+function formatElapsed(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Small icon + value pair on the dark HUD. */
+function HudStat({ icon: Icon, value, a11yLabel }: { icon: LucideIcon; value: string; a11yLabel: string }) {
+  return (
+    <View style={styles.hudStat} accessible accessibilityLabel={a11yLabel}>
+      <Icon size={13} color={theme.colors.textOnNavyMuted} strokeWidth={2.2} />
+      <Text style={styles.hudStatValue} numberOfLines={1}>{value}</Text>
+    </View>
+  );
+}
+
+/** Arrival-modal stat tile: icon, tabular value, eyebrow label. */
+function StatTile({ icon: Icon, value, label }: { icon: LucideIcon; value: string; label: string }) {
+  return (
+    <View style={styles.statTile} accessible accessibilityLabel={`${label}: ${value}`}>
+      <Icon size={16} color={theme.colors.brandInk} strokeWidth={2.2} />
+      <Text style={styles.statTileValue} numberOfLines={1}>{value}</Text>
+      <Text style={styles.statTileLabel}>{label}</Text>
+    </View>
+  );
 }
 
 type NavPhase = "walking" | "bus";
@@ -587,17 +618,6 @@ export default function WalkNavScreen() {
   const etaSeconds = distanceM != null && speedMps > 0 ? Math.round(distanceM / speedMps) : null;
   const etaMinutes = etaSeconds != null ? Math.ceil(etaSeconds / 60) : null;
 
-  const minsUntilBus = busDepEpochMs != null
-    ? Math.round((busDepEpochMs - Date.now()) / 60000)
-    : null;
-  const busCountdownLabel = minsUntilBus == null
-    ? ""
-    : minsUntilBus > 0
-      ? ` · in ${minsUntilBus} min`
-      : minsUntilBus === 0
-        ? " · departing now"
-        : " · departed";
-
   // Pace warning calculation
   const classStartTime = params.arrive_by_class_time as string | undefined;
   let paceStatus: 'on-track' | 'behind' | 'ahead' | null = null;
@@ -832,134 +852,163 @@ export default function WalkNavScreen() {
 
       {/* Zoom controls */}
       <View style={styles.zoomControls}>
-        <Pressable style={styles.zoomBtn} onPress={zoomIn} accessibilityLabel="Zoom in">
+        <Pressable style={styles.zoomBtn} onPress={zoomIn} accessibilityRole="button" accessibilityLabel="Zoom in">
           <Text style={styles.zoomBtnText}>+</Text>
         </Pressable>
         <View style={styles.zoomDivider} />
-        <Pressable style={styles.zoomBtn} onPress={zoomOut} accessibilityLabel="Zoom out">
+        <Pressable style={styles.zoomBtn} onPress={zoomOut} accessibilityRole="button" accessibilityLabel="Zoom out">
           <Text style={styles.zoomBtnText}>−</Text>
         </Pressable>
       </View>
 
-      {/* Board Bus banner (bus mode, walking phase) */}
-      {isBusMode && navPhase === "walking" && (
-        <View style={styles.boardBusBanner}>
-          <Text style={styles.boardBusText}>
-            Walk to stop · Board Bus {routeId}{busCountdownLabel}
-          </Text>
+      {/* Top overlay: ONE stacked banner slot + cancel — nothing overlaps */}
+      <View style={styles.topOverlay} pointerEvents="box-none">
+        <View style={styles.bannerStack} pointerEvents="box-none">
+          {locationError && (
+            <FadeInView dy={-10} style={[styles.banner, styles.bannerError]}>
+              <AlertTriangle size={16} color={theme.colors.textOnNavy} strokeWidth={2.2} />
+              <Text style={styles.bannerText}>{locationError}</Text>
+            </FadeInView>
+          )}
+          {!locationError && busMissed && (
+            <FadeInView dy={-10} style={[styles.banner, styles.bannerError]}>
+              <AlertTriangle size={16} color={theme.colors.textOnNavy} strokeWidth={2.2} />
+              <Text style={styles.bannerText}>Bus departed — continue walking to destination</Text>
+              <Pressable
+                onPress={() => {
+                  busMissedDismissedRef.current = true;
+                  busMissedRef.current = false;
+                  setBusMissed(false);
+                }}
+                style={styles.bannerAction}
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss missed-bus notice"
+              >
+                <Text style={styles.bannerActionText}>Got it</Text>
+              </Pressable>
+            </FadeInView>
+          )}
+          {!locationError && !busMissed && isBusMode && navPhase === "walking" && (
+            <FadeInView dy={-10} style={[styles.banner, styles.bannerNavy]}>
+              <Bus size={16} color={theme.colors.textOnNavy} strokeWidth={2.2} />
+              <Text style={styles.bannerText}>Walk to stop · Board Bus {routeId}</Text>
+              {busDepEpochMs != null && (
+                <View style={styles.bannerChip}>
+                  <TickingCountdown targetMs={busDepEpochMs} nowLabel="Departing" style={styles.bannerChipText} />
+                </View>
+              )}
+            </FadeInView>
+          )}
+          {!locationError && !busMissed && navPhase === "bus" && (
+            <FadeInView dy={-10} style={[styles.banner, styles.bannerOrange]}>
+              <Bus size={16} color={theme.colors.textOnNavy} strokeWidth={2.2} />
+              <Text style={styles.bannerText}>
+                On Bus {routeId} · alight at {alightingStopName || "destination stop"}
+              </Text>
+            </FadeInView>
+          )}
         </View>
-      )}
+        <PressableScale
+          style={styles.cancelBtn}
+          onPress={onCancel}
+          accessibilityRole="button"
+          accessibilityLabel={isBusMode ? "Cancel route" : "Cancel walk"}
+        >
+          <X size={14} color={theme.colors.textOnNavy} strokeWidth={2.4} />
+          <Text style={styles.cancelBtnText}>{isBusMode ? "Cancel Route" : "Cancel Walk"}</Text>
+        </PressableScale>
+      </View>
 
-      {/* On Bus banner (bus phase) */}
-      {navPhase === "bus" && (
-        <View style={styles.onBusBanner}>
-          <Text style={styles.onBusText}>
-            On Bus {routeId} → alight at {alightingStopName || "destination stop"}
-          </Text>
-        </View>
-      )}
-
-      {/* Missed bus banner */}
-      {busMissed && (
-        <View style={styles.missedBusBanner}>
-          <Text style={styles.missedBusText}>Bus departed — continue walking to destination</Text>
-          <Pressable
-            onPress={() => {
-              busMissedDismissedRef.current = true;
-              busMissedRef.current = false;
-              setBusMissed(false);
-            }}
-            style={styles.missedBusDismiss}
-          >
-            <Text style={styles.missedBusDismissText}>Got it</Text>
-          </Pressable>
-        </View>
-      )}
-
-      {/* HUD overlay */}
+      {/* HUD overlay — departure-board readout on navy */}
       <View style={styles.hud}>
-        <View style={styles.hudHeader}>
-          <Pressable
-            accessibilityLabel={manualArrivalLabel}
-            accessibilityRole="button"
-            onPress={markArrived}
-            style={styles.hudArrivedBtn}
-          >
-            <Text style={styles.hudArrivedBtnText}>{manualArrivalLabel}</Text>
-          </Pressable>
-          <Pressable
+        <View style={styles.hudTopRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.hudEyebrow} numberOfLines={1}>
+              {navPhase === "walking" ? `${modeLabel} · Heading to` : `Bus ${routeId} · Alight at`}
+            </Text>
+            <Text style={styles.hudDest} numberOfLines={1}>
+              {navPhase === "walking" ? destName : (alightingStopName || alightingStopId || "destination")}
+            </Text>
+            {navPhase === "walking" && entranceDesc != null && (
+              <Text style={styles.entranceNotice} numberOfLines={1}>→ {entranceDesc}</Text>
+            )}
+          </View>
+          <PressableScale
             accessibilityLabel="Share trip"
             accessibilityRole="button"
             onPress={handleWalkNavShare}
-            style={styles.hudShareBtn}
+            style={styles.shareBtn}
           >
             <Share2 size={18} color={theme.colors.navy} />
-          </Pressable>
+          </PressableScale>
         </View>
-        {navPhase === "walking" ? (
-          <>
-            <View style={styles.hudRow}>
-              <View style={styles.hudCell}>
-                <Text style={styles.hudLabel}>Distance</Text>
-                <Text style={styles.hudValue}>
-                  {distanceM != null ? formatDistance(distanceM) : "—"}
-                </Text>
-              </View>
-              <View style={styles.hudCell}>
-                <Text style={styles.hudLabel}>ETA</Text>
-                <Text style={styles.hudValue}>
-                  {etaMinutes != null ? `${etaMinutes} min` : "—"}
-                </Text>
-              </View>
-              <View style={styles.hudCell}>
-                <Text style={styles.hudLabel}>Calories</Text>
-                <Text style={styles.hudValue}>{caloriesBurned.toFixed(1)}</Text>
-              </View>
-              {pedometerAvailable && (
-                <View style={styles.hudCell}>
-                  <Text style={styles.hudLabel}>Steps</Text>
-                  <Text style={styles.hudValue}>{stepCount}</Text>
-                </View>
-              )}
-            </View>
-            <Text style={styles.hudMode}>{modeLabel} mode · {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
-            <Text style={styles.hudDest} numberOfLines={1}>→ {destName}</Text>
-            {entranceDesc != null && (
-              <Text style={styles.entranceNotice}>→ {entranceDesc}</Text>
-            )}
-            {paceStatus === 'behind' && etaMinutes != null && minsUntilClass != null && (
-              <Text style={styles.paceWarning}>Behind pace — {Math.abs(Math.round(minsUntilClass - etaMinutes))} min late at this speed</Text>
-            )}
-            {paceStatus === 'ahead' && (
-              <Text style={styles.paceAhead}>On track — arriving early</Text>
-            )}
-          </>
-        ) : (
-          <>
-            <View style={styles.hudRow}>
-              <View style={styles.hudCell}>
-                <Text style={styles.hudLabel}>Dist to stop</Text>
-                <Text style={styles.hudValue}>
-                  {distanceM != null ? formatDistance(distanceM) : "—"}
-                </Text>
-              </View>
-              <View style={styles.hudCell}>
-                <Text style={styles.hudLabel}>Calories</Text>
-                <Text style={styles.hudValue}>{caloriesBurned.toFixed(1)}</Text>
-              </View>
-              {pedometerAvailable && (
-                <View style={styles.hudCell}>
-                  <Text style={styles.hudLabel}>Steps</Text>
-                  <Text style={styles.hudValue}>{stepCount}</Text>
-                </View>
-              )}
-            </View>
-            <Text style={styles.hudMode}>Bus {routeId} · {Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
-            <Text style={styles.hudDest} numberOfLines={1}>
-              Alight at {alightingStopName || alightingStopId || "destination"}
+
+        <View style={styles.hudPrimaryRow}>
+          <View style={styles.hudPrimaryCell}>
+            <Text style={styles.hudPrimaryLabel}>{navPhase === "walking" ? "Distance" : "Dist to stop"}</Text>
+            <Text style={styles.hudPrimaryValue} numberOfLines={1}>
+              {distanceM != null ? formatDistance(distanceM) : "—"}
             </Text>
-          </>
+          </View>
+          <View style={styles.hudPrimaryDivider} />
+          {navPhase === "walking" ? (
+            <View style={styles.hudPrimaryCell}>
+              <Text style={styles.hudPrimaryLabel}>ETA</Text>
+              <AnimatedNumber
+                value={etaMinutes != null ? `${etaMinutes} min` : "—"}
+                style={styles.hudPrimaryValue}
+                accessibilityLabel={etaMinutes != null ? `ETA ${etaMinutes} minutes` : "ETA unavailable"}
+              />
+            </View>
+          ) : (
+            <View style={styles.hudPrimaryCell}>
+              <Text style={styles.hudPrimaryLabel}>Elapsed</Text>
+              <Text style={styles.hudPrimaryValue} numberOfLines={1}>{formatElapsed(durationSeconds)}</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.hudStatsRow}>
+          {navPhase === "walking" && (
+            <HudStat icon={Timer} value={formatElapsed(durationSeconds)} a11yLabel={`Elapsed ${formatElapsed(durationSeconds)}`} />
+          )}
+          <HudStat icon={Flame} value={`${caloriesBurned.toFixed(1)} kcal`} a11yLabel={`${caloriesBurned.toFixed(1)} kilocalories burned`} />
+          {pedometerAvailable && (
+            <HudStat icon={Footprints} value={`${stepCount} steps`} a11yLabel={`${stepCount} steps`} />
+          )}
+        </View>
+
+        {navPhase === "walking" && paceStatus === 'behind' && etaMinutes != null && minsUntilClass != null && (
+          <View style={[styles.paceChip, styles.paceChipBehind]} accessible accessibilityLabel={`Behind pace, ${Math.abs(Math.round(minsUntilClass - etaMinutes))} minutes late at this speed`}>
+            <AlertTriangle size={13} color={theme.colors.textOnNavy} strokeWidth={2.4} />
+            <Text style={styles.paceChipText}>Behind pace — {Math.abs(Math.round(minsUntilClass - etaMinutes))} min late at this speed</Text>
+          </View>
         )}
+        {navPhase === "walking" && paceStatus === 'ahead' && (
+          <View style={[styles.paceChip, styles.paceChipAhead]} accessible accessibilityLabel="On track, arriving early">
+            <Check size={13} color={theme.colors.textOnNavy} strokeWidth={2.4} />
+            <Text style={styles.paceChipText}>On track — arriving early</Text>
+          </View>
+        )}
+
+        <View style={styles.hudFooter}>
+          <PressableScale
+            accessibilityLabel={manualArrivalLabel}
+            accessibilityRole="button"
+            onPress={markArrived}
+            style={styles.arrivedBtn}
+          >
+            <LinearGradient
+              colors={theme.gradients.sunset}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.arrivedFill}
+            >
+              <Check size={18} color={theme.colors.surface} strokeWidth={2.6} />
+              <Text style={styles.arrivedText}>{manualArrivalLabel}</Text>
+            </LinearGradient>
+          </PressableScale>
+        </View>
       </View>
 
       {shareErrorToast && (
@@ -968,49 +1017,33 @@ export default function WalkNavScreen() {
         </View>
       )}
 
-      {locationError && (
-        <View style={styles.errorBanner}>
-          <Text style={styles.errorBannerText}>{locationError}</Text>
-        </View>
-      )}
-
-      <Pressable style={[styles.cancelBtn, { flexDirection: "row", alignItems: "center", gap: 4 }]} onPress={onCancel}>
-        <X size={14} color="#fff" />
-        <Text style={styles.cancelBtnText}>{isBusMode ? "Cancel Route" : "Cancel Walk"}</Text>
-      </Pressable>
-
-      {/* Completion modal */}
+      {/* Completion modal — celebration + stat tiles */}
       <Modal visible={showCompletion} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>You arrived!</Text>
-            <Text style={styles.modalDest}>{destName}</Text>
-            <View style={styles.modalStats}>
-              <View style={styles.modalStatRow}>
-                <Footprints size={18} color={theme.colors.text} />
-                <Text style={styles.modalStat}>{formatDistance(walkedDistanceMRef.current)}</Text>
-              </View>
-              <View style={styles.modalStatRow}>
-                <Timer size={18} color={theme.colors.text} />
-                <Text style={styles.modalStat}>{Math.floor(durationSeconds / 60)}m {durationSeconds % 60}s</Text>
-              </View>
-              <View style={styles.modalStatRow}>
-                <Flame size={18} color={theme.colors.text} />
-                <Text style={styles.modalStat}>{caloriesBurned.toFixed(1)} kcal</Text>
-              </View>
+            <View style={styles.modalHalo}>
+              <PartyPopper size={30} color={theme.colors.brandInk} strokeWidth={1.8} />
+            </View>
+            <Text style={styles.modalEyebrow}>Trip complete</Text>
+            <Text style={styles.modalTitle} accessibilityRole="header">You arrived!</Text>
+            <Text style={styles.modalDest} numberOfLines={2}>{destName}</Text>
+            <View style={styles.statGrid}>
+              <StatTile icon={MapPin} value={formatDistance(walkedDistanceMRef.current)} label="Distance" />
+              <StatTile icon={Timer} value={formatElapsed(durationSeconds)} label="Duration" />
+              <StatTile icon={Flame} value={`${caloriesBurned.toFixed(1)} kcal`} label="Energy" />
               {pedometerAvailable && (
-                <View style={styles.modalStatRow}>
-                  <Footprints size={18} color={theme.colors.text} />
-                  <Text style={styles.modalStat}>{stepCount} steps</Text>
-                </View>
+                <StatTile icon={Footprints} value={String(stepCount)} label="Steps" />
               )}
             </View>
             {encouragement && (
               <Text style={styles.encouragementText}>{encouragement}</Text>
             )}
-            <Pressable style={styles.modalBtn} onPress={finishWalk}>
-              <Text style={styles.modalBtnText}>Save & finish</Text>
-            </Pressable>
+            <View style={styles.modalCtaWrap}>
+              <Button label="Save & finish" onPress={finishWalk} />
+            </View>
+            <View pointerEvents="none" style={styles.burstLayer}>
+              <CelebrationBurst count={22} radius={130} />
+            </View>
           </View>
         </View>
       </Modal>
@@ -1047,33 +1080,89 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 5,
   },
-  boardBusBanner: {
+
+  // ── Top overlay: single stacked banner slot + cancel ────────────────────
+  topOverlay: {
     position: "absolute",
     top: 48,
-    left: 16,
-    right: 120,
-    backgroundColor: "rgba(19,41,75,0.88)",
-    padding: 10,
-    borderRadius: 8,
+    left: theme.layout.gutter,
+    right: theme.layout.gutter,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    zIndex: 20,
   },
-  boardBusText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_600SemiBold" },
-  onBusBanner: {
-    position: "absolute",
-    top: 48,
-    left: 16,
-    right: 120,
-    backgroundColor: "rgba(232,74,39,0.92)",
-    padding: 10,
-    borderRadius: theme.radius.md,
+  bannerStack: { flex: 1, gap: 8 },
+  banner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: theme.radius.lg,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    ...theme.elevation[2],
   },
-  onBusText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_600SemiBold" },
+  bannerNavy: { backgroundColor: theme.colors.navy },
+  bannerOrange: { backgroundColor: theme.colors.ctaEnd },
+  bannerError: { backgroundColor: theme.colors.errorDeep },
+  bannerText: {
+    ...theme.text.subhead,
+    fontSize: 13,
+    lineHeight: 18,
+    color: theme.colors.textOnNavy,
+    flex: 1,
+  },
+  bannerChip: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+  },
+  bannerChipText: {
+    ...theme.text.numeric,
+    fontSize: 13,
+    color: theme.colors.brandInk,
+  },
+  bannerAction: {
+    minHeight: theme.layout.tapMin,
+    minWidth: theme.layout.tapMin,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    marginVertical: -10,
+  },
+  bannerActionText: {
+    ...theme.text.subhead,
+    fontSize: 13,
+    color: theme.colors.textOnNavy,
+    textDecorationLine: "underline",
+  },
+  cancelBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    minHeight: theme.layout.tapMin,
+    paddingHorizontal: 14,
+    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.errorDeep,
+    ...theme.elevation[2],
+  },
+  cancelBtnText: {
+    ...theme.text.subhead,
+    fontSize: 13,
+    color: theme.colors.textOnNavy,
+  },
+
+  // ── HUD ─────────────────────────────────────────────────────────────────
   hud: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
     backgroundColor: "rgba(11,27,54,0.94)",
-    padding: 16,
+    paddingHorizontal: theme.layout.gutter,
+    paddingTop: 14,
     paddingBottom: 32,
     borderTopLeftRadius: theme.radius.xxl,
     borderTopRightRadius: theme.radius.xxl,
@@ -1083,48 +1172,135 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 12,
   },
-  hudHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
-  hudArrivedBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 18,
-    backgroundColor: theme.colors.orange,
-  },
-  hudArrivedBtnText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_700Bold" },
-  hudShareBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.9)",
-    justifyContent: "center",
+  hudTopRow: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: 10,
+    marginBottom: 12,
   },
-  hudRow: { flexDirection: "row", justifyContent: "space-around", marginBottom: 8 },
-  hudCell: { alignItems: "center" },
-  hudLabel: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", marginBottom: 2 },
-  hudValue: { fontSize: 22, fontFamily: "DMSans_700Bold", color: "#fff", fontVariant: ["tabular-nums"] },
-  hudMode: { fontSize: 13, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", textAlign: "center", marginBottom: 4 },
-  hudDest: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange, textAlign: "center" },
-  cancelBtn: {
+  hudEyebrow: {
+    ...theme.text.eyebrow,
+    color: theme.colors.textOnNavyMuted,
+    marginBottom: 2,
+  },
+  hudDest: {
+    ...theme.text.title2,
+    color: theme.colors.textOnNavy,
+  },
+  entranceNotice: {
+    ...theme.text.caption,
+    fontSize: 12,
+    color: theme.colors.textOnNavyMuted,
+    marginTop: 2,
+  },
+  shareBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: theme.colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    ...theme.elevation[2],
+  },
+  hudPrimaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  hudPrimaryCell: { flex: 1, alignItems: "center", gap: 2 },
+  hudPrimaryDivider: {
+    width: 1,
+    height: 44,
+    backgroundColor: theme.colors.textOnNavyMuted,
+    opacity: 0.35,
+  },
+  hudPrimaryLabel: {
+    ...theme.text.eyebrow,
+    color: theme.colors.textOnNavyMuted,
+  },
+  hudPrimaryValue: {
+    ...theme.text.display,
+    fontSize: 40,
+    lineHeight: 46,
+    color: theme.colors.textOnNavy,
+  },
+  hudStatsRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 20,
+    marginBottom: 4,
+  },
+  hudStat: { flexDirection: "row", alignItems: "center", gap: 5 },
+  hudStatValue: {
+    ...theme.text.numeric,
+    fontSize: 13,
+    color: theme.colors.textOnNavy,
+  },
+  paceChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    alignSelf: "center",
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    marginTop: 6,
+  },
+  paceChipBehind: { backgroundColor: theme.colors.errorDeep },
+  paceChipAhead: { backgroundColor: theme.colors.successDeep },
+  paceChipText: {
+    ...theme.text.badge,
+    color: theme.colors.textOnNavy,
+  },
+  hudFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 12,
+  },
+  arrivedBtn: {
+    flex: 1,
+    borderRadius: theme.radius.lg,
+    overflow: "hidden",
+    minHeight: 50,
+    ...theme.shadows.glowOrange,
+  },
+  arrivedFill: {
+    flexGrow: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  arrivedText: {
+    ...theme.text.heading,
+    fontSize: 16,
+    color: theme.colors.surface,
+  },
+
+  // ── Toast ───────────────────────────────────────────────────────────────
+  shareErrorToast: {
     position: "absolute",
-    top: 48,
-    right: 16,
-    backgroundColor: "rgba(220,38,38,0.9)",
+    bottom: 260,
+    left: 24,
+    right: 24,
+    backgroundColor: theme.colors.navyDeep,
+    borderRadius: theme.radius.md,
     paddingVertical: 10,
     paddingHorizontal: 16,
-    borderRadius: theme.radius.md,
+    alignItems: "center",
+    zIndex: 30,
+    ...theme.elevation[3],
   },
-  cancelBtnText: { color: "#fff", fontFamily: "DMSans_600SemiBold", fontSize: 14 },
-  errorBanner: {
-    position: "absolute",
-    top: 48,
-    left: 16,
-    right: 120,
-    backgroundColor: theme.colors.error,
-    padding: 10,
-    borderRadius: theme.radius.md,
+  shareErrorToastText: {
+    ...theme.text.caption,
+    color: theme.colors.textOnNavy,
   },
-  errorBannerText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_400Regular" },
+
+  // ── Completion modal ────────────────────────────────────────────────────
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -1138,32 +1314,77 @@ const styles = StyleSheet.create({
     padding: 24,
     width: "100%",
     alignItems: "center",
-    ...theme.shadows.lg,
+    ...theme.elevation[3],
   },
-  modalTitle: { fontSize: 26, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy, marginBottom: 4 },
-  modalDest: { fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginBottom: 16 },
-  modalStats: { flexDirection: "row", flexWrap: "wrap", gap: 12, justifyContent: "center", marginBottom: 20 },
-  modalStatRow: { flexDirection: "row", alignItems: "center", gap: 4 },
-  modalStat: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
+  modalHalo: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: theme.colors.orangeSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  modalEyebrow: {
+    ...theme.text.eyebrow,
+    color: theme.colors.brandInk,
+    marginBottom: 4,
+  },
+  modalTitle: {
+    ...theme.text.title1,
+    color: theme.colors.navy,
+    marginBottom: 2,
+  },
+  modalDest: {
+    ...theme.text.body,
+    color: theme.colors.textSecondary,
+    textAlign: "center",
+    marginBottom: 16,
+  },
+  statGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.layout.cardGap,
+    alignSelf: "stretch",
+    marginBottom: 16,
+  },
+  statTile: {
+    flexGrow: 1,
+    flexBasis: "40%",
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.lg,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    gap: 3,
+  },
+  statTileValue: {
+    ...theme.text.numeric,
+    fontSize: 18,
+    lineHeight: 24,
+    color: theme.colors.text,
+  },
+  statTileLabel: {
+    ...theme.text.eyebrow,
+    fontSize: 10,
+    color: theme.colors.textMuted,
+  },
   encouragementText: {
-    fontSize: 14,
-    color: theme.colors.secondary,
+    ...theme.text.body,
     fontStyle: "italic",
+    color: theme.colors.brandInk,
     textAlign: "center",
     marginBottom: 16,
     paddingHorizontal: 8,
   },
-  modalBtn: {
-    backgroundColor: theme.colors.orange,
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-    borderRadius: theme.radius.lg,
-    ...theme.shadows.glowOrange,
+  modalCtaWrap: { alignSelf: "stretch" },
+  burstLayer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  modalBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_700Bold" },
-  entranceNotice: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.55)", marginTop: 2, textAlign: "center" },
-  paceWarning: { fontSize: 12, fontFamily: "DMSans_600SemiBold", color: theme.colors.error, backgroundColor: "rgba(220,38,38,0.15)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, marginTop: 4, textAlign: "center" },
-  paceAhead: { fontSize: 11, fontFamily: "DMSans_400Regular", color: "rgba(255,255,255,0.75)", marginTop: 2, textAlign: "center" },
+
+  // ── Map pins / callouts / zoom (unchanged vocabulary) ───────────────────
   pinWrapper: { alignItems: "center" },
   pinBulb: {
     width: 20,
@@ -1202,39 +1423,36 @@ const styles = StyleSheet.create({
     maxWidth: 220,
   },
   calloutText: {
+    ...theme.text.subhead,
     fontSize: 13,
-    fontFamily: "DMSans_600SemiBold",
     color: theme.colors.navy,
     textAlign: "center",
   },
-  missedBusBanner: { position: "absolute", top: 0, left: 0, right: 0, backgroundColor: theme.colors.error, padding: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", zIndex: 20 },
-  missedBusText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff", flex: 1 },
-  missedBusDismiss: { paddingHorizontal: 10, paddingVertical: 4 },
-  missedBusDismissText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff" },
   zoomControls: {
     position: "absolute",
     top: 104,
-    right: 16,
+    right: theme.layout.gutter,
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.lg,
     overflow: "hidden",
-    ...theme.shadows.lg,
+    ...theme.elevation[3],
     zIndex: 10,
   },
-  zoomBtn: { width: 44, height: 42, alignItems: "center", justifyContent: "center" },
-  zoomBtnText: { fontSize: 22, fontFamily: "DMSans_400Regular", color: theme.colors.navy, lineHeight: 26 },
-  zoomDivider: { height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.border, marginHorizontal: 8 },
-  shareErrorToast: {
-    position: "absolute",
-    bottom: 200,
-    left: 24,
-    right: 24,
-    backgroundColor: "rgba(0,0,0,0.75)",
-    borderRadius: theme.radius.md,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+  zoomBtn: {
+    width: theme.layout.tapMin,
+    height: theme.layout.tapMin,
     alignItems: "center",
-    zIndex: 30,
+    justifyContent: "center",
   },
-  shareErrorToastText: { color: "#fff", fontSize: 13, fontFamily: "DMSans_400Regular" },
+  zoomBtnText: {
+    fontSize: 22,
+    fontFamily: "DMSans_400Regular",
+    color: theme.colors.navy,
+    lineHeight: 26,
+  },
+  zoomDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: theme.colors.border,
+    marginHorizontal: 8,
+  },
 });

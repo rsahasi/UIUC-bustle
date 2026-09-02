@@ -1,12 +1,17 @@
 import { fetchDepartures } from "@/src/api/client";
-import { FadeInView, PressableScale, PulseView } from "@/src/components/ui/motion";
+import type { DepartureItem } from "@/src/api/types";
+import { Badge } from "@/src/components/ui/Badge";
+import { DepartureRow } from "@/src/components/ui/DepartureRow";
+import { EmptyState } from "@/src/components/ui/EmptyState";
+import { SectionHeader } from "@/src/components/ui/SectionHeader";
+import { FadeInView, PressableScale, Skeleton } from "@/src/components/ui/motion";
 import { theme } from "@/src/constants/theme";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { Bus, CloudOff, Footprints } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -16,11 +21,24 @@ import {
 
 const REFRESH_INTERVAL_MS = 25000;
 
+/** Render-only placeholder row while the departure board loads. */
+function DepartureRowSkeleton({ delay }: { delay: number }) {
+  return (
+    <FadeInView delay={delay} dy={8} style={styles.skeletonRow}>
+      <Skeleton width={44} height={20} radius={theme.radius.pill} />
+      <View style={styles.skeletonMiddle}>
+        <Skeleton width="72%" height={14} />
+      </View>
+      <Skeleton width={48} height={16} />
+    </FadeInView>
+  );
+}
+
 export default function TripScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const { stop_id, stop_name } = useLocalSearchParams<{ stop_id: string; stop_name?: string }>();
   const router = useRouter();
-  const [departures, setDepartures] = useState<{ route: string; headsign: string; expected_mins: number }[]>([]);
+  const [departures, setDepartures] = useState<DepartureItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -57,15 +75,12 @@ export default function TripScreen() {
   if (!stop_id) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.error}>Missing stop</Text>
-        <PressableScale
-          accessibilityLabel="Go back"
-          accessibilityRole="button"
-          onPress={() => router.back()}
-          style={styles.btn}
-        >
-          <Text style={styles.btnText}>Back</Text>
-        </PressableScale>
+        <EmptyState
+          icon={Bus}
+          title="Missing stop"
+          subtitle="This departure board was opened without a stop."
+          action={{ label: "Go back", onPress: () => router.back() }}
+        />
       </View>
     );
   }
@@ -75,44 +90,67 @@ export default function TripScreen() {
       style={styles.screen}
       contentContainerStyle={styles.container}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor="#13294b" />
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => { setRefreshing(true); load(); }}
+          tintColor={theme.colors.navy}
+          colors={[theme.colors.brandInk]}
+          progressBackgroundColor={theme.colors.surface}
+        />
       }
     >
-      <FadeInView delay={0} style={styles.card}>
+      <FadeInView delay={0} style={styles.board}>
         <LinearGradient
-          colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
+          colors={[theme.gradients.hero[0], theme.gradients.hero[1], theme.gradients.hero[2]]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={styles.cardHeader}
+          style={styles.boardHeader}
         >
-          <Text style={styles.stopName}>{stop_name || stop_id}</Text>
+          <Text style={styles.eyebrow}>Departure board</Text>
+          <Text style={styles.stopName} accessibilityRole="header">
+            {stop_name || stop_id}
+          </Text>
           <View style={styles.accentUnderline} />
           <View style={styles.liveRow}>
-            <PulseView minOpacity={0.3} maxScale={1.4} duration={900} style={styles.liveDot} />
-            <Text style={styles.subtitle}>Live departures (updates every 25s)</Text>
+            <Badge label="LIVE" variant="live" size="sm" />
+            <Text style={styles.subtitle}>Updates every 25 seconds</Text>
           </View>
         </LinearGradient>
 
-        <View style={styles.cardBody}>
+        <View style={styles.boardBody}>
           {loading ? (
-            <ActivityIndicator size="large" color={theme.colors.orange} style={styles.loader} />
-          ) : loadError ? (
-            <View style={styles.errorBlock}>
-              <Text style={styles.empty}>Couldn’t load departures. Pull down to refresh.</Text>
+            <View accessibilityLabel="Loading departures">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <DepartureRowSkeleton key={i} delay={i * 70} />
+              ))}
             </View>
+          ) : loadError ? (
+            <EmptyState
+              icon={CloudOff}
+              title="Couldn't load departures"
+              subtitle="Check your connection, then pull down or tap to retry."
+              action={{ label: "Try again", onPress: load }}
+            />
           ) : departures.length === 0 ? (
-            <Text style={styles.empty}>No departures right now.</Text>
+            <EmptyState
+              icon={Bus}
+              title="No departures right now"
+              subtitle="Nothing is scheduled from this stop in the next hour."
+            />
           ) : (
-            <View style={styles.list}>
+            <View>
+              <SectionHeader title="Next departures" />
               {departures.map((d, i) => (
-                <FadeInView key={i} delay={i * 60}>
-                  <View style={styles.row}>
-                    <View style={styles.routeBadge}>
-                      <Text style={styles.route}>{d.route}</Text>
-                    </View>
-                    <Text style={styles.headsign}>{d.headsign || "—"}</Text>
-                    <Text style={styles.mins}>{d.expected_mins} min</Text>
-                  </View>
+                <FadeInView key={i} delay={i * 55} dy={10}>
+                  <DepartureRow
+                    route={d.route}
+                    headsign={d.headsign || "—"}
+                    expectedMins={d.expected_mins}
+                    isRealtime={d.is_realtime}
+                    expectedTimeIso={d.expected_time_iso}
+                    delayStatus={d.delay_status}
+                    delayMins={d.delay_mins}
+                  />
                 </FadeInView>
               ))}
             </View>
@@ -127,6 +165,7 @@ export default function TripScreen() {
           onPress={onWalkInstead}
           style={styles.walkBtn}
         >
+          <Footprints size={18} color={theme.colors.navy} strokeWidth={2.2} />
           <Text style={styles.walkBtnText}>I'll walk instead</Text>
         </PressableScale>
       </FadeInView>
@@ -138,27 +177,33 @@ const styles = StyleSheet.create({
   centered: {
     flex: 1,
     justifyContent: "center",
-    alignItems: "center",
-    padding: 24,
+    padding: theme.layout.gutter,
     backgroundColor: theme.colors.surfaceAlt,
   },
   screen: { backgroundColor: theme.colors.surfaceAlt },
-  container: { padding: 16, paddingBottom: 32 },
-  card: {
+  container: {
+    padding: theme.layout.gutter,
+    paddingBottom: theme.layout.sectionGap + 4,
+  },
+  board: {
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
-    marginBottom: 20,
-    ...theme.shadows.md,
+    marginBottom: theme.layout.sectionGap - 8,
+    overflow: "hidden",
+    ...theme.elevation[2],
   },
-  cardHeader: {
-    borderTopLeftRadius: theme.radius.xl,
-    borderTopRightRadius: theme.radius.xl,
-    paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 18,
+  boardHeader: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg + 2,
+    paddingBottom: theme.spacing.lg - 2,
+  },
+  eyebrow: {
+    ...theme.text.eyebrow,
+    color: theme.colors.textOnNavyMuted,
+    marginBottom: theme.spacing.sm,
   },
   stopName: {
-    ...theme.typography.screenTitle,
+    ...theme.text.title1,
     color: theme.colors.textOnNavy,
   },
   accentUnderline: {
@@ -172,97 +217,42 @@ const styles = StyleSheet.create({
   liveRow: {
     flexDirection: "row",
     alignItems: "center",
-  },
-  liveDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: theme.colors.orangeBright,
-    marginRight: 8,
+    gap: theme.spacing.sm,
   },
   subtitle: {
-    fontSize: 13,
-    fontFamily: "DMSans_500Medium",
+    ...theme.text.caption,
     color: theme.colors.textOnNavyMuted,
   },
-  cardBody: {
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    paddingBottom: 12,
+  boardBody: {
+    paddingBottom: theme.spacing.sm,
   },
-  loader: { marginVertical: 24 },
-  empty: {
-    fontSize: 15,
-    fontFamily: "DMSans_400Regular",
-    color: theme.colors.textSecondary,
-    marginVertical: 16,
-    textAlign: "center",
-  },
-  errorBlock: { marginVertical: 8 },
-  list: {},
-  row: {
+  skeletonRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.lg,
-    marginBottom: 8,
+    gap: theme.spacing.md,
+    minHeight: theme.layout.tapMin,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderSoft,
   },
-  routeBadge: {
-    minWidth: 48,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.orangeSoft,
-    alignItems: "center",
-    marginRight: 12,
-  },
-  route: {
-    fontSize: 16,
-    fontFamily: "DMSans_700Bold",
-    color: theme.colors.orange,
-  },
-  headsign: {
-    flex: 1,
-    fontSize: 15,
-    fontFamily: "DMSans_400Regular",
-    color: theme.colors.textSecondary,
-  },
-  mins: {
-    fontSize: 16,
-    fontFamily: "DMSans_600SemiBold",
-    color: theme.colors.navy,
-  },
+  skeletonMiddle: { flex: 1 },
   walkBtn: {
-    padding: 16,
+    minHeight: theme.layout.tapMin,
+    flexDirection: "row",
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md + 2,
     borderRadius: theme.radius.lg,
     borderWidth: 1.5,
     borderColor: theme.colors.navy,
     backgroundColor: theme.colors.surface,
     alignItems: "center",
-    ...theme.shadows.sm,
+    justifyContent: "center",
+    ...theme.elevation[1],
   },
   walkBtnText: {
+    ...theme.text.subhead,
     fontSize: 16,
-    fontFamily: "DMSans_600SemiBold",
     color: theme.colors.navy,
-  },
-  error: {
-    fontSize: 16,
-    fontFamily: "DMSans_500Medium",
-    color: theme.colors.error,
-    marginBottom: 12,
-  },
-  btn: {
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.lg,
-    ...theme.shadows.glowNavy,
-  },
-  btnText: {
-    color: "#fff",
-    fontFamily: "DMSans_600SemiBold",
   },
 });
