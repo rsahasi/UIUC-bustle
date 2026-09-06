@@ -64,7 +64,6 @@ import {
   Linking,
   Pressable,
   RefreshControl,
-  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -72,7 +71,21 @@ import {
   View,
 } from "react-native";
 import { theme } from "@/src/constants/theme";
-import { AnimatedNumber, FadeInView, PressableScale, PulseView, Skeleton, TickingCountdown } from "@/src/components/ui/motion";
+import { STAGGER } from "@/src/constants/motion";
+import {
+  AnimatedNumber,
+  Beacon,
+  FadeInView,
+  fireHaptic,
+  Press,
+  PressableScale,
+  PulseView,
+  Skeleton,
+  Stagger,
+  TickingCountdown,
+} from "@/src/components/ui/motion";
+import { CollapsingHeader } from "@/src/components/ui/CollapsingHeader";
+import Animated, { useAnimatedStyle, type SharedValue } from "react-native-reanimated";
 import { EmptyState } from "@/src/components/ui/EmptyState";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -96,6 +109,84 @@ function NextUpArrow() {
       <ArrowRight size={16} color={theme.colors.brandInk} />
     </PulseView>
   );
+}
+
+/**
+ * The navy hero's height below the top safe-area inset, in px.
+ *
+ * `CollapsingHeader` needs a FIXED box: it slides the header with `translateY`
+ * rather than animating its height, so the height cannot depend on which hero
+ * variant is showing. Sized for the tallest one (greeting + date + next-class
+ * chip + full marquee); the hero content is bottom-anchored inside the box, so
+ * the marquee's bottom edge — and therefore the search card that overlaps it —
+ * lands in exactly the same place in every variant, and the shorter variants
+ * spend the slack as empty navy under the status bar where nothing lives.
+ */
+const HERO_BODY_HEIGHT = 300;
+
+/** The collapsed one-line strip's height below the top safe-area inset, px. */
+const STRIP_BODY_HEIGHT = 42;
+
+/**
+ * Px of collapse over which the hero cross-fades into the strip. Wider than
+ * the primitive's default because the strip duplicates the hero's marquee: it
+ * only earns the top of the screen once that marquee has scrolled away.
+ */
+const STRIP_FADE_WINDOW = 70;
+
+/**
+ * Hero content that recedes as the page scrolls.
+ *
+ * TRANSFORM + OPACITY ONLY. Animating the hero's height would re-lay-out this
+ * screen's entire content tree on every frame, so the "collapse" is a fade and
+ * a scale into the sticky strip that replaces it — the layout box never moves.
+ * `from`/`to` slice the shared 0..1 progress so the greeting can leave before
+ * the marquee does.
+ */
+function HeroFade({
+  progress,
+  from = 0,
+  to = 1,
+  dy = 10,
+  scaleTo = 0.94,
+  children,
+}: {
+  progress: SharedValue<number>;
+  from?: number;
+  to?: number;
+  dy?: number;
+  scaleTo?: number;
+  children: React.ReactNode;
+}) {
+  const style = useAnimatedStyle(() => {
+    const span = to - from > 0 ? to - from : 1;
+    const t = Math.min(Math.max((progress.value - from) / span, 0), 1);
+    return {
+      opacity: 1 - t * 0.9,
+      transform: [{ translateY: t * dy }, { scale: 1 - (1 - scaleTo) * t }],
+    };
+  }, [from, to, dy, scaleTo]);
+  return <Animated.View style={style}>{children}</Animated.View>;
+}
+
+/**
+ * Fires HAPTIC.warn exactly once on the false -> true edge of `departing`.
+ *
+ * An edge, tracked in a ref — not a per-render call. Lives in its own
+ * component so the screen's hook list stays exactly as the reliability pass
+ * left it.
+ */
+function DepartingEdgeHaptic({ departing }: { departing: boolean }) {
+  // Seeded with the FIRST value, not `false`. A card that mounts already
+  // departing is not an edge: firing there would buzz on every return to this
+  // tab, and up to three times at once, because the search / after-class /
+  // recommendation lists each render their own index-0 card.
+  const wasDeparting = useRef(departing);
+  useEffect(() => {
+    if (departing && !wasDeparting.current) fireHaptic("warn");
+    wasDeparting.current = departing;
+  }, [departing]);
+  return null;
 }
 
 type StopWithDistance = StopInfo & { distance_m: number };
@@ -182,7 +273,9 @@ export default function HomeScreen() {
   const [leaveNowBanner, setLeaveNowBanner] = useState<{ option: RecommendationOption; classTitle: string } | null>(null);
   const [routeSort, setRouteSort] = useState<'earliest' | 'fastest' | 'least-walk'>('earliest');
   const [shareToken, setShareToken] = useState<string | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
+  // Typed to the animated surface below — `scrollTo` is unchanged, so every
+  // existing effect and handler that drives this ref is untouched.
+  const scrollRef = useRef<React.ComponentRef<typeof Animated.ScrollView>>(null);
   const recommendationsY = useRef(0);
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Keep latest location ref for callbacks
@@ -713,10 +806,10 @@ export default function HomeScreen() {
           <Text style={styles.heroDate}>Getting location and nearby stops…</Text>
         </LinearGradient>
         <View style={{ paddingHorizontal: 16, gap: 12, marginTop: -theme.radius.xxl }}>
-          <Skeleton height={150} radius={theme.radius.xl} />
-          <Skeleton height={96} radius={theme.radius.xl} />
-          <Skeleton height={96} radius={theme.radius.xl} />
-          <Skeleton height={96} radius={theme.radius.xl} />
+          <Skeleton width="100%" height={150} radius={theme.radius.xl} />
+          <Skeleton width="100%" height={96} radius={theme.radius.xl} />
+          <Skeleton width="100%" height={96} radius={theme.radius.xl} />
+          <Skeleton width="100%" height={96} radius={theme.radius.xl} />
         </View>
       </View>
     );
@@ -857,19 +950,46 @@ export default function HomeScreen() {
       : isWalk
         ? 'WALK'
         : `${opt.eta_minutes} MIN TRIP`;
+    // The primary CTA earns a beacon only once the bus is actually leaving.
+    const isDepartingNow = index === 0 && !isWalk && opt.depart_in_minutes <= 0;
+    // Whole minutes only — a label that changed every second would make
+    // VoiceOver interrupt itself forever.
+    const cardLabel = isWalk
+      ? `Walk to ${destName}, ${opt.eta_minutes} minute walk`
+      : `${label} to ${destName}, ${pillLabel.toLowerCase()}, ${
+          departMins <= 0 ? "departing now" : `departs in ${departMins} minutes`
+        }, ${opt.eta_minutes} minute trip`;
 
     return (
-      <FadeInView
+      <Press
         key={key}
-        delay={index * 80}
+        variant="lift"
+        onPress={onStart}
+        // `Press` defaults to a tap haptic on press-IN, and Pressable's
+        // delayPressIn is 0 — so with the whole card as the press surface,
+        // every scroll gesture that starts on a card would tick. The inner
+        // Start and Share buttons keep their own haptics.
+        haptic={false}
+        accessibilityRole="button"
+        // The card is a sighted-user shortcut to its own "Start" button. Left
+        // accessible, it would swallow the Share and Start buttons inside it
+        // into one VoiceOver element; false keeps both of them reachable. The
+        // trip summary is announced by the info row below instead.
+        accessible={false}
         style={[
           styles.optionCard,
           { borderLeftColor: hasDeadlineStatus ? statusColors[status] : accentColor },
           isHighlighted && styles.optionCardHighlight,
         ]}
       >
-        {/* Main row: info left | countdown right */}
-        <View style={styles.cardMainRow}>
+        <DepartingEdgeHaptic departing={isDepartingNow} />
+        {/* Main row: info left | countdown right.
+            Also the card's a11y summary. `Press` above is `accessible={false}`
+            on purpose — grouping there would swallow Share and Start into one
+            element — so the label has to land on the largest node that holds no
+            controls. That is this row: VoiceOver reads one trip summary instead
+            of six fragments, and Share and Start stay separately reachable. */}
+        <View style={styles.cardMainRow} accessible accessibilityLabel={cardLabel}>
           {/* Left column: badge + flow + total */}
           <View style={styles.cardLeftCol}>
             <View style={styles.cardBadgeRow}>
@@ -935,133 +1055,195 @@ export default function HomeScreen() {
             >
               <Text style={styles.shareBtnText}>Share</Text>
             </PressableScale>
-            <PressableScale
-              accessibilityLabel={isWalk ? "Start walking directions" : "Start bus option"}
-              accessibilityRole="button"
-              style={styles.startBtnInline}
-              onPress={onStart}
-            >
-              <LinearGradient
-                colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.startBtnInlineGradient}
+            <View style={styles.startBtnBeaconWrap}>
+              {/* Halo, not a loop: one ring every 4s while the bus is leaving. */}
+              <Beacon
+                size={theme.layout.tapMin}
+                color={theme.colors.orangeBright}
+                period={4000}
+                active={isDepartingNow}
+                style={styles.startBtnBeacon}
+              />
+              <PressableScale
+                accessibilityLabel={isWalk ? "Start walking directions" : "Start bus option"}
+                accessibilityRole="button"
+                style={styles.startBtnInline}
+                onPress={onStart}
               >
-                <Text style={styles.startBtnInlineText}>Start →</Text>
-              </LinearGradient>
-            </PressableScale>
+                <LinearGradient
+                  colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.startBtnInlineGradient}
+                >
+                  <Text style={styles.startBtnInlineText}>Start →</Text>
+                </LinearGradient>
+              </PressableScale>
+            </View>
           </View>
         </View>
-      </FadeInView>
+      </Press>
     );
   };
 
   return (
-    <ScrollView
-      ref={scrollRef}
+    <CollapsingHeader
+      style={styles.screen}
+      maxHeight={insets.top + HERO_BODY_HEIGHT}
+      minHeight={insets.top + STRIP_BODY_HEIGHT}
+      fadeWindow={STRIP_FADE_WINDOW}
+      backgroundColor={theme.gradients.hero[0]}
+      borderColor="rgba(255,255,255,0.14)"
       contentContainerStyle={styles.scrollContent}
-      keyboardShouldPersistTaps="handled"
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />
-      }
-    >
-      {/* Covers the iOS overscroll bounce above the hero gradient */}
-      <View style={styles.bounceCover} />
-
-      {/* Hero header — deep navy gradient with greeting + next class chip */}
-      <LinearGradient
-        colors={[theme.gradients.hero[0], theme.gradients.hero[1], theme.gradients.hero[2]]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={[styles.heroBlock, { paddingTop: insets.top + 16 }]}
-      >
-        <FadeInView dy={10}>
-          <Text style={styles.heroGreeting}>{getGreeting()}</Text>
-          <Text style={styles.heroDate}>
-            {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
-          </Text>
-          {nextUp && (
-            <View style={styles.heroNextChip}>
-              <PulseView minOpacity={0.4} style={styles.heroNextDot}>
-                <View style={styles.heroNextDotInner} />
-              </PulseView>
-              <Text style={styles.heroNextText} numberOfLines={1}>
-                Next: {nextUp.title} · {nextUp.start_time_local}
+      scrollViewProps={{
+        ref: scrollRef,
+        keyboardShouldPersistTaps: "handled",
+        refreshControl: (
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />
+        ),
+      }}
+      // The strip is mounted for the whole life of the screen and only
+      // cross-fades, so its countdown KEEPS TICKING while collapsed instead of
+      // remounting at the moment the user most needs it.
+      renderCompact={({ collapsed }) => (
+        // Rendered unconditionally, even with no departure to show. The band is
+        // painted opaque navy by the header's background layer either way, so
+        // the barrier below has to exist either way — an empty strip that still
+        // swallowed taps meant for the card under it would be the same bug.
+        <View
+          // Once collapsed, this strip owns the top of the screen and the search
+          // card with its "Where to?" input sits directly underneath. Left
+          // touch-transparent it stays invisible to the touch system, so a tap
+          // on what looks like a header falls through and focuses the keyboard.
+          // `collapsed` is the primitive's single JS-thread boolean, flipped
+          // once per cross-fade crossing rather than once per frame — and it is
+          // false at scroll 0, where "auto" would eat the pull-to-refresh.
+          pointerEvents={collapsed ? "auto" : "none"}
+          style={[styles.stickyStrip, { paddingTop: insets.top }]}
+        >
+          {nextDeparture && (
+            <View style={styles.stickyRow}>
+              <View style={styles.heroRoutePill}>
+                <Text style={styles.heroRoutePillText}>{nextDeparture.dep.route}</Text>
+              </View>
+              <Text style={styles.stickyHeadsign} numberOfLines={1}>
+                {nextDeparture.dep.headsign || "—"}
               </Text>
+              <Text style={styles.stickyMode}>
+                {nextDeparture.dep.is_realtime ? "LIVE" : "SCHED"}
+              </Text>
+              <TickingCountdown
+                targetMs={nextDepTargetMs}
+                minutes={nextDeparture.dep.expected_mins}
+                style={styles.stickyCountdown}
+              />
             </View>
           )}
-        </FadeInView>
-
-        {/* Next-departure marquee — the one bus that matters right now */}
-        <FadeInView delay={90} dy={12}>
-          {nextDeparture ? (
-            <View
-              style={styles.heroMarquee}
-              accessible
-              accessibilityLabel={`Next departure: route ${nextDeparture.dep.route} to ${nextDeparture.dep.headsign || "campus"}, from ${nextDeparture.stop.stop_name}, ${nextDeparture.dep.expected_mins <= 0 ? "departing now" : `in ${nextDeparture.dep.expected_mins} minutes`}${nextDeparture.dep.is_realtime ? ", live tracking" : ", scheduled time"}`}
-            >
-              <View style={styles.heroMarqueeLeft}>
-                <Text style={styles.heroMarqueeEyebrow}>Next departure</Text>
-                <View style={styles.heroMarqueeRouteRow}>
-                  <View style={styles.heroRoutePill}>
-                    <Text style={styles.heroRoutePillText}>{nextDeparture.dep.route}</Text>
-                  </View>
-                  <Text style={styles.heroMarqueeHeadsign} numberOfLines={1}>
-                    {nextDeparture.dep.headsign || "—"}
-                  </Text>
-                </View>
-                <View style={styles.heroMarqueeStopRow}>
-                  <MapPin size={11} color={theme.colors.textOnNavyMuted} />
-                  <Text style={styles.heroMarqueeStop} numberOfLines={1}>
-                    {nextDeparture.stop.stop_name} · {formatDistance(nextDeparture.stop.distance_m)}
-                  </Text>
-                </View>
-                <View style={styles.heroProgressTrack}>
-                  <View style={[styles.heroProgressFill, { width: `${Math.round(nextDepProgress * 100)}%` }]} />
-                </View>
-              </View>
-              <View style={styles.heroMarqueeRight}>
-                <TickingCountdown
-                  targetMs={nextDepTargetMs}
-                  minutes={nextDeparture.dep.expected_mins}
-                  style={styles.heroMarqueeCountdown}
-                />
-                <Badge
-                  label={nextDeparture.dep.is_realtime ? "LIVE" : "Scheduled"}
-                  variant={nextDeparture.dep.is_realtime ? "live" : "info"}
-                  size="sm"
-                />
-              </View>
-            </View>
-          ) : departures.anyPending ? (
-            <View style={styles.heroMarquee}>
-              <View style={styles.heroMarqueeLeft}>
-                <Text style={styles.heroMarqueeEyebrow}>Next departure</Text>
-                <Skeleton width="72%" height={20} style={styles.heroMarqueeSkeleton} />
-                <Skeleton width="46%" height={12} style={styles.heroMarqueeSkeleton} />
-              </View>
-            </View>
-          ) : (
-            <View
-              style={styles.heroMarquee}
-              accessible
-              accessibilityLabel="Departure board: no buses due at your nearby stops right now"
-            >
-              <View style={styles.heroMarqueeLeft}>
-                <Text style={styles.heroMarqueeEyebrow}>Departure board</Text>
-                <Text style={styles.heroMarqueeHeadsign}>All quiet at your stops</Text>
-                <Text style={styles.heroMarqueeStop} numberOfLines={2}>
-                  No buses due nearby right now — campus is very walkable
+        </View>
+      )}
+      renderHero={({ progress: heroProgress }) => (
+        <LinearGradient
+          colors={[theme.gradients.hero[0], theme.gradients.hero[1], theme.gradients.hero[2]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          // Touch-transparent: the hero owns no controls, and the header now
+          // floats OVER the scroll view. Anything but "none" here would let the
+          // hero swallow a drag that starts on it instead of scrolling the page.
+          pointerEvents="none"
+          style={[styles.heroBlock, { paddingTop: insets.top + 16 }]}
+        >
+          <Stagger dy={10}>
+            <HeroFade progress={heroProgress} to={0.7}>
+              <View>
+                <Text style={styles.heroGreeting}>{getGreeting()}</Text>
+                <Text style={styles.heroDate}>
+                  {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
                 </Text>
+                {nextUp && (
+                  <View style={styles.heroNextChip}>
+                    <PulseView minOpacity={0.4} style={styles.heroNextDot}>
+                      <View style={styles.heroNextDotInner} />
+                    </PulseView>
+                    <Text style={styles.heroNextText} numberOfLines={1}>
+                      Next: {nextUp.title} · {nextUp.start_time_local}
+                    </Text>
+                  </View>
+                )}
               </View>
-              <View style={styles.heroMarqueeRight}>
-                <Footprints size={26} color={theme.colors.textOnNavyMuted} strokeWidth={1.8} />
-              </View>
-            </View>
-          )}
-        </FadeInView>
-      </LinearGradient>
+            </HeroFade>
 
+            {/* Next-departure marquee — the one bus that matters right now */}
+            <HeroFade progress={heroProgress} from={0.45} dy={14}>
+              {nextDeparture ? (
+                <View
+                  style={styles.heroMarquee}
+                  accessible
+                  accessibilityLabel={`Next departure: route ${nextDeparture.dep.route} to ${nextDeparture.dep.headsign || "campus"}, from ${nextDeparture.stop.stop_name}, ${nextDeparture.dep.expected_mins <= 0 ? "departing now" : `in ${nextDeparture.dep.expected_mins} minutes`}${nextDeparture.dep.is_realtime ? ", live tracking" : ", scheduled time"}`}
+                >
+                  <View style={styles.heroMarqueeLeft}>
+                    <Text style={styles.heroMarqueeEyebrow}>Next departure</Text>
+                    <View style={styles.heroMarqueeRouteRow}>
+                      <View style={styles.heroRoutePill}>
+                        <Text style={styles.heroRoutePillText}>{nextDeparture.dep.route}</Text>
+                      </View>
+                      <Text style={styles.heroMarqueeHeadsign} numberOfLines={1}>
+                        {nextDeparture.dep.headsign || "—"}
+                      </Text>
+                    </View>
+                    <View style={styles.heroMarqueeStopRow}>
+                      <MapPin size={11} color={theme.colors.textOnNavyMuted} />
+                      <Text style={styles.heroMarqueeStop} numberOfLines={1}>
+                        {nextDeparture.stop.stop_name} · {formatDistance(nextDeparture.stop.distance_m)}
+                      </Text>
+                    </View>
+                    <View style={styles.heroProgressTrack}>
+                      <View style={[styles.heroProgressFill, { width: `${Math.round(nextDepProgress * 100)}%` }]} />
+                    </View>
+                  </View>
+                  <View style={styles.heroMarqueeRight}>
+                    <TickingCountdown
+                      targetMs={nextDepTargetMs}
+                      minutes={nextDeparture.dep.expected_mins}
+                      style={styles.heroMarqueeCountdown}
+                    />
+                    <Badge
+                      label={nextDeparture.dep.is_realtime ? "LIVE" : "Scheduled"}
+                      variant={nextDeparture.dep.is_realtime ? "live" : "info"}
+                      size="sm"
+                    />
+                  </View>
+                </View>
+              ) : departures.anyPending ? (
+                <View style={styles.heroMarquee}>
+                  <View style={styles.heroMarqueeLeft}>
+                    <Text style={styles.heroMarqueeEyebrow}>Next departure</Text>
+                    <Skeleton width="72%" height={20} style={styles.heroMarqueeSkeleton} />
+                    <Skeleton width="46%" height={12} style={styles.heroMarqueeSkeleton} />
+                  </View>
+                </View>
+              ) : (
+                <View
+                  style={styles.heroMarquee}
+                  accessible
+                  accessibilityLabel="Departure board: no buses due at your nearby stops right now"
+                >
+                  <View style={styles.heroMarqueeLeft}>
+                    <Text style={styles.heroMarqueeEyebrow}>Departure board</Text>
+                    <Text style={styles.heroMarqueeHeadsign}>All quiet at your stops</Text>
+                    <Text style={styles.heroMarqueeStop} numberOfLines={2}>
+                      No buses due nearby right now — campus is very walkable
+                    </Text>
+                  </View>
+                  <View style={styles.heroMarqueeRight}>
+                    <Footprints size={26} color={theme.colors.textOnNavyMuted} strokeWidth={1.8} />
+                  </View>
+                </View>
+              )}
+            </HeroFade>
+          </Stagger>
+        </LinearGradient>
+      )}
+    >
       {/* Search card — floats up over the hero */}
       <FadeInView delay={70} style={styles.searchCard}>
         <Text style={styles.searchLabel}>Where to?</Text>
@@ -1251,8 +1433,8 @@ export default function HomeScreen() {
       {/* Search in flight — skeleton route cards, not spinners */}
       {searchLoading && (
         <View style={styles.searchSkeletonWrap}>
-          <Skeleton height={128} radius={theme.radius.xl} />
-          <Skeleton height={128} radius={theme.radius.xl} />
+          <Skeleton width="100%" height={128} radius={theme.radius.xl} />
+          <Skeleton width="100%" height={128} radius={theme.radius.xl} />
         </View>
       )}
 
@@ -1353,21 +1535,23 @@ export default function HomeScreen() {
               );
             })}
           </View>
-          {sortedOptions(searchResults).map((opt, index) => {
-            const isWalk = opt.type === "WALK";
-            return (
-              <OptionCardWithCrowding key={`search-${index}`} option={opt}>
-                {renderOptionCard(
-                  opt,
-                  index,
-                  `search-${index}`,
-                  false,
-                  () => (isWalk ? onStartWalk(opt, searchDestinationName?.split(",")[0]) : onStartBus(opt)),
-                  searchDestinationName?.split(",")[0] ?? "destination"
-                )}
-              </OptionCardWithCrowding>
-            );
-          })}
+          <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
+            {sortedOptions(searchResults).map((opt, index) => {
+              const isWalk = opt.type === "WALK";
+              return (
+                <OptionCardWithCrowding key={`search-${index}`} option={opt}>
+                  {renderOptionCard(
+                    opt,
+                    index,
+                    `search-${index}`,
+                    false,
+                    () => (isWalk ? onStartWalk(opt, searchDestinationName?.split(",")[0]) : onStartBus(opt)),
+                    searchDestinationName?.split(",")[0] ?? "destination"
+                  )}
+                </OptionCardWithCrowding>
+              );
+            })}
+          </Stagger>
           {/* Smart callouts for search results */}
           {(() => {
             const walkOpt = searchResults.find((o) => o.type === 'WALK');
@@ -1517,8 +1701,8 @@ export default function HomeScreen() {
       {nextUp && recommendations.length === 0 && (
         recPending ? (
           <View style={styles.recSkeletonWrap}>
-            <Skeleton height={132} radius={theme.radius.xl} />
-            <Skeleton height={132} radius={theme.radius.xl} />
+            <Skeleton width="100%" height={132} radius={theme.radius.xl} />
+            <Skeleton width="100%" height={132} radius={theme.radius.xl} />
           </View>
         ) : (
           <View style={styles.recommendationsUnavailable}>
@@ -1536,21 +1720,23 @@ export default function HomeScreen() {
             <Text style={[styles.sectionTitle, { marginBottom: 0, paddingHorizontal: 0, paddingTop: 0 }]}>Where to next?</Text>
             <Text style={styles.sectionSubtitle}>{afterLastClassPlace.name}</Text>
           </View>
-          {afterLastClassRecs.map((opt, index) => {
-            const isWalk = opt.type === "WALK";
-            return (
-              <OptionCardWithCrowding key={`after-${index}`} option={opt}>
-                {renderOptionCard(
-                  opt,
-                  index,
-                  `after-${index}`,
-                  false,
-                  () => (isWalk ? onStartWalk(opt) : onStartBus(opt)),
-                  afterLastClassPlace?.name ?? "destination"
-                )}
-              </OptionCardWithCrowding>
-            );
-          })}
+          <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
+            {afterLastClassRecs.map((opt, index) => {
+              const isWalk = opt.type === "WALK";
+              return (
+                <OptionCardWithCrowding key={`after-${index}`} option={opt}>
+                  {renderOptionCard(
+                    opt,
+                    index,
+                    `after-${index}`,
+                    false,
+                    () => (isWalk ? onStartWalk(opt) : onStartBus(opt)),
+                    afterLastClassPlace?.name ?? "destination"
+                  )}
+                </OptionCardWithCrowding>
+              );
+            })}
+          </Stagger>
         </View>
       )}
 
@@ -1587,24 +1773,26 @@ export default function HomeScreen() {
               );
             })}
           </View>
-          {sortedOptions(recommendations).map((opt, index) => {
-            const isWalk = opt.type === "WALK";
-            const allBusLate = recommendations.filter((o) => o.type !== 'WALK').every((o) => optionStatus(o, nextUp?.start_time_local) === 'late');
-            const highlighted = (isWalk && highlightWalk) || (isWalk && allBusLate);
-            return (
-              <OptionCardWithCrowding key={`rec-${index}`} option={opt}>
-                {renderOptionCard(
-                  opt,
-                  index,
-                  `rec-${index}`,
-                  highlighted,
-                  () => (isWalk ? onStartWalk(opt) : onStartBus(opt)),
-                  nextUp?.title ?? "class",
-                  nextUp?.start_time_local
-                )}
-              </OptionCardWithCrowding>
-            );
-          })}
+          <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
+            {sortedOptions(recommendations).map((opt, index) => {
+              const isWalk = opt.type === "WALK";
+              const allBusLate = recommendations.filter((o) => o.type !== 'WALK').every((o) => optionStatus(o, nextUp?.start_time_local) === 'late');
+              const highlighted = (isWalk && highlightWalk) || (isWalk && allBusLate);
+              return (
+                <OptionCardWithCrowding key={`rec-${index}`} option={opt}>
+                  {renderOptionCard(
+                    opt,
+                    index,
+                    `rec-${index}`,
+                    highlighted,
+                    () => (isWalk ? onStartWalk(opt) : onStartBus(opt)),
+                    nextUp?.title ?? "class",
+                    nextUp?.start_time_local
+                  )}
+                </OptionCardWithCrowding>
+              );
+            })}
+          </Stagger>
           {/* Crowding banner for top bus recommendation */}
           {(() => {
             const rideStep = recommendations[0]?.steps?.find(s => s.type === "RIDE");
@@ -1674,83 +1862,95 @@ export default function HomeScreen() {
           </View>
         )}
       {stops.length === 0 ? (
-        <EmptyState
-          icon={MapPin}
-          title="No stops in range"
-          subtitle="Move closer to campus or pull down to refresh."
-        />
+        // `undefined` means the nearby-stops query has not answered yet —
+        // an empty array is a real, earned "nothing in range".
+        nearbyStopsData === undefined ? (
+          <View style={styles.stopsSkeletonWrap}>
+            <Skeleton width="100%" height={112} radius={theme.radius.xl} />
+            <Skeleton width="100%" height={112} radius={theme.radius.xl} />
+            <Skeleton width="100%" height={112} radius={theme.radius.xl} />
+          </View>
+        ) : (
+          <EmptyState
+            icon={MapPin}
+            title="No stops in range"
+            subtitle="Move closer to campus or pull down to refresh."
+          />
+        )
       ) : (
-        stops.map((stop, stopIdx) => (
-          <FadeInView key={stop.stop_id} delay={stopIdx * 90} style={styles.card}>
-            <LinearGradient
-              colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.stopCardHeader}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.stopName}>{stop.stop_name}</Text>
-                <Text style={styles.distance}>{formatDistance(stop.distance_m)} away</Text>
-              </View>
-              <PressableScale
-                style={styles.favoriteStopBtn}
-                accessibilityRole="button"
-                accessibilityLabel={`Save ${stop.stop_name} to favorite stops`}
-                hitSlop={8}
-                onPress={() => addFavoriteStop({ stop_id: stop.stop_id, stop_name: stop.stop_name })}
+        <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
+          {stops.map((stop) => (
+            <View key={stop.stop_id} style={styles.card}>
+              <LinearGradient
+                colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.stopCardHeader}
               >
-                <Star size={16} color={theme.colors.textOnNavyMuted} />
-              </PressableScale>
-            </LinearGradient>
-            <View style={styles.departures}>
-              {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
-                departures.anyPending ? (
-                  <View style={styles.depSkeletonWrap}>
-                    <Skeleton width="88%" height={14} />
-                    <Skeleton width="66%" height={14} />
-                  </View>
-                ) : (
-                  <Text style={styles.depText}>No departures due</Text>
-                )
-              ) : (
-                (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
-                  const fetchedAt = departures.updatedAtByStop[stop.stop_id] ?? 0;
-                  const isStale = d.is_realtime && fetchedAt > 0 && Date.now() - fetchedAt > 2 * 60 * 1000;
-                  const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
-                  const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
-                  return (
-                    <View key={i}>
-                      <Pressable
-                        onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Track route ${d.route}`}
-                      >
-                        <DepartureRow
-                          route={d.route}
-                          headsign={d.headsign || "—"}
-                          expectedMins={d.expected_mins}
-                          isRealtime={d.is_realtime && !isStale}
-                          expectedTimeIso={isStale ? null : d.expected_time_iso}
-                          delayStatus={showDelayed ? "delayed" : showEarly ? "early" : null}
-                          delayMins={showDelayed || showEarly ? d.delay_mins : null}
-                        />
-                      </Pressable>
-                      {isStale && (
-                        <View style={styles.depExtrasRow}>
-                          <View style={styles.staleBadge}>
-                            <Text style={styles.staleBadgeText}>⚠ Estimated</Text>
-                          </View>
-                        </View>
-                      )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.stopName}>{stop.stop_name}</Text>
+                  <Text style={styles.distance}>{formatDistance(stop.distance_m)} away</Text>
+                </View>
+                <PressableScale
+                  style={styles.favoriteStopBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Save ${stop.stop_name} to favorite stops`}
+                  hitSlop={8}
+                  onPress={() => addFavoriteStop({ stop_id: stop.stop_id, stop_name: stop.stop_name })}
+                >
+                  <Star size={16} color={theme.colors.textOnNavyMuted} />
+                </PressableScale>
+              </LinearGradient>
+              <View style={styles.departures}>
+                {(departuresByStop[stop.stop_id] ?? []).length === 0 ? (
+                  departures.anyPending ? (
+                    <View style={styles.depSkeletonWrap}>
+                      <Skeleton width="88%" height={14} />
+                      <Skeleton width="66%" height={14} />
                     </View>
-                  );
-                })
-              )}
+                  ) : (
+                    <Text style={styles.depText}>No departures due</Text>
+                  )
+                ) : (
+                  (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
+                    const fetchedAt = departures.updatedAtByStop[stop.stop_id] ?? 0;
+                    const isStale = d.is_realtime && fetchedAt > 0 && Date.now() - fetchedAt > 2 * 60 * 1000;
+                    const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
+                    const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
+                    return (
+                      <View key={i}>
+                        <Pressable
+                          onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Track route ${d.route}`}
+                        >
+                          <DepartureRow
+                            route={d.route}
+                            headsign={d.headsign || "—"}
+                            expectedMins={d.expected_mins}
+                            isRealtime={d.is_realtime && !isStale}
+                            expectedTimeIso={isStale ? null : d.expected_time_iso}
+                            delayStatus={showDelayed ? "delayed" : showEarly ? "early" : null}
+                            delayMins={showDelayed || showEarly ? d.delay_mins : null}
+                          />
+                        </Pressable>
+                        {isStale && (
+                          <View style={styles.depExtrasRow}>
+                            <View style={styles.staleBadge}>
+                              <Text style={styles.staleBadgeText}>⚠ Estimated</Text>
+                            </View>
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })
+                )}
+              </View>
             </View>
-          </FadeInView>
-        ))
+          ))}
+        </Stagger>
       )}
-    </ScrollView>
+    </CollapsingHeader>
   );
 }
 
@@ -1763,11 +1963,45 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceAlt,
   },
   centeredText: { marginTop: 12, fontFamily: "DMSans_400Regular", fontSize: 15, color: theme.colors.textSecondary },
+  screen: { flex: 1, backgroundColor: theme.colors.surfaceAlt },
   scrollContent: { paddingBottom: 40, backgroundColor: theme.colors.surfaceAlt },
 
-  // Hero header
-  bounceCover: { position: "absolute", top: -600, left: 0, right: 0, height: 600, backgroundColor: theme.gradients.hero[0] },
-  heroBlock: { paddingHorizontal: theme.spacing.lg, paddingBottom: theme.radius.xxl + 22 },
+  // Sticky one-line departure strip — what the hero marquee collapses into.
+  // Fills the collapsed band edge to edge, so the opaque navy the user sees and
+  // the region that absorbs taps are the same rectangle. The hairline along its
+  // bottom is the header's own, faded in once collapsed.
+  stickyStrip: {
+    flex: 1,
+    justifyContent: "center",
+    backgroundColor: theme.gradients.hero[0],
+    paddingHorizontal: theme.layout.gutter,
+    paddingBottom: 10,
+  },
+  stickyRow: { flexDirection: "row", alignItems: "center", gap: theme.spacing.sm },
+  stickyHeadsign: { ...theme.text.subhead, fontSize: 14, color: theme.colors.textOnNavy, flex: 1, minWidth: 0 },
+  // Live vs scheduled is stated in words, never by color alone.
+  stickyMode: { ...theme.text.badge, fontSize: 10, color: theme.colors.textOnNavyMuted, letterSpacing: 0.8 },
+  stickyCountdown: {
+    fontFamily: "DMSans_700Bold",
+    fontSize: 18,
+    lineHeight: 22,
+    color: theme.colors.textOnNavy,
+  },
+
+  // Nearby-stops loading state
+  stopsSkeletonWrap: { marginHorizontal: theme.layout.gutter, gap: theme.layout.cardGap, marginBottom: theme.layout.cardGap },
+
+  // Hero header. Fills the header box and anchors its content to the bottom:
+  // the box is a fixed HERO_BODY_HEIGHT, so bottom-anchoring is what keeps the
+  // marquee-to-search-card overlap identical whether or not the next-class chip
+  // is present. The rubber-band overscroll above it is painted by the header's
+  // own background overhang, which is why there is no bounce cover here.
+  heroBlock: {
+    flex: 1,
+    justifyContent: "flex-end",
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.radius.xxl + 22,
+  },
   heroGreeting: { fontSize: 32, fontFamily: "DMSerifDisplay_400Regular", color: "#fff", letterSpacing: -0.3 },
   heroDate: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textOnNavyMuted, marginTop: 4 },
   heroNextChip: {
@@ -1937,7 +2171,15 @@ const styles = StyleSheet.create({
     padding: theme.layout.gutter,
     ...theme.elevation[2],
   },
-  optionCardHighlight: { ...theme.shadows.glowOrange, shadowOpacity: 0.25 },
+  // `Press variant="lift"` owns shadowOpacity/Radius/elevation while the card
+  // is a press surface, so the highlight can no longer be a glow alone — the
+  // ring is what actually survives (and is the more legible signal anyway).
+  optionCardHighlight: {
+    ...theme.shadows.glowOrange,
+    shadowOpacity: 0.25,
+    borderWidth: 1,
+    borderColor: theme.colors.orange,
+  },
 
   // Card main row layout: info left | countdown right
   cardMainRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: 12 },
@@ -1988,6 +2230,10 @@ const styles = StyleSheet.create({
     ...theme.shadows.glowOrange,
   },
   startBtnInlineGradient: { minHeight: theme.layout.tapMin, minWidth: theme.layout.tapMin, paddingHorizontal: 18, alignItems: "center", justifyContent: "center" },
+  // Beacon halo sits behind the CTA. Absolute with no insets, so Yoga centers
+  // it on the container's align/justify without reserving any layout space.
+  startBtnBeaconWrap: { alignItems: "center", justifyContent: "center" },
+  startBtnBeacon: { position: "absolute" },
   startBtnInlineText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: "#fff" },
 
   // MTD hint
