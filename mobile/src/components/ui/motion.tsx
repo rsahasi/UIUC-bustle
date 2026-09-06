@@ -13,11 +13,28 @@
  * - AnimatedNumber:    rolling digit swaps for in-place numeric updates
  * - RouteProgress:     SVG polyline that draws itself, with optional traveling dot
  * - CelebrationBurst:  one-shot radial particle burst for arrivals
+ *
+ * v2 additions (motion-system rebuild):
+ * - useGlide:            spring a SharedValue at a target that changes over time
+ * - useCountdownSeconds: seconds-remaining SharedValue on the shared 1s ticker
+ * - useScrollProgress:   scroll handler + clamped 0..1 progress
+ * - Stagger:             the ONE entrance vocabulary (replaces delay={i * 60})
+ * - Press:               scale / lift / tint press surface, 44pt + a11y enforced
+ * - Beacon:              slow expanding halo ring (schedule, not a loop)
+ * - Odometer:            rolling digit columns, zero re-renders per tick
+ * - Reveal:              non-SVG clip reveal driven by a SharedValue
  */
+import {
+  HAPTIC,
+  SPRING,
+  STAGGER,
+  TIMING,
+  type HapticKey,
+} from "@/src/constants/motion";
 import { theme } from "@/src/constants/theme";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   AccessibilityInfo,
   Pressable,
@@ -31,12 +48,16 @@ import {
 } from "react-native";
 import Animated, {
   cancelAnimation,
+  css,
   Easing,
   FadeInDown,
   FadeOutUp,
+  interpolateColor,
   runOnJS,
   useAnimatedProps,
+  useAnimatedScrollHandler,
   useAnimatedStyle,
+  useDerivedValue,
   useSharedValue,
   withDelay,
   withRepeat,
@@ -44,6 +65,8 @@ import Animated, {
   withSpring,
   withTiming,
   type SharedValue,
+  type WithSpringConfig,
+  type WithTimingConfig,
 } from "react-native-reanimated";
 import Svg, { Circle, Defs, LinearGradient as SvgLinearGradient, Polyline, Stop } from "react-native-svg";
 
@@ -52,29 +75,188 @@ const AnimatedPolyline = Animated.createAnimatedComponent(Polyline);
 
 // ── useReducedMotion ──────────────────────────────────────────────────────
 
+// One AccessibilityInfo subscription for the whole app. A loading screen can
+// mount a dozen Skeletons; each of them adding its own native listener + state
+// hook is pure overhead, and they would all answer the same question.
+let reduceMotionValue = false;
+let reduceMotionSub: { remove: () => void } | null = null;
+const reduceMotionListeners = new Set<() => void>();
+
+function emitReduceMotion(next: boolean) {
+  if (next === reduceMotionValue) return;
+  reduceMotionValue = next;
+  reduceMotionListeners.forEach((l) => l());
+}
+
+function subscribeToReduceMotion(listener: () => void): () => void {
+  reduceMotionListeners.add(listener);
+  if (reduceMotionListeners.size === 1) {
+    AccessibilityInfo.isReduceMotionEnabled().then(emitReduceMotion).catch(() => {});
+    reduceMotionSub = AccessibilityInfo.addEventListener("reduceMotionChanged", emitReduceMotion);
+  }
+  return () => {
+    reduceMotionListeners.delete(listener);
+    if (reduceMotionListeners.size === 0) {
+      reduceMotionSub?.remove();
+      reduceMotionSub = null;
+    }
+  };
+}
+
+function getReduceMotion(): boolean {
+  return reduceMotionValue;
+}
+
 /**
  * Live "Reduce Motion" system setting. Looping primitives in this file obey
  * it internally; use it yourself before starting any decorative loop.
+ *
+ * Deliberately NOT Reanimated's `useReducedMotion()` — that one snapshots the
+ * setting at module import and never updates, so a user who flips the switch
+ * in Settings keeps the old behavior until the app is killed.
  */
 export function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    let mounted = true;
-    AccessibilityInfo.isReduceMotionEnabled()
-      .then((v) => {
-        if (mounted) setReduced(v);
-      })
-      .catch(() => {});
-    const sub = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduced);
-    return () => {
-      mounted = false;
-      sub.remove();
-    };
-  }, []);
-  return reduced;
+  return useSyncExternalStore(subscribeToReduceMotion, getReduceMotion, getReduceMotion);
 }
 
-// ── PressableScale ────────────────────────────────────────────────────────
+// ── Haptics ───────────────────────────────────────────────────────────────
+
+/**
+ * Fire the haptic named by a `HAPTIC` intent key. Silently no-ops if the
+ * device has no haptic engine — never let feedback throw into a press handler.
+ */
+export function fireHaptic(key: HapticKey): void {
+  const kind = HAPTIC[key];
+  switch (kind) {
+    case "selection":
+      Haptics.selectionAsync().catch(() => {});
+      return;
+    case "light":
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      return;
+    case "medium":
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+      return;
+    case "success":
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      return;
+    case "warning":
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      return;
+  }
+}
+
+// ── Press / PressableScale ────────────────────────────────────────────────
+
+/** How a press surface reacts to touch. */
+export type PressVariant = "scale" | "lift" | "tint";
+
+interface PressBaseProps extends Omit<PressableProps, "style"> {
+  variant?: PressVariant;
+  /** Haptic intent on press-in, or `false` for silence. */
+  haptic?: HapticKey | false;
+  /** `scale` variant: pressed scale. Default 0.96. */
+  scaleTo?: number;
+  /** `lift` variant: px raised on press. Default 2. */
+  liftBy?: number;
+  /**
+   * `tint` variant: resting background. Default is `tintTo` at zero alpha —
+   * pair a custom `tintTo` with its own zero-alpha `tintFrom`, or the
+   * crossfade passes through transparent BLACK on its way there.
+   */
+  tintFrom?: string;
+  /** `tint` variant: pressed background. Default a soft neutral wash. */
+  tintTo?: string;
+  style?: StyleProp<ViewStyle>;
+  children?: React.ReactNode;
+}
+
+/** Shared implementation. `Press` enforces the a11y floor; `PressableScale` does not. */
+function PressBase({
+  variant = "scale",
+  haptic = "tap",
+  scaleTo = 0.96,
+  liftBy = 2,
+  tintFrom = "rgba(234,237,242,0)", // theme.colors.borderSoft, alpha 0
+  tintTo = theme.colors.borderSoft,
+  enforceTapTarget,
+  style,
+  children,
+  onPressIn,
+  onPressOut,
+  ...rest
+}: PressBaseProps & { enforceTapTarget: boolean }) {
+  const t = useSharedValue(0);
+
+  const animatedStyle = useAnimatedStyle(() => {
+    const p = t.value;
+    if (variant === "tint") {
+      return { backgroundColor: interpolateColor(p, [0, 1], [tintFrom, tintTo]) };
+    }
+    if (variant === "lift") {
+      // Shadow grows with the lift so the card reads as leaving the surface,
+      // not sliding across it.
+      return {
+        transform: [{ translateY: -liftBy * p }],
+        shadowOpacity: 0.06 + 0.1 * p,
+        shadowRadius: 4 + 8 * p,
+        elevation: 1 + 4 * p,
+      };
+    }
+    return { transform: [{ scale: 1 - (1 - scaleTo) * p }] };
+  }, [variant, scaleTo, liftBy, tintFrom, tintTo]);
+
+  return (
+    <Pressable
+      {...rest}
+      onPressIn={(e) => {
+        t.value = withSpring(1, SPRING.press);
+        if (haptic !== false) fireHaptic(haptic);
+        onPressIn?.(e);
+      }}
+      onPressOut={(e) => {
+        t.value = withSpring(0, SPRING.settle);
+        onPressOut?.(e);
+      }}
+    >
+      <Animated.View
+        style={[
+          variant === "lift" && { shadowColor: theme.colors.navy, shadowOffset: { width: 0, height: 2 } },
+          // Before `style`: centering is only a sensible DEFAULT for the extra
+          // height the 44pt floor adds. A row that wants `space-between` (or a
+          // `flex-end` price tag) must still be able to say so.
+          enforceTapTarget && { justifyContent: "center" as const },
+          style,
+          // After `style` on purpose: the 44pt floor is not negotiable per call site.
+          enforceTapTarget && { minHeight: theme.layout.tapMin },
+          animatedStyle,
+        ]}
+      >
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+export interface PressProps extends PressBaseProps {
+  /**
+   * Required. A press surface with no role is invisible to assistive tech, and
+   * this is the one place we can force the answer at compile time.
+   */
+  accessibilityRole: NonNullable<PressableProps["accessibilityRole"]>;
+}
+
+/**
+ * The press surface. Three reactions, one contract:
+ *   scale — the default; content shrinks under the finger.
+ *   lift  — content rises 2px and its shadow deepens (cards, tiles).
+ *   tint  — background crossfades (rows, list items, anything full-bleed).
+ *
+ * Enforces a 44pt minimum tap height and a declared `accessibilityRole`.
+ */
+export function Press(props: PressProps) {
+  return <PressBase {...props} enforceTapTarget />;
+}
 
 interface PressableScaleProps extends PressableProps {
   /** How far to scale down while pressed. Default 0.96. */
@@ -85,25 +267,25 @@ interface PressableScaleProps extends PressableProps {
   children?: React.ReactNode;
 }
 
-/** Pressable that springs down on touch — makes every tap feel alive. */
-export function PressableScale({ scaleTo = 0.96, haptic = true, style, children, onPressIn, onPressOut, ...rest }: PressableScaleProps) {
-  const scale = useSharedValue(1);
-  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+/**
+ * Pressable that springs down on touch — makes every tap feel alive.
+ *
+ * Now `<Press variant="scale">` underneath, minus the 44pt enforcement so the
+ * ~20 existing call sites keep their exact layout. New code should use `Press`.
+ */
+export function PressableScale({ scaleTo = 0.96, haptic = true, style, children, ...rest }: PressableScaleProps) {
   return (
-    <Pressable
+    <PressBase
       {...rest}
-      onPressIn={(e) => {
-        scale.value = withSpring(scaleTo, theme.motion.spring);
-        if (haptic) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-        onPressIn?.(e);
-      }}
-      onPressOut={(e) => {
-        scale.value = withSpring(1, theme.motion.springBouncy);
-        onPressOut?.(e);
-      }}
+      enforceTapTarget={false}
+      variant="scale"
+      scaleTo={scaleTo}
+      haptic={haptic ? "tap" : false}
+      accessibilityRole={rest.accessibilityRole ?? "button"}
+      style={style}
     >
-      <Animated.View style={[style, animatedStyle]}>{children}</Animated.View>
-    </Pressable>
+      {children}
+    </PressBase>
   );
 }
 
@@ -218,29 +400,45 @@ interface SkeletonProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/** Shimmering loading placeholder — use instead of spinners for content. */
+// The sheen sweeps in PERCENTAGES of its own box, so nothing has to be
+// measured: no onLayout, no state, no shared value, no mapper. The keyframes
+// and the style are created once at module scope and shared by every Skeleton
+// on screen — a 12-skeleton loading state now costs zero animation drivers.
+const skeletonSweep = css.keyframes({
+  from: { transform: [{ translateX: "-100%" }] },
+  to: { transform: [{ translateX: "100%" }] },
+});
+
+const skeletonStyles = css.create({
+  sheen: {
+    ...StyleSheet.absoluteFillObject,
+    animationName: skeletonSweep,
+    animationDuration: "1100ms",
+    animationIterationCount: "infinite",
+    animationTimingFunction: "ease-in-out",
+  },
+  sheenStatic: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.5,
+  },
+});
+
+/**
+ * Shimmering loading placeholder — use instead of spinners for content.
+ *
+ * Pass fixed `width`/`height` (a percentage width is fine): the shimmer is
+ * measurement-free by design, so a Skeleton with no size collapses.
+ */
 export function Skeleton({ width = "100%", height = 16, radius = theme.radius.md, style }: SkeletonProps) {
   const reduceMotion = useReducedMotion();
-  const [measuredWidth, setMeasuredWidth] = useState(0);
-  const t = useSharedValue(0);
-  useEffect(() => {
-    if (reduceMotion) {
-      cancelAnimation(t);
-      t.value = 0.5; // static mid-sheen instead of looping shimmer
-      return;
-    }
-    t.value = withRepeat(withTiming(1, { duration: 1100, easing: Easing.inOut(Easing.quad) }), -1);
-    return () => cancelAnimation(t);
-  }, [t, reduceMotion]);
-  const shimmerStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: -measuredWidth + t.value * measuredWidth * 2 }],
-  }));
   return (
     <View
-      style={[{ width, height, borderRadius: radius, backgroundColor: theme.colors.borderSoft, overflow: "hidden" }, style]}
-      onLayout={(e) => setMeasuredWidth(e.nativeEvent.layout.width)}
+      style={[
+        { width, height, borderRadius: radius, backgroundColor: theme.colors.borderSoft, overflow: "hidden" },
+        style,
+      ]}
     >
-      <Animated.View style={[StyleSheet.absoluteFill, shimmerStyle]}>
+      <Animated.View style={reduceMotion ? skeletonStyles.sheenStatic : skeletonStyles.sheen}>
         <LinearGradient
           colors={["transparent", "rgba(255,255,255,0.75)", "transparent"]}
           start={{ x: 0, y: 0.5 }}
@@ -325,15 +523,43 @@ interface AnimatedBarProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/** Chart bar that grows in from the baseline. Stagger with `delay`. */
+/**
+ * Chart bar that grows in from the baseline. Stagger with `delay`.
+ *
+ * Grows with `scaleY` + `transformOrigin: 'bottom'`, never with `height`:
+ * animating height re-runs layout for the bar (and its row) on every frame,
+ * which is the single most expensive thing this file used to do. The layout
+ * box is the FINAL height from the first frame; only the transform moves, so
+ * a 7-bar week chart costs 7 transform writes and zero layout passes.
+ */
 export function AnimatedBar({ height, delay = 0, width = 18, color = theme.colors.navy, gradient, radius = 6, style }: AnimatedBarProps) {
-  const h = useSharedValue(0);
+  const target = Math.max(height, 0);
+  const t = useSharedValue(0);
+  const previous = useRef(0);
   useEffect(() => {
-    h.value = withDelay(delay, withSpring(Math.max(height, 0), { damping: 18, stiffness: 160 }));
-  }, [h, height, delay]);
-  const animatedStyle = useAnimatedStyle(() => ({ height: h.value }));
+    cancelAnimation(t);
+    // Re-render already moved the layout box to `target`; start the transform
+    // wherever the bar visually was so a data change reads as a grow/shrink
+    // rather than a jump.
+    const from = previous.current > 0 && target > 0 ? previous.current / target : 0;
+    previous.current = target;
+    t.value = from;
+    t.value = withDelay(delay, withSpring(1, SPRING.settle));
+    return () => cancelAnimation(t);
+  }, [t, target, delay]);
+  const animatedStyle = useAnimatedStyle(() => ({
+    // Exact 0 collapses the layer and can drop the gradient child on Android.
+    transform: [{ scaleY: Math.max(t.value, 0.0001) }],
+  }));
   return (
-    <Animated.View style={[{ width, borderRadius: radius, overflow: "hidden" }, !gradient && { backgroundColor: color }, animatedStyle, style]}>
+    <Animated.View
+      style={[
+        { width, height: target, borderRadius: radius, overflow: "hidden", transformOrigin: "bottom" },
+        !gradient && { backgroundColor: color },
+        animatedStyle,
+        style,
+      ]}
+    >
       {gradient && (
         <LinearGradient colors={[gradient[0], gradient[1]]} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={StyleSheet.absoluteFill} />
       )}
@@ -681,6 +907,429 @@ export function CelebrationBurst({ count = 16, radius = 96, duration = 750, onDo
       {particles.map((config, i) => (
         <BurstParticle key={i} progress={progress} config={config} />
       ))}
+    </View>
+  );
+}
+
+// ── useGlide ──────────────────────────────────────────────────────────────
+
+export interface GlideConfig {
+  /** Spring to use. Default `SPRING.settle`. Ignored when `timing` is set. */
+  spring?: WithSpringConfig;
+  /** Use a timing curve instead of a spring — e.g. `{ duration: GLIDE.vehicle }`. */
+  timing?: WithTimingConfig;
+  /** Value on first frame. Default: `target` (mounts at rest, no entrance). */
+  from?: number;
+  /** Delay before each retarget, ms. Default 0. */
+  delay?: number;
+}
+
+/**
+ * A SharedValue that chases `target` whenever `target` changes.
+ *
+ * Replaces the useSharedValue + useEffect + withSpring triple that this
+ * codebase repeats ~9 times. Physics springs retarget mid-flight with velocity
+ * carried over, so a value updated by a 5s poll never restarts from a stop.
+ *
+ *   const x = useGlide(vehicle.x, { timing: { duration: GLIDE.vehicle } });
+ *
+ * Cancels in flight on unmount, so a screen popped mid-glide leaves no
+ * animation running against a detached view.
+ */
+export function useGlide(target: number, cfg?: GlideConfig): SharedValue<number> {
+  const v = useSharedValue(cfg?.from ?? target);
+  // Config is read at retarget time, not captured per render: passing an
+  // inline object literal must not restart the animation every render.
+  const cfgRef = useRef(cfg);
+  cfgRef.current = cfg;
+
+  useEffect(() => {
+    const c = cfgRef.current;
+    const next = c?.timing ? withTiming(target, c.timing) : withSpring(target, c?.spring ?? SPRING.settle);
+    v.value = c?.delay ? withDelay(c.delay, next) : next;
+  }, [target, v]);
+
+  useEffect(() => () => cancelAnimation(v), [v]);
+
+  return v;
+}
+
+// ── useCountdownSeconds ───────────────────────────────────────────────────
+
+/**
+ * Seconds remaining until `targetMs`, as a SharedValue, driven by the same 1s
+ * heartbeat `TickingCountdown` uses — one interval for the whole app.
+ *
+ * Nothing here re-renders React: the tick writes straight into the shared
+ * value, so a screen with a dozen live countdowns re-renders zero times per
+ * second. Feed it to `Odometer`, `Reveal`, or any animated style. Returns 0
+ * (and stops ticking) when `targetMs` is null.
+ */
+export function useCountdownSeconds(targetMs: number | null): SharedValue<number> {
+  const live = targetMs != null && Number.isFinite(targetMs);
+  const seconds = useSharedValue(live ? Math.max(0, Math.round((targetMs as number - Date.now()) / 1000)) : 0);
+
+  useEffect(() => {
+    if (!live) {
+      seconds.value = 0;
+      return;
+    }
+    const write = () => {
+      seconds.value = Math.max(0, Math.round(((targetMs as number) - Date.now()) / 1000));
+    };
+    write();
+    return subscribeToTick(write);
+  }, [targetMs, live, seconds]);
+
+  return seconds;
+}
+
+// ── useScrollProgress ─────────────────────────────────────────────────────
+
+export interface ScrollProgress {
+  /** Spread onto an `Animated.ScrollView` / `Animated.FlatList`. */
+  onScroll: ReturnType<typeof useAnimatedScrollHandler>;
+  /** Raw vertical content offset, px. */
+  y: SharedValue<number>;
+  /** `y / range`, clamped to 0..1. */
+  progress: SharedValue<number>;
+}
+
+/**
+ * Scroll offset and a clamped 0..1 progress over the first `range` px —
+ * the driver for collapsing headers, fading hero art, and sticky-bar reveals.
+ * Runs entirely on the UI thread; the scroll never touches React.
+ */
+export function useScrollProgress(range: number): ScrollProgress {
+  const y = useSharedValue(0);
+  const onScroll = useAnimatedScrollHandler({
+    onScroll: (e) => {
+      y.value = e.contentOffset.y;
+    },
+  });
+  const progress = useDerivedValue(() => {
+    const span = range > 0 ? range : 1;
+    return Math.min(Math.max(y.value / span, 0), 1);
+  }, [range]);
+  return { onScroll, y, progress };
+}
+
+// ── Stagger ───────────────────────────────────────────────────────────────
+
+interface StaggerProps {
+  children: React.ReactNode;
+  /** Per-item delay, ms. Default `STAGGER.step`. */
+  step?: number;
+  /** Index at which the delay stops growing. Default `STAGGER.cap`. */
+  cap?: number;
+  /** Slide-up distance, px. Default 12. */
+  dy?: number;
+  /** Render children with no entrance at all. */
+  disabled?: boolean;
+  duration?: number;
+  /** Container style — set `flexDirection`/`gap` here. */
+  style?: StyleProp<ViewStyle>;
+  /** Applied to each item's animated wrapper. */
+  itemStyle?: StyleProp<ViewStyle>;
+}
+
+/**
+ * The entrance vocabulary. Wraps each child in a FadeInDown whose delay is
+ * `min(index, cap) * step`.
+ *
+ * The cap is the point: with a raw `index * step`, item 30 of a list waits a
+ * second and a half and the screen reads as hung. Use this instead of
+ * hand-written `delay={index * 60}` so every list in the app enters the same
+ * way. No entrance under reduced motion — children just appear.
+ */
+export function Stagger({
+  children,
+  step = STAGGER.step,
+  cap = STAGGER.cap,
+  dy = 12,
+  disabled = false,
+  duration = TIMING.base.duration,
+  style,
+  itemStyle,
+}: StaggerProps) {
+  const reduceMotion = useReducedMotion();
+  const off = disabled || reduceMotion;
+  const items = React.Children.toArray(children);
+  return (
+    <View style={style}>
+      {items.map((child, i) => (
+        <Animated.View
+          key={React.isValidElement(child) && child.key != null ? child.key : i}
+          style={itemStyle}
+          entering={
+            off
+              ? undefined
+              : FadeInDown.delay(Math.min(i, cap) * step)
+                  .duration(duration)
+                  .withInitialValues({ opacity: 0, transform: [{ translateY: dy }] })
+          }
+        >
+          {child}
+        </Animated.View>
+      ))}
+    </View>
+  );
+}
+
+// ── Beacon ────────────────────────────────────────────────────────────────
+
+interface BeaconProps {
+  /** Diameter of the resting dot's box, px. */
+  size: number;
+  color?: string;
+  /** Time between halos, ms. Default 6000. */
+  period?: number;
+  /** Emit halos. Default true. */
+  active?: boolean;
+  style?: StyleProp<ViewStyle>;
+  children?: React.ReactNode;
+}
+
+const BEACON_EXPAND_MS = 1400;
+
+/**
+ * One halo ring that expands and fades, then waits.
+ *
+ * Deliberately a SCHEDULE, not a loop: a ring pulsing continuously beside live
+ * data is visual noise that the eye stops reading within seconds, and it keeps
+ * the UI thread busy forever. On a 6s period the halo is an event again.
+ * Cancels on unmount and never starts under reduced motion — a looping
+ * primitive has no meaningful end state to snap to, so the honest answer is
+ * not to run it.
+ */
+export function Beacon({ size, color = theme.colors.orange, period = 6000, active = true, style, children }: BeaconProps) {
+  const reduceMotion = useReducedMotion();
+  const t = useSharedValue(0);
+
+  useEffect(() => {
+    if (!active || reduceMotion) {
+      cancelAnimation(t);
+      t.value = 0;
+      return;
+    }
+    const rest = Math.max(period - BEACON_EXPAND_MS, 0);
+    t.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: BEACON_EXPAND_MS, easing: Easing.out(Easing.quad) }),
+        withTiming(0, { duration: 0 }),
+        withDelay(rest, withTiming(0, { duration: 0 }))
+      ),
+      -1,
+      false
+    );
+    return () => {
+      cancelAnimation(t);
+      t.value = 0;
+    };
+  }, [t, active, period, reduceMotion]);
+
+  const halo = useAnimatedStyle(() => ({
+    // Zero at BOTH ends: t rests at 0 between pulses, so a ring that is opaque
+    // at t = 0 would sit on screen for the whole 4.6s gap.
+    opacity: Math.min(t.value * 8, 1) * (1 - t.value) * 0.6,
+    transform: [{ scale: 0.5 + t.value * 1.4 }],
+  }));
+
+  return (
+    <View pointerEvents="none" style={[{ width: size, height: size, alignItems: "center", justifyContent: "center" }, style]}>
+      <Animated.View
+        style={[
+          { position: "absolute", width: size, height: size, borderRadius: size / 2, borderWidth: 2, borderColor: color },
+          halo,
+        ]}
+      />
+      {children}
+    </View>
+  );
+}
+
+// ── Odometer ──────────────────────────────────────────────────────────────
+
+// 11 cells: 0..9 then 0 again, so 9 -> 0 rolls FORWARD off the bottom instead
+// of spinning ten digits backwards.
+const ODOMETER_CELLS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
+
+interface DigitColumnProps {
+  v: SharedValue<number>;
+  /** Power of ten this column shows: 0 = ones, 1 = tens, ... */
+  place: number;
+  /** Window height; equals the text lineHeight. */
+  h: number;
+  textStyle: StyleProp<TextStyle>;
+  padWithZeros: boolean;
+}
+
+const DigitColumn = React.memo(function DigitColumn({ v, place, h, textStyle, padWithZeros }: DigitColumnProps) {
+  const animatedStyle = useAnimatedStyle(() => {
+    const pow = Math.pow(10, place);
+    const value = Math.max(v.value, 0);
+    const digit = Math.floor(value / pow) % 10;
+    // Animate the column to its target digit. The previous implementation
+    // derived the roll from the fractional part of value/pow, which is
+    // identically 0 for the integer sources this is built for (a 1s countdown
+    // ticker, a step count) — so it snapped and never rolled.
+    return {
+      opacity: padWithZeros || place === 0 || value >= pow ? 1 : 0,
+      transform: [{ translateY: withTiming(-digit * h, TIMING.base) }],
+    };
+  }, [place, h, padWithZeros]);
+
+  return (
+    <View style={{ height: h, overflow: "hidden" }}>
+      <Animated.View style={animatedStyle}>
+        {ODOMETER_CELLS.map((cell, i) => (
+          <Text key={i} style={[textStyle, { height: h, lineHeight: h, textAlign: "center" }]}>
+            {cell}
+          </Text>
+        ))}
+      </Animated.View>
+    </View>
+  );
+});
+
+interface OdometerProps {
+  /**
+   * A plain number, or a SharedValue for a truly render-free digit (pair it
+   * with `useCountdownSeconds`).
+   */
+  value: number | SharedValue<number>;
+  /** Digit columns, most significant first. `places={2}` shows 00..99. */
+  places: number;
+  style?: StyleProp<TextStyle>;
+  /**
+   * Required and STABLE — "minutes until the 22N" — never the live number.
+   * A label that changes every second makes VoiceOver interrupt itself
+   * forever and the screen becomes unusable.
+   */
+  accessibilityLabel: string;
+  /** Window height. Defaults to the style's lineHeight, else fontSize * 1.2. */
+  digitHeight?: number;
+  /** Roll duration when `value` is a plain number. */
+  duration?: number;
+  /** Show leading zeros. Default true. */
+  padWithZeros?: boolean;
+}
+
+/**
+ * Rolling digit columns — a departure board, not a text swap.
+ *
+ * Each place is a fixed strip inside an `overflow: hidden` window, positioned
+ * by a `useDerivedValue`-style worklet off ONE shared value, so a digit change
+ * costs zero React renders and zero layout. Heights are explicit (lineHeight
+ * === window height): nothing is measured, so there is no first-frame jump.
+ */
+export function Odometer({
+  value,
+  places,
+  style,
+  accessibilityLabel,
+  digitHeight,
+  duration = TIMING.base.duration,
+  padWithZeros = true,
+}: OdometerProps) {
+  const flat = StyleSheet.flatten(style) as TextStyle | undefined;
+  const fontSize = typeof flat?.fontSize === "number" ? flat.fontSize : 16;
+  const h = digitHeight ?? (typeof flat?.lineHeight === "number" ? flat.lineHeight : Math.round(fontSize * 1.2));
+
+  const isShared = typeof value !== "number";
+  const internal = useSharedValue(typeof value === "number" ? value : 0);
+  const v = isShared ? (value as SharedValue<number>) : internal;
+
+  // Stable identity, or the memo on DigitColumn never hits: a fresh array
+  // literal per render invalidates every column on every parent render.
+  const digitTextStyle = useMemo<StyleProp<TextStyle>>(() => [{ fontVariant: ["tabular-nums"] }, style], [style]);
+
+  useEffect(() => {
+    if (typeof value === "number") {
+      internal.value = withTiming(value, { duration, easing: Easing.out(Easing.cubic) });
+    }
+  }, [value, duration, internal]);
+
+  useEffect(() => () => cancelAnimation(internal), [internal]);
+
+  const columns: number[] = [];
+  for (let i = places - 1; i >= 0; i--) columns.push(i);
+
+  return (
+    <View
+      accessible
+      accessibilityLabel={accessibilityLabel}
+      style={{ flexDirection: "row" }}
+    >
+      <View style={{ flexDirection: "row" }} importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+        {columns.map((place) => (
+          <DigitColumn
+            key={place}
+            v={v}
+            place={place}
+            h={h}
+            padWithZeros={padWithZeros}
+            textStyle={digitTextStyle}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// ── Reveal ────────────────────────────────────────────────────────────────
+
+/** Edge the reveal grows toward. */
+export type RevealDirection = "right" | "left" | "up" | "down";
+
+interface RevealProps {
+  /** 0..1 driver. Clamped internally. */
+  progress: SharedValue<number>;
+  /** Default "right" — grows from the left edge. */
+  direction?: RevealDirection;
+  /**
+   * Full extent along the reveal axis, px. REQUIRED: the clip is a fixed-size
+   * window whose content is translated, so the reveal costs one transform per
+   * frame and never re-lays-out. Without a size the window would collapse to
+   * zero (a parent cannot infer it from an absolutely-clipped child).
+   */
+  size: number;
+  children: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+}
+
+/**
+ * Clips its children to `progress` — the non-SVG reveal behind progress bars,
+ * chart wipes, and fill meters.
+ *
+ * Only the clip's own box animates; the content inside keeps its full size and
+ * is simply cut off, so text never reflows and a gradient never restretches
+ * mid-animation.
+ */
+export function Reveal({ progress, direction = "right", size, children, style }: RevealProps) {
+  const horizontal = direction === "left" || direction === "right";
+  const anchor: ViewStyle = {
+    alignItems: direction === "left" ? "flex-end" : "flex-start",
+    justifyContent: direction === "up" ? "flex-end" : "flex-start",
+  };
+
+  // Transform-only: the window is a fixed box and the content slides inside it.
+  // Animating width/height here would re-lay-out the children every frame,
+  // which is the single worst pattern available on this stack.
+  const contentStyle = useAnimatedStyle(() => {
+    const t = Math.min(Math.max(progress.value, 0), 1);
+    const hidden = size * (1 - t);
+    if (horizontal) {
+      return { transform: [{ translateX: direction === "right" ? -hidden : hidden }] };
+    }
+    return { transform: [{ translateY: direction === "down" ? -hidden : hidden }] };
+  }, [horizontal, direction, size]);
+
+  const windowStyle: ViewStyle = horizontal ? { width: size } : { height: size };
+
+  return (
+    <View style={[{ overflow: "hidden" }, windowStyle, anchor, style]}>
+      <Animated.View style={[windowStyle, contentStyle]}>{children}</Animated.View>
     </View>
   );
 }
