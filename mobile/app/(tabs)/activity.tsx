@@ -8,7 +8,7 @@ import { type ActivityEntry, addActivityEntry, calcStreak, dateStringForOffset, 
 import { computeAllInsights, getDismissedInsights, dismissInsight, type PatternInsights } from "@/src/utils/patternEngine";
 import PatternInsightCards from "@/src/components/PatternInsightCards";
 import { useMutation } from "@tanstack/react-query";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -19,16 +19,52 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { AlertCircle, Flame, Footprints, MapPin, Pencil, PiggyBank, ShieldCheck, Sparkles, TrendingUp } from "lucide-react-native";
+import { AlertCircle, Check, Flame, Footprints, MapPin, Pencil, PiggyBank, ShieldCheck, Sparkles, TrendingUp } from "lucide-react-native";
+import { STAGGER } from "@/src/constants/motion";
 import { theme } from "@/src/constants/theme";
 import { Button } from "@/src/components/ui/Button";
 import { EmptyState } from "@/src/components/ui/EmptyState";
-import { AnimatedBar, AnimatedNumber, FadeInView, PressableScale, ProgressRing, PulseView, RouteProgress } from "@/src/components/ui/motion";
+import { AreaSpark, BarRow, RingGauge, type BarDatum } from "@/src/components/ui/Charts";
+import {
+  AnimatedNumber,
+  FadeInView,
+  Odometer,
+  PressableScale,
+  PulseView,
+} from "@/src/components/ui/motion";
 
 const CHART_DAYS = 7;
+/** Plot height of the week chart, px. The label row sits below it. */
 const BAR_MAX_H = 80;
-/** Height of the day-label slot under each bar (label height 16 + marginTop 6). */
-const LABEL_SLOT_H = 22;
+/** Bar geometry, sized so seven "Today"-width ticks fit a card at 375pt. */
+const BAR_W = 34;
+const BAR_GAP = theme.spacing.sm;
+/** Height of the hero trend spark, px. Fixed so the card never reflows. */
+const TREND_H = 44;
+
+/**
+ * Card entrance schedule, on the shared stagger tokens rather than hand-picked
+ * milliseconds. The cap is what keeps a long sequence honest.
+ */
+const cardDelay = (i: number) => Math.min(i, STAGGER.cap) * STAGGER.step;
+
+/** Digit columns needed to show a non-negative integer with no dead padding. */
+function placesFor(n: number): number {
+  return Math.max(1, Math.floor(Math.max(n, 0)).toString().length);
+}
+
+/**
+ * Compact step count for the value row under each bar. A 34px cell cannot hold
+ * "12,481" without ellipsizing, and a truncated number is worse than a rounded
+ * one. Zero days stay blank — an axis of "0"s is noise, not information.
+ *
+ * Display only: the chart's spoken summary is passed to `BarRow` explicitly and
+ * carries the exact, fully-grouped counts.
+ */
+function compactSteps(v: number): string {
+  if (!(v > 0)) return "";
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(Math.round(v));
+}
 
 interface DaySummary {
   date: string;
@@ -48,13 +84,122 @@ const AI_DISCLOSURE_KEY = '@uiuc_bus_ai_report_consented';
 
 // ── Render-only pieces ─────────────────────────────────────────────────────
 
-/** One stat cell on the navy hero — rolling tabular digits over a quiet label. */
-function HeroStat({ value, label }: { value: string; label: string }) {
+/**
+ * One stat cell on the navy hero — rolling tabular digits over a quiet label.
+ *
+ * `AnimatedNumber` brings the tabular figures with it, so the column never
+ * jitters as a digit swaps. `unit` is the spoken form of the abbreviation:
+ * VoiceOver should say "412 calories", not "412 kcal".
+ */
+function HeroStat({ value, label, unit }: { value: string; label: string; unit?: string }) {
   return (
     <View style={styles.statCell}>
-      <AnimatedNumber value={value} style={styles.statValue} accessibilityLabel={`${value} ${label}`} />
+      <AnimatedNumber
+        value={value}
+        style={styles.statValue}
+        accessibilityLabel={`${value} ${unit ?? label}`}
+      />
       <Text style={styles.statLabel}>{label}</Text>
     </View>
+  );
+}
+
+/**
+ * The week's step trend as a filled sparkline.
+ *
+ * The series is the SAME `weekSummaries` the bar chart reads — nothing is
+ * fetched and nothing is recomputed here, it is a second view of one dataset.
+ * `AreaSpark` needs a concrete px width, so this wrapper measures itself once;
+ * keeping that state here rather than on the screen leaves the screen's hook
+ * order untouched. The memo matters: a fresh `values` array on every render
+ * would restart the mask wipe each time the screen re-renders.
+ */
+function StepsTrend({ days }: { days: DaySummary[] }) {
+  const [width, setWidth] = useState(0);
+  const values = useMemo(() => days.map((d) => d.steps), [days]);
+
+  return (
+    <View
+      style={styles.trendWrap}
+      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+    >
+      {width > 0 && (
+        <AreaSpark
+          values={values}
+          width={width}
+          height={TREND_H}
+          color={theme.colors.orangeBright}
+          fill={[theme.colors.orangeBright, theme.colors.orange]}
+          dotColor={theme.colors.orangeBright}
+          strokeWidth={2.5}
+          delay={cardDelay(2)}
+          accessibilityLabel="Step trend over the last 7 days"
+        />
+      )}
+    </View>
+  );
+}
+
+interface LapRingProps {
+  /** Whole percent of the weekly goal — the screen's audited value, not recomputed. */
+  pct: number;
+  /** Clamped 0..1 progress, used for the ordinary sub-goal sweep. */
+  progress: number;
+  goal: number;
+}
+
+/**
+ * The weekly goal as a lapping ring.
+ *
+ * `RingGauge` with `laps` does the thing the hand-rolled ring could only fake:
+ * past 100% the stroke starts a SECOND revolution in a different color instead
+ * of pinning at full, so 118% reads as "a full lap plus a bit" rather than
+ * identically to a week that just barely made it.
+ *
+ * The fraction fed to the gauge is derived from the screen's own audited
+ * values, exactly as before — `progress` (min(1, steps / goal)) below the goal,
+ * the rounded percent only for the overflow lap. Over-goal is never signalled
+ * by color alone: the digits say 118% and a checked "Goal met" line sits
+ * directly under them, which is also why the gauge's own `overLabel` is
+ * suppressed — it would say the same thing twice.
+ */
+function LapRing({ pct, progress, goal }: LapRingProps) {
+  const safePct = Math.max(pct, 0);
+  // "Goal met" is a factual claim, so it comes from the exact clamped progress,
+  // never from the rounded percent. `weeklyPct` rounds, so 99.5% displays as
+  // "100%" — deriving the badge from that would put a checkmark and "Goal met"
+  // on a week that is 250 steps short. `progress` is min(1, steps / goal), so
+  // `progress >= 1` is true exactly when the goal was actually reached.
+  const metGoal = progress >= 1;
+  // Only the overflow lap is derived from the rounded percent; the ordinary
+  // case keeps using the exact clamped progress the screen already computed.
+  const sweep = metGoal ? safePct / 100 : progress;
+  return (
+    <RingGauge
+      progress={sweep}
+      laps
+      size={116}
+      strokeWidth={11}
+      trackColor={theme.colors.borderSoft}
+      colors={[theme.colors.orangeBright, theme.colors.orange]}
+      lapColors={[theme.colors.gold, theme.colors.successDeep]}
+      overLabel={null}
+      accessibilityLabel={
+        metGoal
+          ? `${safePct} percent of weekly step goal, goal met`
+          : `${safePct} percent of weekly step goal`
+      }
+    >
+      <AnimatedNumber value={`${safePct}%`} style={styles.weeklyPctBig} />
+      {metGoal ? (
+        <View style={styles.weeklyMetRow}>
+          <Check size={11} color={theme.colors.successDeep} strokeWidth={3} />
+          <Text style={styles.weeklyMetText}>Goal met</Text>
+        </View>
+      ) : (
+        <Text style={styles.weeklyPctSub}>of {goal.toLocaleString()}</Text>
+      )}
+    </RingGauge>
   );
 }
 
@@ -240,14 +385,12 @@ export default function ActivityScreen() {
   const todayDistanceM = todayEntries.reduce((s, e) => s + e.distanceM, 0);
   const todayDurationSeconds = todayEntries.reduce((s, e) => s + e.durationSeconds, 0);
 
-  const maxSteps = Math.max(...weekSummaries.map((d) => d.steps), 1);
   const weeklyProgress = Math.min(1, Math.max(0, weeklySteps / weeklyGoal));
 
-  // Visual-only chart geometry: the scale floor keeps small days honest by
-  // never letting bars exaggerate below the daily goal line.
+  // The daily goal is the chart's reference line AND its scale floor. The floor
+  // now lives inside `BarRow` (which maxes the axis against `goal`), so the
+  // hand-computed chart max and goal-line offset are gone with the local chart.
   const dailyGoal = Math.max(1, Math.round(weeklyGoal / CHART_DAYS));
-  const chartMax = Math.max(maxSteps, dailyGoal);
-  const goalLineH = Math.min(Math.round((dailyGoal / chartMax) * BAR_MAX_H), BAR_MAX_H);
   const weeklyPct = Math.round((weeklySteps / weeklyGoal) * 100);
 
   if (loading) {
@@ -291,93 +434,84 @@ export default function ActivityScreen() {
             accessibilityLabel={`${todaySteps.toLocaleString()} steps today`}
           />
           <Text style={styles.todayHeroLabel}>steps</Text>
-          <RouteProgress
-            points={[{ x: 0, y: 18 }, { x: 46, y: 4 }, { x: 102, y: 20 }, { x: 158, y: 8 }, { x: 214, y: 16 }, { x: 252, y: 2 }]}
-            color={theme.colors.orange}
-            dotColor={theme.colors.orangeBright}
-            trackColor={theme.colors.navyLight}
-            strokeWidth={2.5}
-            dotRadius={4}
-            duration={1800}
-            style={styles.todayRoute}
-          />
+          {/* The week's real trend, not the decorative squiggle that stood here
+              while Charts.tsx was missing. Same series as the bar chart. */}
+          <StepsTrend days={weekSummaries} />
           <View style={styles.todayStats}>
-            <HeroStat value={todayCalories.toFixed(0)} label="kcal" />
+            <HeroStat value={todayCalories.toFixed(0)} label="kcal" unit="calories" />
             <View style={styles.statDivider} />
-            <HeroStat value={(todayDistanceM / 1609.344).toFixed(2)} label="mi" />
+            <HeroStat value={(todayDistanceM / 1609.344).toFixed(2)} label="mi" unit="miles" />
             <View style={styles.statDivider} />
-            <HeroStat value={String(Math.floor(todayDurationSeconds / 60))} label="min" />
+            <HeroStat value={String(Math.floor(todayDurationSeconds / 60))} label="min" unit="minutes" />
           </View>
         </LinearGradient>
       </FadeInView>
 
-      {/* Streak + weekly goal */}
-      <FadeInView delay={70} style={styles.streakRow}>
-        <View style={styles.weeklyCard}>
-          <View style={styles.weeklyHeader}>
-            <Text style={styles.weeklyLabel}>Weekly goal</Text>
-            <PressableScale
-              haptic={false}
-              hitSlop={8}
-              style={styles.weeklyEditBtn}
-              accessibilityRole="button"
-              accessibilityLabel={`Edit weekly step goal, currently ${weeklySteps.toLocaleString()} of ${weeklyGoal.toLocaleString()} steps`}
-              onPress={() => {
-              Alert.prompt(
-                'Weekly step goal',
-                'Enter your weekly step goal',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Save',
-                    onPress: async (val?: string) => {
-                      const n = parseInt(val ?? '', 10);
-                      if (!isNaN(n) && n >= 1000) {
-                        await setWeeklyStepGoal(n);
-                        setWeeklyGoalState(n);
-                      }
+      {/* Streak + weekly goal — the two cards enter in sequence, not together */}
+      <View style={styles.streakRow}>
+        <FadeInView delay={cardDelay(1)} style={styles.streakSlotWide}>
+          <View style={styles.weeklyCard}>
+            <View style={styles.weeklyHeader}>
+              <Text style={styles.weeklyLabel}>Weekly goal</Text>
+              <PressableScale
+                haptic={false}
+                hitSlop={8}
+                style={styles.weeklyEditBtn}
+                accessibilityRole="button"
+                accessibilityLabel={`Edit weekly step goal, currently ${weeklySteps.toLocaleString()} of ${weeklyGoal.toLocaleString()} steps`}
+                onPress={() => {
+                Alert.prompt(
+                  'Weekly step goal',
+                  'Enter your weekly step goal',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Save',
+                      onPress: async (val?: string) => {
+                        const n = parseInt(val ?? '', 10);
+                        if (!isNaN(n) && n >= 1000) {
+                          await setWeeklyStepGoal(n);
+                          setWeeklyGoalState(n);
+                        }
+                      },
                     },
-                  },
-                ],
-                'plain-text',
-                String(weeklyGoal)
-              );
-            }}>
-              <Pencil size={11} color={theme.colors.brandInk} strokeWidth={2.2} />
-              <Text style={styles.weeklyFraction}>
-                {weeklySteps.toLocaleString()} / {weeklyGoal.toLocaleString()}
-              </Text>
-            </PressableScale>
+                  ],
+                  'plain-text',
+                  String(weeklyGoal)
+                );
+              }}>
+                <Pencil size={11} color={theme.colors.brandInk} strokeWidth={2.2} />
+                <Text style={styles.weeklyFraction}>
+                  {weeklySteps.toLocaleString()} / {weeklyGoal.toLocaleString()}
+                </Text>
+              </PressableScale>
+            </View>
+            <View style={styles.weeklyRingWrap}>
+              <LapRing pct={weeklyPct} progress={weeklyProgress} goal={weeklyGoal} />
+            </View>
           </View>
-          <View style={styles.weeklyRingWrap}>
-            <ProgressRing progress={weeklyProgress} size={116} strokeWidth={11}>
-              <AnimatedNumber
-                value={`${weeklyPct}%`}
-                style={styles.weeklyPctBig}
-                accessibilityLabel={`${weeklyPct} percent of weekly step goal`}
-              />
-              <Text style={styles.weeklyPctSub}>of {weeklyGoal.toLocaleString()}</Text>
-            </ProgressRing>
-          </View>
-        </View>
-        <LinearGradient
-          colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.streakCard}
-        >
-          <PulseView minOpacity={0.75} maxScale={1.08} duration={1400} style={styles.streakFlame}>
-            <Flame size={26} color={theme.colors.orangeBright} fill={theme.colors.orange} />
-          </PulseView>
-          <AnimatedNumber
-            value={streak}
-            style={styles.streakCount}
-            accessibilityLabel={`${streak} ${streak === 1 ? "day" : "days"} streak`}
-          />
-          <Text style={styles.streakLabel}>{streak === 1 ? "day streak" : "days streak"}</Text>
-          <Text style={styles.streakHint}>{streak === 0 ? 'Walk today to start' : streak < 7 ? `${7 - streak} days to a week streak!` : 'Week streak!'}</Text>
-        </LinearGradient>
-      </FadeInView>
+        </FadeInView>
+        <FadeInView delay={cardDelay(2)} style={styles.streakSlot}>
+          <LinearGradient
+            colors={[theme.gradients.ember[0], theme.gradients.ember[1]]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.streakCard}
+          >
+            <PulseView minOpacity={0.75} maxScale={1.08} duration={1400} style={styles.streakFlame}>
+              <Flame size={26} color={theme.colors.orangeBright} fill={theme.colors.orange} />
+            </PulseView>
+            <Odometer
+              value={streak}
+              places={placesFor(streak)}
+              style={styles.streakCount}
+              accessibilityLabel={`${streak} ${streak === 1 ? "day" : "days"} streak`}
+            />
+            <Text style={styles.streakLabel}>{streak === 1 ? "day streak" : "days streak"}</Text>
+            <Text style={styles.streakHint}>{streak === 0 ? 'Walk today to start' : streak < 7 ? `${7 - streak} days to a week streak!` : 'Week streak!'}</Text>
+          </LinearGradient>
+        </FadeInView>
+      </View>
 
       {/* Personalized goal suggestion */}
       {weeklySteps > weeklyGoal * 1.1 && (
@@ -393,42 +527,32 @@ export default function ActivityScreen() {
       <FadeInView delay={140} style={styles.chartCard}>
         <View style={styles.chartHeader}>
           <Text style={styles.chartTitle} accessibilityRole="header">Steps · last 7 days</Text>
-          <View style={styles.chartGoalKey}>
-            <View style={styles.chartGoalSwatch} />
-            <Text style={styles.chartGoalText}>goal {dailyGoal.toLocaleString()}/day</Text>
-          </View>
         </View>
-        <View style={styles.chartPlot}>
-          <View pointerEvents="none" style={[styles.goalLine, { bottom: LABEL_SLOT_H + goalLineH }]} />
-          <View style={styles.chartRow}>
-            {weekSummaries.map((d, i) => {
-              const barH = chartMax > 0 ? Math.round((d.steps / chartMax) * BAR_MAX_H) : 0;
-              const isToday = d.label === "Today";
-              return (
-                <View
-                  key={d.date}
-                  style={styles.chartBar}
-                  accessible
-                  accessibilityLabel={`${d.label}: ${d.steps.toLocaleString()} steps`}
-                >
-                  <Text style={styles.chartBarValue}>{d.steps > 0 ? d.steps.toLocaleString() : ""}</Text>
-                  <AnimatedBar
-                    height={Math.max(barH, 3)}
-                    delay={i * 80}
-                    width={22}
-                    radius={7}
-                    gradient={
-                      isToday
-                        ? [theme.colors.orangeBright, theme.colors.orange]
-                        : [theme.colors.navyLight, theme.colors.navy]
-                    }
-                  />
-                  <Text style={[styles.chartBarLabel, isToday && styles.chartBarLabelToday]}>{d.label}</Text>
-                </View>
-              );
-            })}
-          </View>
-        </View>
+        {/* Rendering only: `weekSummaries` is the audited 7-day window, mapped
+            straight to bars. `goal` also floors BarRow's y-axis at the daily
+            goal, which is the same scale the screen drew before — a week of
+            40-step days must not look like a week of 12,000-step days. */}
+        <BarRow
+          data={weekSummaries.map<BarDatum>((d) => ({
+            value: d.steps,
+            label: d.label,
+            highlight: d.label === "Today",
+          }))}
+          height={BAR_MAX_H}
+          barWidth={BAR_W}
+          gap={BAR_GAP}
+          radius={7}
+          gradient={[theme.colors.navyLight, theme.colors.navy]}
+          highlightColor={theme.colors.orange}
+          goal={dailyGoal}
+          goalLabel={`Goal ${dailyGoal.toLocaleString()}/day`}
+          showValues
+          formatValue={compactSteps}
+          accessibilityLabel={`Steps, last 7 days. ${weekSummaries
+            .map((d) => `${d.label}, ${d.steps.toLocaleString()}`)
+            .join("; ")}. Daily goal ${dailyGoal.toLocaleString()} steps.`}
+          style={styles.chartPlot}
+        />
       </FadeInView>
 
       {/* Weekly commute summary */}
@@ -437,7 +561,12 @@ export default function ActivityScreen() {
           <Text style={styles.commuteSummaryTitle} accessibilityRole="header">7-day commute summary</Text>
           <View style={styles.commuteSummaryRow}>
             <View style={styles.commuteStat}>
-              <AnimatedNumber value={weeklyWalks} style={styles.commuteStatValue} accessibilityLabel={`${weeklyWalks} walks`} />
+              <Odometer
+                value={weeklyWalks}
+                places={placesFor(weeklyWalks)}
+                style={styles.commuteStatValue}
+                accessibilityLabel={`${weeklyWalks} walks`}
+              />
               <Text style={styles.commuteStatLabel}>walks</Text>
             </View>
             <View style={styles.commuteStat}>
@@ -473,11 +602,24 @@ export default function ActivityScreen() {
             <PiggyBank size={14} color={theme.colors.successDeep} strokeWidth={2} />
             <Text style={styles.moneySavedLabel}>This week you saved</Text>
           </View>
-          <AnimatedNumber
-            value={`$${(weeklyWalks * 8).toFixed(0)}`}
-            style={styles.moneySavedAmount}
-            accessibilityLabel={`Saved ${(weeklyWalks * 8).toFixed(0)} dollars this week`}
-          />
+          {/* The Odometer is the single a11y node here — the "$" glyph is
+              decorative, and nesting another `accessible` view around it would
+              make TalkBack read the amount twice. */}
+          <View style={styles.moneySavedRow}>
+            <Text
+              style={styles.moneySavedAmount}
+              accessibilityElementsHidden
+              importantForAccessibility="no"
+            >
+              $
+            </Text>
+            <Odometer
+              value={weeklyWalks * 8}
+              places={placesFor(weeklyWalks * 8)}
+              style={styles.moneySavedAmount}
+              accessibilityLabel={`Saved ${weeklyWalks * 8} dollars this week`}
+            />
+          </View>
           <Text style={styles.moneySavedSub}>vs. {weeklyWalks} Uber trips at ~$8 each</Text>
         </FadeInView>
       )}
@@ -628,7 +770,9 @@ const styles = StyleSheet.create({
   todayEyebrow: { ...theme.text.eyebrow, color: theme.colors.textOnNavyMuted, marginBottom: theme.spacing.sm },
   todayHeroValue: { ...theme.text.display, fontSize: 48, lineHeight: 54, color: theme.colors.surface },
   todayHeroLabel: { ...theme.text.eyebrow, color: theme.colors.textOnNavyMuted, marginTop: 2, marginBottom: theme.spacing.md },
-  todayRoute: { alignSelf: "center", marginBottom: theme.spacing.md, opacity: 0.9 },
+  // Fixed height so the hero card keeps its size on the frame before the spark
+  // has measured itself.
+  trendWrap: { height: TREND_H, marginBottom: theme.spacing.md },
   todayStats: {
     flexDirection: "row",
     justifyContent: "space-around",
@@ -643,9 +787,13 @@ const styles = StyleSheet.create({
   statLabel: { ...theme.text.caption, fontSize: 11, lineHeight: 14, color: theme.colors.textOnNavyMuted, marginTop: 2 },
 
   // Streak + weekly goal
+  // The flex ratio now lives on the entrance wrappers, so the two cards can
+  // stagger in without the row losing its 1.25 : 1 proportions.
   streakRow: { flexDirection: "row", gap: theme.layout.cardGap, marginBottom: theme.layout.gutter },
+  streakSlotWide: { flex: 1.25 },
+  streakSlot: { flex: 1 },
   weeklyCard: {
-    flex: 1.25,
+    flex: 1,
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
     padding: 14,
@@ -666,6 +814,9 @@ const styles = StyleSheet.create({
   weeklyRingWrap: { alignItems: "center", paddingBottom: theme.spacing.xs },
   weeklyPctBig: { ...theme.text.numeric, fontSize: 24, lineHeight: 30, color: theme.colors.navy },
   weeklyPctSub: { ...theme.text.caption, fontSize: 11, lineHeight: 14, color: theme.colors.textMuted, marginTop: 1 },
+  // Over-goal is stated in words and an icon, never by the ring's color alone.
+  weeklyMetRow: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 1 },
+  weeklyMetText: { ...theme.text.caption, fontSize: 11, lineHeight: 14, color: theme.colors.successDeep, fontFamily: "DMSans_700Bold" },
   streakCard: {
     flex: 1,
     borderRadius: theme.radius.xl,
@@ -703,16 +854,9 @@ const styles = StyleSheet.create({
   },
   chartHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: theme.spacing.md },
   chartTitle: { ...theme.text.eyebrow, color: theme.colors.textMuted },
-  chartGoalKey: { flexDirection: "row", alignItems: "center", gap: 5 },
-  chartGoalSwatch: { width: 12, height: 2, borderRadius: 1, backgroundColor: theme.colors.brandInk, opacity: 0.5 },
-  chartGoalText: { ...theme.text.caption, fontSize: 11, lineHeight: 14, color: theme.colors.brandInk, fontVariant: ["tabular-nums" as const] },
-  chartPlot: { position: "relative" },
-  goalLine: { position: "absolute", left: 0, right: 0, height: 2, borderRadius: 1, backgroundColor: theme.colors.brandInk, opacity: 0.3 },
-  chartRow: { flexDirection: "row", alignItems: "flex-end", gap: 4, height: BAR_MAX_H + 40 },
-  chartBar: { flex: 1, alignItems: "center", justifyContent: "flex-end" },
-  chartBarValue: { ...theme.text.numeric, fontSize: 9, lineHeight: 12, fontFamily: "DMSans_500Medium", color: theme.colors.textMuted, marginBottom: 4 },
-  chartBarLabel: { ...theme.text.caption, fontSize: 10, lineHeight: 14, height: 16, color: theme.colors.textMuted, marginTop: 6, textAlign: "center" },
-  chartBarLabelToday: { color: theme.colors.brandInk, fontFamily: "DMSans_700Bold" },
+  // BarRow lays its bars out at a fixed width from the left; centering the
+  // block keeps the plot optically centred in the card at any screen size.
+  chartPlot: { alignItems: "center" },
 
   // Section heading
   sectionTitle: { ...theme.text.title2, color: theme.colors.navy, marginBottom: 10 },
@@ -771,6 +915,7 @@ const styles = StyleSheet.create({
   },
   moneySavedHeader: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 4 },
   moneySavedLabel: { ...theme.text.eyebrow, color: theme.colors.successDeep },
+  moneySavedRow: { flexDirection: "row", alignItems: "center" },
   moneySavedAmount: { ...theme.text.display, fontSize: 44, lineHeight: 50, color: theme.colors.successDeep },
   moneySavedSub: { ...theme.text.caption, fontSize: 12, color: theme.colors.textMuted, marginTop: 4 },
 
