@@ -10,8 +10,12 @@ export default function TabsLayout() {
       screenOptions={{
         headerStyle: { backgroundColor: theme.colors.navy },
         headerShadowVisible: false,
-        headerTintColor: "#fff",
-        headerTitleStyle: { fontFamily: "DMSerifDisplay_400Regular", fontSize: 20 },
+        headerTintColor: theme.colors.surface,
+        headerTitleStyle: {
+          fontFamily: "DMSerifDisplay_400Regular",
+          fontSize: 20,
+          color: theme.colors.surface,
+        },
       }}
     >
       <Tabs.Screen

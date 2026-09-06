@@ -6,10 +6,15 @@ import { useApiBaseUrl } from '@/src/hooks/useApiBaseUrl';
 import { fetchNearbyStops, fetchDepartures } from '@/src/api/client';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { theme } from '@/src/constants/theme';
-import { Clock, MapPin, Navigation } from 'lucide-react-native';
+import { Clock, Footprints, MapPin, Navigation, Wind, Zap } from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
 import { formatDistance } from '@/src/utils/distance';
+import { Button } from '@/src/components/ui/Button';
+import { EmptyState } from '@/src/components/ui/EmptyState';
+import { FadeInView, Skeleton, TickingCountdown } from '@/src/components/ui/motion';
 
 interface CatchableBus {
   stopId: string;
@@ -26,26 +31,15 @@ interface CatchableBus {
   lateByMins: number;
 }
 
-function formatCountdown(departsEpochMs: number, nowMs: number): string {
-  const diffMs = departsEpochMs - nowMs;
-  if (diffMs <= 0) return '0:00';
-  const totalSecs = Math.floor(diffMs / 1000);
-  const mins = Math.floor(totalSecs / 60);
-  const secs = totalSecs % 60;
-  return `${mins}:${String(secs).padStart(2, '0')}`;
-}
-
-function walkPaceLabel(pace: 'easy' | 'brisk' | 'run'): string {
-  if (pace === 'easy') return 'Easy walk';
-  if (pace === 'brisk') return 'Walk fast';
-  return 'Run!';
-}
-
-function walkPaceColor(pace: 'easy' | 'brisk' | 'run'): string {
-  if (pace === 'easy') return theme.colors.success;
-  if (pace === 'brisk') return theme.colors.warning;
-  return theme.colors.error;
-}
+/**
+ * Pace urgency, never color-only: each chip pairs its AA-deep fill with an
+ * icon and a text label.
+ */
+const PACE_META: Record<'easy' | 'brisk' | 'run', { label: string; color: string; icon: LucideIcon }> = {
+  easy: { label: 'Easy walk', color: theme.colors.successDeep, icon: Footprints },
+  brisk: { label: 'Walk fast', color: theme.colors.warningDeep, icon: Wind },
+  run: { label: 'Run!', color: theme.colors.errorDeep, icon: Zap },
+};
 
 export default function RunningLateScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
@@ -174,71 +168,108 @@ export default function RunningLateScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Running late?</Text>
-        <Text style={styles.headerSubtitle}>Buses you can still catch</Text>
-      </View>
+      {/* Hero header — Illini navy signage */}
+      <LinearGradient
+        colors={theme.gradients.hero}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.header}
+      >
+        <Text style={styles.headerEyebrow}>Live departures near you</Text>
+        <Text style={styles.headerTitle} accessibilityRole="header">Running late?</Text>
+        <Text style={styles.headerSubtitle}>Buses you can still catch, soonest first</Text>
+      </LinearGradient>
 
       {loading && (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={theme.colors.navy} />
+        <View style={styles.skeletonWrap}>
+          {[0, 1, 2].map((i) => (
+            <View key={i} style={styles.skeletonCard}>
+              <View style={styles.skeletonRow}>
+                <Skeleton width={44} height={24} radius={theme.radius.sm} />
+                <Skeleton width={120} height={16} />
+                <View style={{ flex: 1 }} />
+                <Skeleton width={72} height={30} />
+              </View>
+              <Skeleton width={180} height={12} style={{ marginTop: 10 }} />
+              <Skeleton height={44} radius={theme.radius.lg} style={{ marginTop: 12 }} />
+            </View>
+          ))}
           <Text style={styles.loadingText}>Finding nearby buses…</Text>
         </View>
       )}
 
-      {!loading && catchableBuses.length === 0 && (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>
-            No catchable buses right now. Consider walking or calling a ride.
-          </Text>
-        </View>
+      {/* Location denied / unavailable */}
+      {!loading && !location && (
+        <EmptyState
+          icon={MapPin}
+          title="We need your location"
+          subtitle="Allow location access so we can find stops you can still reach in time."
+        />
       )}
 
-      {!loading && catchableBuses.map((bus, i) => (
-        <View key={`${bus.stopId}-${bus.routeId}-${i}`} style={styles.busCard}>
-          {/* Top row: route badge + headsign + countdown */}
-          <View style={styles.busCardTopRow}>
-            <View style={styles.routeBadge}>
-              <Text style={styles.routeBadgeText}>{bus.routeId}</Text>
-            </View>
-            <Text style={styles.headsign} numberOfLines={1}>{bus.headsign}</Text>
-            <Text style={styles.countdown}>
-              {formatCountdown(bus.departsEpochMs, secondsNow)}
-            </Text>
-          </View>
+      {/* Nothing catchable */}
+      {!loading && location != null && catchableBuses.length === 0 && (
+        <EmptyState
+          icon={Clock}
+          title="No catchable buses right now"
+          subtitle="Nothing departs within walking range in the next 8 minutes. Consider walking or calling a ride."
+        />
+      )}
 
-          {/* Stop name + distance */}
-          <View style={styles.stopRow}>
-            <MapPin size={13} color={theme.colors.textMuted} />
-            <Text style={styles.stopName} numberOfLines={1}>
-              {bus.stopName} · {formatDistance(bus.distanceM)} away
-            </Text>
-          </View>
-
-          {/* Walk pace + countdown label */}
-          <View style={styles.paceRow}>
-            <View style={[styles.paceBadge, { backgroundColor: walkPaceColor(bus.walkPaceNeeded) }]}>
-              <Text style={styles.paceBadgeText}>{walkPaceLabel(bus.walkPaceNeeded)}</Text>
-            </View>
-            <View style={styles.countdownLabelRow}>
-              <Clock size={13} color={theme.colors.textMuted} />
-              <Text style={styles.leavesInLabel}>Leaves in</Text>
-            </View>
-          </View>
-
-          {/* Navigate button */}
-          <Pressable
-            style={styles.navigateBtn}
-            onPress={() => onNavigateToStop(bus)}
-            accessibilityLabel={`Navigate to ${bus.stopName}`}
-            accessibilityRole="button"
+      {!loading && catchableBuses.map((bus, i) => {
+        const pace = PACE_META[bus.walkPaceNeeded];
+        const PaceIcon = pace.icon;
+        const isNext = i === 0;
+        return (
+          <FadeInView
+            key={`${bus.stopId}-${bus.routeId}-${i}`}
+            delay={i * 60}
+            style={[styles.busCard, isNext && styles.busCardNext]}
           >
-            <Navigation size={14} color="#fff" />
-            <Text style={styles.navigateBtnText}>Navigate to stop</Text>
-          </Pressable>
-        </View>
-      ))}
+            {/* Top row: route badge + headsign + live countdown */}
+            <View
+              style={styles.busCardTopRow}
+              accessible
+              accessibilityLabel={`Bus ${bus.routeId} toward ${bus.headsign}, leaves in about ${bus.departsInMins} minutes from ${bus.stopName}`}
+            >
+              <View style={styles.routeBadge}>
+                <Text style={styles.routeBadgeText}>{bus.routeId}</Text>
+              </View>
+              <Text style={styles.headsign} numberOfLines={2}>{bus.headsign}</Text>
+              <View style={styles.countdownCol}>
+                <Text style={styles.countdownLabel}>Leaves in</Text>
+                <TickingCountdown
+                  targetMs={bus.departsEpochMs}
+                  nowLabel="Now"
+                  style={isNext ? styles.countdownNext : styles.countdown}
+                />
+              </View>
+            </View>
+
+            {/* Stop name + distance */}
+            <View style={styles.stopRow}>
+              <MapPin size={13} color={theme.colors.textMuted} />
+              <Text style={styles.stopName} numberOfLines={1}>
+                {bus.stopName} · {formatDistance(bus.distanceM)} away
+              </Text>
+            </View>
+
+            {/* Pace chip: icon + text on an AA-deep fill */}
+            <View style={styles.paceRow}>
+              <View
+                style={[styles.paceBadge, { backgroundColor: pace.color }]}
+                accessible
+                accessibilityLabel={`Pace needed: ${pace.label}`}
+              >
+                <PaceIcon size={12} color={theme.colors.surface} strokeWidth={2.4} />
+                <Text style={styles.paceBadgeText}>{pace.label}</Text>
+              </View>
+            </View>
+
+            <Button label="Navigate to stop" accessibilityLabel={`Navigate to ${bus.stopName}`} icon={Navigation} onPress={() => onNavigateToStop(bus)} />
+          </FadeInView>
+        );
+      })}
     </ScrollView>
   );
 }
@@ -252,141 +283,140 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   header: {
-    backgroundColor: theme.colors.navy,
-    paddingHorizontal: theme.spacing.lg,
+    paddingHorizontal: theme.layout.gutter,
     paddingTop: theme.spacing.xl,
     paddingBottom: theme.spacing.lg,
   },
+  headerEyebrow: {
+    ...theme.text.eyebrow,
+    color: theme.colors.textOnNavyMuted,
+    marginBottom: 6,
+  },
   headerTitle: {
-    fontFamily: 'DMSerifDisplay_400Regular',
-    fontSize: 22,
-    color: '#fff',
+    ...theme.text.title1,
+    color: theme.colors.textOnNavy,
     marginBottom: 4,
   },
   headerSubtitle: {
-    fontFamily: 'DMSans_400Regular',
+    ...theme.text.body,
     fontSize: 14,
-    color: 'rgba(255,255,255,0.75)',
+    color: theme.colors.textOnNavyMuted,
   },
-  loadingContainer: {
+
+  // Loading skeletons — departure-board rows shimmer in
+  skeletonWrap: {
+    paddingTop: theme.layout.cardGap,
+  },
+  skeletonCard: {
+    backgroundColor: theme.colors.surface,
+    marginHorizontal: theme.layout.gutter,
+    marginBottom: theme.layout.cardGap,
+    borderRadius: theme.radius.xl,
+    padding: theme.layout.gutter,
+    borderLeftWidth: 3,
+    borderLeftColor: theme.colors.borderSoft,
+    ...theme.elevation[1],
+  },
+  skeletonRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: 48,
-    gap: 12,
+    gap: 8,
   },
   loadingText: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 15,
-    color: theme.colors.textSecondary,
-  },
-  emptyContainer: {
-    padding: theme.spacing.lg,
-    marginTop: theme.spacing.lg,
-    backgroundColor: theme.colors.surface,
-    marginHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  emptyText: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 15,
-    color: theme.colors.textSecondary,
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
     textAlign: 'center',
-    lineHeight: 22,
+    marginTop: 4,
   },
+
+  // Bus cards — hierarchy by time-to-leave: the soonest card leads
   busCard: {
     backgroundColor: theme.colors.surface,
-    marginHorizontal: theme.spacing.lg,
-    marginTop: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    marginHorizontal: theme.layout.gutter,
+    marginTop: theme.layout.cardGap,
+    borderRadius: theme.radius.xl,
     borderLeftWidth: 3,
     borderLeftColor: theme.colors.orange,
-    padding: theme.spacing.md,
+    padding: theme.layout.gutter,
+    ...theme.elevation[1],
+  },
+  busCardNext: {
+    borderLeftWidth: 4,
+    ...theme.elevation[2],
   },
   busCardTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
+    gap: 10,
+    marginBottom: 10,
   },
   routeBadge: {
     backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.xs,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    minWidth: 36,
+    borderRadius: theme.radius.sm,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    minWidth: 40,
     alignItems: 'center',
   },
   routeBadgeText: {
-    fontFamily: 'DMSans_700Bold',
-    fontSize: 12,
-    color: '#fff',
+    ...theme.text.badge,
+    color: theme.colors.surface,
+    fontVariant: ['tabular-nums'],
   },
   headsign: {
-    fontFamily: 'DMSans_500Medium',
+    ...theme.text.subhead,
     fontSize: 14,
     color: theme.colors.navy,
     flex: 1,
   },
+  countdownCol: {
+    alignItems: 'flex-end',
+  },
+  countdownLabel: {
+    ...theme.text.eyebrow,
+    fontSize: 10,
+    color: theme.colors.textMuted,
+    marginBottom: 1,
+  },
   countdown: {
-    fontFamily: 'DMSans_700Bold',
+    ...theme.text.display,
     fontSize: 24,
-    color: theme.colors.orange,
-    letterSpacing: -0.5,
+    lineHeight: 28,
+    color: theme.colors.brandInk,
+  },
+  countdownNext: {
+    ...theme.text.display,
+    fontSize: 34,
+    lineHeight: 38,
+    color: theme.colors.brandInk,
   },
   stopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    marginBottom: 8,
+    marginBottom: 10,
   },
   stopName: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 13,
+    ...theme.text.caption,
     color: theme.colors.textMuted,
     flex: 1,
   },
   paceRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: theme.layout.cardGap,
   },
   paceBadge: {
-    borderRadius: theme.radius.xs,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  paceBadgeText: {
-    fontFamily: 'DMSans_700Bold',
-    fontSize: 11,
-    color: '#fff',
-  },
-  countdownLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
   },
-  leavesInLabel: {
-    fontFamily: 'DMSans_400Regular',
-    fontSize: 12,
-    color: theme.colors.textMuted,
-  },
-  navigateBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: theme.colors.navy,
-    borderRadius: theme.radius.sm,
-    paddingVertical: 9,
-    paddingHorizontal: 16,
-  },
-  navigateBtnText: {
-    fontFamily: 'DMSans_600SemiBold',
-    fontSize: 14,
-    color: '#fff',
+  paceBadgeText: {
+    ...theme.text.badge,
+    fontSize: 11,
+    color: theme.colors.surface,
   },
 });

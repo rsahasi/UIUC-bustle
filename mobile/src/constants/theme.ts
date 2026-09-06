@@ -1,13 +1,19 @@
 /**
- * UIUC Bustle — Design system v2: UIUC brand colors amped up with gradients,
- * glow shadows, vibrant supporting accents, and motion-friendly tokens.
- * DM Sans/Serif fonts, tight spacing.
+ * UIUC Bustle — Design system v2: "Illini transit signage, alive."
+ * Illini navy ground, orange as the signal color, warm white surfaces,
+ * DM Serif Display for display type, DM Sans for UI, tabular numerals
+ * for anything that ticks. All values here are AA-audited: textMuted
+ * passes 4.5:1 on white, textOnNavyMuted passes 4.5:1 on navy, brandInk
+ * is the orange for TEXT/ICONS on light surfaces, and ctaEnd is the dark
+ * gradient stop that keeps white CTA labels readable.
  */
 export const theme = {
   colors: {
-    orange: "#E84A27",       // CTAs, active tab, Live badges, route accents
+    orange: "#E84A27",       // brand signal — fills, accents, route lines (NOT text on white)
     orangeBright: "#FF6B3D", // gradient partner / pressed states / glows
     orangeSoft: "#FFF0EA",   // tinted backgrounds behind orange content
+    brandInk: "#B03114",     // orange for TEXT & ICONS on light surfaces (>=4.5:1 on white)
+    ctaEnd: "#C73B1D",       // dark stop for CTA gradients so white labels pass AA
     navy: "#13294B",         // headers, text, tab bar background
     navyLight: "#1D3D6F",    // secondary backgrounds
     navyDeep: "#0B1B36",     // hero gradient base, tab bar
@@ -18,15 +24,26 @@ export const theme = {
     borderSoft: "#EAEDF2",   // even quieter dividers
     text: "#0F1923",
     textSecondary: "#4B5563",
-    textMuted: "#9CA3AF",
+    textMuted: "#5A6779",    // AA muted — 4.5:1+ on white; use for captions/eyebrows
     textOnNavy: "rgba(255,255,255,0.92)",
-    textOnNavyMuted: "rgba(255,255,255,0.6)",
+    textOnNavyMuted: "rgba(255,255,255,0.72)", // AA muted on navy ground
     success: "#16A34A",
+    successDeep: "#15803D",  // success as TEXT on light surfaces
     successSoft: "#E8F8EE",
     warning: "#D97706",
+    warningDeep: "#92400E",  // warning as TEXT on light surfaces
     warningSoft: "#FEF4E6",
     error: "#DC2626",
+    errorDeep: "#B91C1C",    // destructive fills / error TEXT — white label passes AA
     errorSoft: "#FDEDED",
+    // Crowding scale — AA-safe as text/border color on white, always pair with glyph+label
+    crowd: {
+      1: "#1E7B3F",          // Empty
+      2: "#8A5A0B",          // Some seats
+      3: "#B03114",          // Standing
+      4: "#B42318",          // Full
+      estimated: "#5A6779",  // No data / estimated
+    },
     // Vibrant supporting accents — sparks of color for charts, rings, chips
     sky: "#38BDF8",
     gold: "#FBBF24",
@@ -44,7 +61,7 @@ export const theme = {
   /** Gradient color stops — use with expo-linear-gradient. */
   gradients: {
     hero: ["#0B1B36", "#13294B", "#1D3D6F"] as const,        // deep navy hero headers
-    sunset: ["#FF6B3D", "#E84A27"] as const,                 // primary CTA / FAB
+    sunset: ["#FF6B3D", "#C73B1D"] as const,                 // primary CTA / FAB — ends on ctaEnd for AA white labels
     sunrise: ["#FF8A5C", "#E84A27", "#C73B1D"] as const,     // big hero CTAs
     ember: ["#1D3D6F", "#13294B"] as const,                  // dark cards
     glowCard: ["#FFFFFF", "#FFF7F4"] as const,               // warm-tinted highlight card
@@ -58,6 +75,13 @@ export const theme = {
     lg: 20,
     xl: 28,
     xxl: 40,
+  },
+  /** Shared layout rhythm — spread/read these instead of magic numbers. */
+  layout: {
+    gutter: 16,
+    tapMin: 44,
+    cardGap: 12,
+    sectionGap: 28,
   },
   radius: {
     xs: 3,
@@ -106,6 +130,40 @@ export const theme = {
       elevation: 5,
     },
   },
+  /**
+   * Numeric elevation ramp 0..3 — ready-to-spread shadow objects.
+   * 0 = flat, 1 = resting card, 2 = raised card, 3 = floating/overlay.
+   */
+  elevation: {
+    0: {
+      shadowColor: "transparent",
+      shadowOffset: { width: 0, height: 0 },
+      shadowOpacity: 0,
+      shadowRadius: 0,
+      elevation: 0,
+    },
+    1: {
+      shadowColor: "#13294B",
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 3,
+      elevation: 1,
+    },
+    2: {
+      shadowColor: "#13294B",
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.1,
+      shadowRadius: 10,
+      elevation: 3,
+    },
+    3: {
+      shadowColor: "#0B1B36",
+      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: 0.16,
+      shadowRadius: 24,
+      elevation: 8,
+    },
+  },
   /** Motion durations/spring configs shared across animated components. */
   motion: {
     fast: 160,
@@ -113,6 +171,67 @@ export const theme = {
     slow: 450,
     spring: { damping: 16, stiffness: 220, mass: 0.7 },
     springBouncy: { damping: 12, stiffness: 180, mass: 0.8 },
+  },
+  /**
+   * Type roles — spread one of these instead of hand-rolling sizes.
+   * `numeric` and `display` carry tabular-nums so digits align while ticking.
+   */
+  text: {
+    display: {
+      fontFamily: "DMSerifDisplay_400Regular",
+      fontSize: 34,
+      lineHeight: 40,
+      fontVariant: ["tabular-nums" as const],
+    },
+    title1: {
+      fontFamily: "DMSerifDisplay_400Regular",
+      fontSize: 28,
+      lineHeight: 34,
+    },
+    title2: {
+      fontFamily: "DMSerifDisplay_400Regular",
+      fontSize: 22,
+      lineHeight: 28,
+    },
+    heading: {
+      fontFamily: "DMSans_600SemiBold",
+      fontSize: 17,
+      lineHeight: 24,
+    },
+    subhead: {
+      fontFamily: "DMSans_600SemiBold",
+      fontSize: 15,
+      lineHeight: 20,
+    },
+    body: {
+      fontFamily: "DMSans_400Regular",
+      fontSize: 15,
+      lineHeight: 22,
+    },
+    caption: {
+      fontFamily: "DMSans_400Regular",
+      fontSize: 13,
+      lineHeight: 18,
+    },
+    eyebrow: {
+      fontFamily: "DMSans_600SemiBold",
+      fontSize: 11,
+      lineHeight: 14,
+      letterSpacing: 1.1,
+      textTransform: "uppercase" as const,
+    },
+    badge: {
+      fontFamily: "DMSans_600SemiBold",
+      fontSize: 12,
+      lineHeight: 16,
+      letterSpacing: 0.3,
+    },
+    numeric: {
+      fontFamily: "DMSans_600SemiBold",
+      fontSize: 15,
+      lineHeight: 20,
+      fontVariant: ["tabular-nums" as const],
+    },
   },
   typography: {
     heroTitle:    { fontFamily: "DMSerifDisplay_400Regular", fontSize: 34, lineHeight: 40 },

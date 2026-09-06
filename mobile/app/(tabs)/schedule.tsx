@@ -10,9 +10,10 @@ import type { AutocompleteResult } from "@/src/api/client";
 import type { Building, ScheduleClass } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { theme } from "@/src/constants/theme";
-import { FadeInView, PressableScale } from "@/src/components/ui/motion";
+import { FadeInView, PressableScale, Skeleton } from "@/src/components/ui/motion";
+import { EmptyState } from "@/src/components/ui/EmptyState";
 import { LinearGradient } from "expo-linear-gradient";
-import { Bell, BellOff, CalendarDays, Pencil, Trash2 } from "lucide-react-native";
+import { Bell, BellOff, CalendarDays, Clock, MapPin, Pencil, Plus, Trash2 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
@@ -20,7 +21,6 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
-  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -34,6 +34,9 @@ import { usePlacesAutocomplete } from "@/src/queries/places";
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_LABELS: Record<string, string> = {
   MON: "Mon", TUE: "Tue", WED: "Wed", THU: "Thu", FRI: "Fri", SAT: "Sat", SUN: "Sun",
+};
+const DAY_FULL: Record<string, string> = {
+  MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday",
 };
 
 function getLeaveByTime(startTime: string, departInMins: number): string {
@@ -60,9 +63,10 @@ function getTransitStatus(startTime: string, departInMins: number): { main: stri
   const classMins = h * 60 + m;
   const leaveByMins = classMins - Math.round(departInMins);
   const minsUntilLeave = leaveByMins - nowMins;
-  if (minsUntilLeave > 15) return { main: theme.colors.success, soft: theme.colors.successSoft };
-  if (minsUntilLeave > 5) return { main: theme.colors.warning, soft: theme.colors.warningSoft };
-  return { main: theme.colors.error, soft: theme.colors.errorSoft };
+  // Deep status tokens — AA-safe as text on the soft tints (and fine as accent fills).
+  if (minsUntilLeave > 15) return { main: theme.colors.successDeep, soft: theme.colors.successSoft };
+  if (minsUntilLeave > 5) return { main: theme.colors.warningDeep, soft: theme.colors.warningSoft };
+  return { main: theme.colors.errorDeep, soft: theme.colors.errorSoft };
 }
 
 export default function ScheduleScreen() {
@@ -414,10 +418,15 @@ export default function ScheduleScreen() {
     return (a.start_time_local ?? "").localeCompare(b.start_time_local ?? "");
   });
 
+  // Render-only: which day-of-week is today (JS getDay(): 0 = Sunday).
+  const todayKey = DAYS[(new Date().getDay() + 6) % 7];
+
   if (isLoading) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={theme.colors.navy} />
+      <View style={styles.loadingWrap}>
+        <Skeleton height={116} radius={theme.radius.xl} />
+        <Skeleton height={116} radius={theme.radius.xl} />
+        <Skeleton height={116} radius={theme.radius.xl} />
       </View>
     );
   }
@@ -443,14 +452,17 @@ export default function ScheduleScreen() {
                 <Text style={styles.modalCancel}>Cancel</Text>
               </PressableScale>
               <Text style={styles.modalTitle}>{editingClass ? "Edit Class" : "Add Class"}</Text>
-              <View style={{ width: 60 }} />
+              <View style={styles.modalHeaderSpacer} />
             </View>
-            <View style={styles.formCard}><View style={styles.form}>
+            <View style={styles.formCard}>
               {editingClass && (
                 <View style={styles.editingBanner}>
-                  <Text style={styles.editingBannerText}>Editing: {editingClass.title}</Text>
+                  <Pencil size={14} color={theme.colors.textOnNavy} strokeWidth={2.2} />
+                  <Text style={styles.editingBannerText} numberOfLines={1}>Editing: {editingClass.title}</Text>
                 </View>
               )}
+
+              <Text style={styles.sectionEyebrow}>Class details</Text>
               <Text style={styles.label}>Title</Text>
               <TextInput
                 style={styles.input}
@@ -460,37 +472,55 @@ export default function ScheduleScreen() {
                 placeholder="e.g. CS 101"
                 placeholderTextColor={theme.colors.textMuted}
               />
+
+              <View style={styles.sectionDivider} />
+              <Text style={styles.sectionEyebrow}>Schedule</Text>
               <Text style={styles.label}>Days</Text>
               <View style={styles.dayRow}>
-                {DAYS.map((d) => (
-                  <PressableScale
-                    key={d}
-                    scaleTo={0.88}
-                    style={[styles.dayBtn, days.includes(d) && styles.dayBtnOn]}
-                    onPress={() => toggleDay(d)}
-                  >
-                    <Text style={[styles.dayText, days.includes(d) && styles.dayTextOn]}>{d.slice(0, 1)}</Text>
-                  </PressableScale>
-                ))}
+                {DAYS.map((d) => {
+                  const on = days.includes(d);
+                  return (
+                    <PressableScale
+                      key={d}
+                      scaleTo={0.88}
+                      style={[styles.dayBtn, on && styles.dayBtnOn]}
+                      onPress={() => toggleDay(d)}
+                      accessibilityRole="button"
+                      accessibilityLabel={DAY_FULL[d]}
+                      accessibilityState={{ selected: on }}
+                    >
+                      <Text style={[styles.dayText, on && styles.dayTextOn]}>{DAY_LABELS[d]}</Text>
+                    </PressableScale>
+                  );
+                })}
               </View>
-              <Text style={styles.label}>Start time (HH:MM)</Text>
-              <TextInput
-                style={styles.input}
-                value={time}
-                onChangeText={setTime}
-                placeholder="09:00"
-                placeholderTextColor={theme.colors.textMuted}
-                keyboardType="numbers-and-punctuation"
-              />
-              <Text style={styles.label}>End time (HH:MM, optional)</Text>
-              <TextInput
-                style={styles.input}
-                value={endTime}
-                onChangeText={setEndTime}
-                placeholder="10:15"
-                placeholderTextColor={theme.colors.textMuted}
-                keyboardType="numbers-and-punctuation"
-              />
+              <View style={styles.timeRow}>
+                <View style={styles.timeCol}>
+                  <Text style={styles.label}>Start time (HH:MM)</Text>
+                  <TextInput
+                    style={[styles.input, styles.timeInput]}
+                    value={time}
+                    onChangeText={setTime}
+                    placeholder="09:00"
+                    placeholderTextColor={theme.colors.textMuted}
+                    keyboardType="numbers-and-punctuation"
+                  />
+                </View>
+                <View style={styles.timeCol}>
+                  <Text style={styles.label}>End time (optional)</Text>
+                  <TextInput
+                    style={[styles.input, styles.timeInput]}
+                    value={endTime}
+                    onChangeText={setEndTime}
+                    placeholder="10:15"
+                    placeholderTextColor={theme.colors.textMuted}
+                    keyboardType="numbers-and-punctuation"
+                  />
+                </View>
+              </View>
+
+              <View style={styles.sectionDivider} />
+              <Text style={styles.sectionEyebrow}>Location</Text>
               <Text style={styles.label}>Class location (address or place)</Text>
               <TextInput
                 style={styles.input}
@@ -500,14 +530,18 @@ export default function ScheduleScreen() {
                 placeholderTextColor={theme.colors.textMuted}
                 autoCorrect={false}
               />
-              {locationSearching && <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginTop: 6 }} />}
+              {locationSearching && <ActivityIndicator size="small" color={theme.colors.navy} style={styles.locationSpinner} />}
               {locationSuggestions.length > 0 && (
                 <View style={styles.suggestionList}>
                   {locationSuggestions.map((item, i) => (
-                    <Pressable
+                    <PressableScale
                       key={`${item.type}-${item.place_id ?? item.building_id}-${i}`}
+                      scaleTo={0.98}
+                      haptic={false}
                       style={[styles.suggestionItem, i < locationSuggestions.length - 1 && styles.suggestionSep]}
                       onPress={() => onSelectLocationSuggestion(item)}
+                      accessibilityRole="button"
+                      accessibilityLabel={item.display_name || item.name}
                     >
                       <Text style={styles.suggestionName} numberOfLines={1}>
                         {item.name}
@@ -517,7 +551,7 @@ export default function ScheduleScreen() {
                           {item.secondary_text ?? item.display_name}
                         </Text>
                       ) : null}
-                    </Pressable>
+                    </PressableScale>
                   ))}
                 </View>
               )}
@@ -525,11 +559,15 @@ export default function ScheduleScreen() {
               {locationDisplay != null && (
                 <Text style={styles.locationConfirmed}>✓ {locationDisplay}</Text>
               )}
+
               <PressableScale
                 scaleTo={0.97}
                 style={[styles.submitBtn, submitting && styles.submitDisabled]}
                 onPress={submit}
                 disabled={submitting}
+                accessibilityRole="button"
+                accessibilityLabel={editingClass ? "Save class" : "Add class"}
+                accessibilityState={{ disabled: submitting, busy: submitting }}
               >
                 <LinearGradient
                   colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
@@ -537,10 +575,10 @@ export default function ScheduleScreen() {
                   end={{ x: 1, y: 1 }}
                   style={styles.submitGradient}
                 >
-                  {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{editingClass ? "Save" : "Add class"}</Text>}
+                  {submitting ? <ActivityIndicator color={theme.colors.surface} /> : <Text style={styles.submitText}>{editingClass ? "Save" : "Add class"}</Text>}
                 </LinearGradient>
               </PressableScale>
-            </View></View>
+            </View>
           </ScrollView>
         </View>
       </Modal>
@@ -565,6 +603,9 @@ export default function ScheduleScreen() {
           scaleTo={0.92}
           style={[styles.viewToggleBtn, viewMode === "list" && styles.viewToggleBtnActive]}
           onPress={() => setViewMode("list")}
+          accessibilityRole="button"
+          accessibilityLabel="List view"
+          accessibilityState={{ selected: viewMode === "list" }}
         >
           <Text style={[styles.viewToggleText, viewMode === "list" && styles.viewToggleTextActive]}>List</Text>
         </PressableScale>
@@ -572,43 +613,69 @@ export default function ScheduleScreen() {
           scaleTo={0.92}
           style={[styles.viewToggleBtn, viewMode === "week" && styles.viewToggleBtnActive]}
           onPress={() => setViewMode("week")}
+          accessibilityRole="button"
+          accessibilityLabel="Week view"
+          accessibilityState={{ selected: viewMode === "week" }}
         >
           <Text style={[styles.viewToggleText, viewMode === "week" && styles.viewToggleTextActive]}>Week</Text>
         </PressableScale>
       </View>
 
       {viewMode === "week" && (
-        <View style={styles.weekStrip}>
-          {DAYS.map((d) => (
-            <PressableScale
-              key={d}
-              scaleTo={0.92}
-              style={[styles.weekDayBtn, selectedWeekDay === d && styles.weekDayBtnActive]}
-              onPress={() => setSelectedWeekDay(selectedWeekDay === d ? null : d)}
-            >
-              <Text style={[styles.weekDayText, selectedWeekDay === d && styles.weekDayTextActive]}>
-                {DAY_LABELS[d]}
-              </Text>
-            </PressableScale>
-          ))}
+        <View style={styles.weekGrid}>
+          {DAYS.map((d) => {
+            const isToday = d === todayKey;
+            const isSelected = selectedWeekDay === d;
+            return (
+              <View key={d} style={styles.weekCell}>
+                <PressableScale
+                  scaleTo={0.92}
+                  style={[
+                    styles.weekDayBtn,
+                    isToday && styles.weekDayBtnToday,
+                    isSelected && styles.weekDayBtnActive,
+                  ]}
+                  onPress={() => setSelectedWeekDay(selectedWeekDay === d ? null : d)}
+                  accessibilityRole="button"
+                  accessibilityLabel={isToday ? `${DAY_FULL[d]}, today` : DAY_FULL[d]}
+                  accessibilityState={{ selected: isSelected }}
+                >
+                  <Text style={[styles.weekDayText, isSelected && styles.weekDayTextActive]}>
+                    {DAY_LABELS[d]}
+                  </Text>
+                  {isToday && (
+                    <Text style={[styles.weekTodayLabel, isSelected && styles.weekTodayLabelActive]}>Today</Text>
+                  )}
+                </PressableScale>
+              </View>
+            );
+          })}
         </View>
       )}
 
       <Text style={styles.listTitle}>Your classes</Text>
       {filteredClasses.length === 0 ? (
-        <FadeInView>
-          <View style={styles.emptyCard}>
-            <Text style={styles.empty}>
-              {viewMode === "week" && selectedWeekDay
-                ? `No classes on ${DAY_LABELS[selectedWeekDay]}.`
-                : "No classes yet. Tap + to add your first class."}
-            </Text>
-          </View>
-        </FadeInView>
+        <View style={styles.emptyCard}>
+          {viewMode === "week" && selectedWeekDay ? (
+            <EmptyState
+              icon={CalendarDays}
+              title={`No classes on ${DAY_LABELS[selectedWeekDay]}`}
+              subtitle="Pick another day, or add a class to fill it in."
+            />
+          ) : (
+            <EmptyState
+              icon={CalendarDays}
+              title="No classes yet"
+              subtitle="Add your first class and Bustle will tell you when to leave."
+              action={{ label: "Add a class", onPress: () => setShowForm(true) }}
+            />
+          )}
+        </View>
       ) : (
         filteredClasses.map((c, index) => {
           const route = classRouteDatas[c.class_id];
           const status = route != null ? getTransitStatus(c.start_time_local, route.bestDepartInMinutes) : null;
+          const muted = disabledNotifIds.includes(c.class_id);
           return (
             <FadeInView key={c.class_id} delay={index * 60}>
               <View style={styles.card}>
@@ -621,7 +688,8 @@ export default function ScheduleScreen() {
                         scaleTo={0.85}
                         style={styles.iconBtn}
                         hitSlop={4}
-                        accessibilityLabel={disabledNotifIds.includes(c.class_id) ? `Unmute notifications for ${c.title}` : `Mute notifications for ${c.title}`}
+                        accessibilityRole="button"
+                        accessibilityLabel={muted ? `Unmute notifications for ${c.title}` : `Mute notifications for ${c.title}`}
                         onPress={async () => {
                           if (disabledNotifIds.includes(c.class_id)) {
                             await enableClassNotif(c.class_id);
@@ -632,7 +700,7 @@ export default function ScheduleScreen() {
                           setDisabledNotifIds(await getDisabledClassIds());
                         }}
                       >
-                        {disabledNotifIds.includes(c.class_id)
+                        {muted
                           ? <BellOff size={18} color={theme.colors.textMuted} />
                           : <Bell size={18} color={theme.colors.navy} />}
                       </PressableScale>
@@ -641,6 +709,7 @@ export default function ScheduleScreen() {
                         style={styles.iconBtn}
                         hitSlop={4}
                         onPress={() => onEditClass(c)}
+                        accessibilityRole="button"
                         accessibilityLabel={`Edit ${c.title}`}
                       >
                         <Pencil size={18} color={theme.colors.navy} />
@@ -650,22 +719,42 @@ export default function ScheduleScreen() {
                         style={styles.iconBtn}
                         hitSlop={4}
                         onPress={() => onDeleteClass(c)}
+                        accessibilityRole="button"
                         accessibilityLabel={`Delete ${c.title}`}
                       >
-                        <Trash2 size={18} color={theme.colors.error} />
+                        <Trash2 size={18} color={theme.colors.errorDeep} />
                       </PressableScale>
                     </View>
                   </View>
-                  <Text style={styles.classMeta}>
-                    {c.days_of_week.join(", ")} · {to12h(c.start_time_local)}
-                    {c.end_time_local ? `–${to12h(c.end_time_local)}` : ""} · {classLocationLabel(c)}
+
+                  <View style={styles.dayPillRow}>
+                    {c.days_of_week.map((d) => (
+                      <View key={d} style={[styles.dayPillStatic, d === todayKey && styles.dayPillStaticToday]}>
+                        <Text style={[styles.dayPillStaticText, d === todayKey && styles.dayPillStaticTextToday]}>
+                          {DAY_LABELS[d]}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+
+                  <Text style={styles.timeRange}>
+                    {to12h(c.start_time_local)}
+                    {c.end_time_local ? ` – ${to12h(c.end_time_local)}` : ""}
                   </Text>
-                  {disabledNotifIds.includes(c.class_id) && (
-                    <Text style={styles.notifMutedLabel}>Notifications muted</Text>
+                  <View style={styles.buildingRow}>
+                    <MapPin size={13} color={theme.colors.textMuted} strokeWidth={2.2} />
+                    <Text style={styles.buildingText} numberOfLines={1}>{classLocationLabel(c)}</Text>
+                  </View>
+
+                  {muted && (
+                    <View style={styles.mutedRow}>
+                      <BellOff size={12} color={theme.colors.textMuted} strokeWidth={2.2} />
+                      <Text style={styles.notifMutedLabel}>Notifications muted</Text>
+                    </View>
                   )}
                   {route != null && status != null && (
                     <View style={[styles.leavePill, { backgroundColor: status.soft }]}>
-                      <View style={[styles.leaveDot, { backgroundColor: status.main }]} />
+                      <Clock size={13} color={status.main} strokeWidth={2.4} />
                       <Text style={[styles.leavePillText, { color: status.main }]}>
                         Leave by {getLeaveByTime(c.start_time_local, route.bestDepartInMinutes)}
                       </Text>
@@ -677,8 +766,14 @@ export default function ScheduleScreen() {
           );
         })
       )}
-      <PressableScale scaleTo={0.96} style={styles.planWeekBtn} onPress={() => router.push('/after-class-planner')}>
-        <CalendarDays size={15} color={theme.colors.orange} />
+      <PressableScale
+        scaleTo={0.96}
+        style={styles.planWeekBtn}
+        onPress={() => router.push('/after-class-planner')}
+        accessibilityRole="button"
+        accessibilityLabel="Plan my evening"
+      >
+        <CalendarDays size={16} color={theme.colors.brandInk} />
         <Text style={styles.planWeekBtnText}>Plan my evening →</Text>
       </PressableScale>
     </ScrollView>
@@ -698,7 +793,7 @@ export default function ScheduleScreen() {
             end={{ x: 1, y: 1 }}
             style={StyleSheet.absoluteFill}
           />
-          <Text style={styles.fabText}>+</Text>
+          <Plus size={26} color={theme.colors.surface} strokeWidth={2.4} />
         </PressableScale>
       </View>
     </View>
@@ -707,22 +802,26 @@ export default function ScheduleScreen() {
 
 const styles = StyleSheet.create({
   screenWrapper: { flex: 1, backgroundColor: theme.colors.surfaceAlt },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surfaceAlt },
-  container: { padding: 16, paddingBottom: 100 },
+  loadingWrap: {
+    flex: 1,
+    backgroundColor: theme.colors.surfaceAlt,
+    padding: theme.layout.gutter,
+    gap: theme.layout.cardGap,
+  },
+  container: { padding: theme.layout.gutter, paddingBottom: 100 },
 
   // FAB
   fabWrap: { position: "absolute", bottom: 24, right: 20 },
   fab: {
-    width: 56,
-    height: 56,
+    width: 58,
+    height: 58,
     borderRadius: theme.radius.pill,
     overflow: "hidden",
-    backgroundColor: theme.colors.orange,
+    backgroundColor: theme.colors.ctaEnd,
     alignItems: "center",
     justifyContent: "center",
-    ...theme.shadows.glowOrange,
+    ...theme.elevation[3],
   },
-  fabText: { fontSize: 30, color: "#fff", lineHeight: 34, fontFamily: "DMSans_400Regular", marginTop: -2 },
 
   // Modal
   modalRoot: {
@@ -732,31 +831,39 @@ const styles = StyleSheet.create({
     borderTopRightRadius: theme.radius.xxl,
     overflow: "hidden",
   },
-  modalContainer: { padding: 16, paddingBottom: 40 },
+  modalContainer: { padding: theme.layout.gutter, paddingBottom: 40 },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 14,
-    marginBottom: 8,
+    paddingVertical: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
   },
-  modalTitle: { fontSize: 24, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy },
-  modalCancelBtn: { width: 60 },
-  modalCancel: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange },
+  modalTitle: { ...theme.text.title2, color: theme.colors.navy },
+  modalCancelBtn: { width: 60, minHeight: theme.layout.tapMin, justifyContent: "center" },
+  modalHeaderSpacer: { width: 60 },
+  modalCancel: { ...theme.text.subhead, fontSize: 16, color: theme.colors.brandInk },
   formCard: {
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
-    marginBottom: 16,
+    marginBottom: theme.layout.gutter,
     padding: 18,
-    ...theme.shadows.md,
+    ...theme.elevation[2],
   },
-  form: { marginBottom: 0 },
-  label: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.text, marginTop: 14, marginBottom: 6 },
+  sectionEyebrow: { ...theme.text.eyebrow, color: theme.colors.textMuted },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: theme.colors.borderSoft,
+    marginTop: theme.spacing.lg,
+    marginBottom: theme.spacing.lg,
+  },
+  label: { ...theme.text.subhead, fontSize: 14, color: theme.colors.text, marginTop: theme.spacing.md, marginBottom: theme.spacing.sm },
   input: {
     backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
     borderRadius: theme.radius.lg,
+    minHeight: 48,
     paddingVertical: 12,
     paddingHorizontal: 14,
     fontSize: 16,
@@ -764,108 +871,130 @@ const styles = StyleSheet.create({
     fontFamily: "DMSans_400Regular",
   },
 
-  // Modal day selector chips
-  dayRow: { flexDirection: "row", gap: 8, marginTop: 4 },
+  // Time fields — departure-board digits
+  timeRow: { flexDirection: "row", gap: theme.layout.cardGap },
+  timeCol: { flex: 1 },
+  timeInput: {
+    fontFamily: "DMSans_600SemiBold",
+    fontVariant: ["tabular-nums"],
+    fontSize: 17,
+    letterSpacing: 0.5,
+    textAlign: "center",
+  },
+
+  // Modal day selector chips — springy multi-select pills
+  dayRow: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing.sm, marginTop: theme.spacing.xs },
   dayBtn: {
-    width: 38,
-    height: 38,
+    minWidth: theme.layout.tapMin,
+    height: theme.layout.tapMin,
+    paddingHorizontal: 10,
     borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.orangeSoft,
     justifyContent: "center",
     alignItems: "center",
   },
-  dayBtnOn: { backgroundColor: theme.colors.orange, ...theme.shadows.glowOrange, shadowOpacity: 0.25 },
-  dayText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange },
-  dayTextOn: { color: "#fff" },
+  dayBtnOn: { backgroundColor: theme.colors.ctaEnd, ...theme.shadows.glowOrange, shadowOpacity: 0.25 },
+  dayText: { ...theme.text.badge, fontSize: 13, color: theme.colors.brandInk },
+  dayTextOn: { color: theme.colors.surface },
 
-  locationError: { color: theme.colors.error, fontSize: 14, fontFamily: "DMSans_400Regular", marginTop: 8 },
-  locationConfirmed: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.success, marginTop: 10 },
+  locationSpinner: { marginTop: theme.spacing.sm, alignSelf: "flex-start" },
+  locationError: { ...theme.text.body, fontSize: 14, color: theme.colors.errorDeep, marginTop: theme.spacing.sm },
+  locationConfirmed: { ...theme.text.subhead, fontSize: 14, color: theme.colors.successDeep, marginTop: theme.spacing.md },
   suggestionList: {
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
     borderRadius: theme.radius.lg,
-    marginTop: 8,
+    marginTop: theme.spacing.sm,
     backgroundColor: theme.colors.surface,
     overflow: "hidden",
-    ...theme.shadows.sm,
+    ...theme.elevation[1],
   },
-  suggestionItem: { paddingVertical: 11, paddingHorizontal: 14 },
+  suggestionItem: {
+    minHeight: theme.layout.tapMin,
+    justifyContent: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
   suggestionSep: { borderBottomWidth: 1, borderBottomColor: theme.colors.borderSoft },
-  suggestionName: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
-  suggestionSub: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 2 },
+  suggestionName: { ...theme.text.subhead, color: theme.colors.text },
+  suggestionSub: { ...theme.text.caption, color: theme.colors.textSecondary, marginTop: 2 },
 
-  // Submit CTA
+  // Submit CTA — white label rides the gradient's darker ctaEnd stop
   submitBtn: {
     borderRadius: theme.radius.lg,
     overflow: "hidden",
-    marginTop: 20,
+    marginTop: theme.spacing.xl,
+    minHeight: 52,
     ...theme.shadows.glowOrange,
   },
-  submitGradient: { paddingVertical: 15, alignItems: "center", justifyContent: "center" },
+  submitGradient: { minHeight: 52, paddingVertical: 14, alignItems: "center", justifyContent: "center" },
   submitDisabled: { opacity: 0.6 },
-  submitText: { color: "#fff", fontFamily: "DMSans_700Bold", fontSize: 16, letterSpacing: 0.2 },
+  submitText: { color: theme.colors.surface, fontFamily: "DMSans_700Bold", fontSize: 16, letterSpacing: 0.2 },
 
   // Editing banner
   editingBanner: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    gap: theme.spacing.sm,
     backgroundColor: theme.colors.navy,
     borderRadius: theme.radius.lg,
     paddingVertical: 10,
     paddingHorizontal: 14,
-    marginBottom: 8,
+    marginBottom: theme.spacing.md,
   },
-  editingBannerText: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.textOnNavy, flex: 1 },
+  editingBannerText: { ...theme.text.subhead, fontSize: 14, color: theme.colors.textOnNavy, flex: 1 },
 
-  // View toggle + week day strip (pill buttons)
-  viewToggleRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
+  // View toggle pills
+  viewToggleRow: { flexDirection: "row", gap: theme.spacing.sm, marginBottom: theme.layout.cardGap },
   viewToggleBtn: {
-    paddingVertical: 8,
+    minHeight: theme.layout.tapMin,
     paddingHorizontal: 22,
     borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
+    alignItems: "center",
+    justifyContent: "center",
   },
   viewToggleBtnActive: {
     backgroundColor: theme.colors.navy,
     borderColor: theme.colors.navy,
-    ...theme.shadows.sm,
+    ...theme.elevation[1],
   },
-  viewToggleText: { fontSize: 14, fontFamily: "DMSans_600SemiBold", color: theme.colors.textSecondary },
-  viewToggleTextActive: { color: "#fff" },
-  weekStrip: {
-    flexDirection: "row",
-    gap: 6,
-    marginBottom: 14,
-    flexWrap: "wrap",
-  },
+  viewToggleText: { ...theme.text.subhead, fontSize: 14, color: theme.colors.textSecondary },
+  viewToggleTextActive: { color: theme.colors.surface },
+
+  // Week grid — 7 equal cells, today gets the orange accent + label
+  weekGrid: { flexDirection: "row", gap: 6, marginBottom: theme.layout.cardGap },
+  weekCell: { flex: 1 },
   weekDayBtn: {
-    paddingVertical: 7,
-    paddingHorizontal: 13,
-    borderRadius: theme.radius.pill,
+    minHeight: 56,
+    borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: theme.spacing.sm,
+    gap: 2,
   },
+  weekDayBtnToday: { borderColor: theme.colors.orange, borderWidth: 2 },
   weekDayBtnActive: {
     backgroundColor: theme.colors.navy,
     borderColor: theme.colors.navy,
-    ...theme.shadows.sm,
+    ...theme.elevation[1],
   },
-  weekDayText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.textSecondary },
-  weekDayTextActive: { color: "#fff" },
+  weekDayText: { ...theme.text.subhead, fontSize: 13, color: theme.colors.textSecondary },
+  weekDayTextActive: { color: theme.colors.surface },
+  weekTodayLabel: { ...theme.text.eyebrow, fontSize: 9, lineHeight: 11, letterSpacing: 0.8, color: theme.colors.brandInk },
+  weekTodayLabelActive: { color: theme.colors.gold },
 
-  listTitle: { fontSize: 22, lineHeight: 28, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy, marginBottom: 12 },
+  listTitle: { ...theme.text.title2, color: theme.colors.navy, marginTop: theme.spacing.sm, marginBottom: theme.layout.cardGap },
   emptyCard: {
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
-    padding: 24,
-    alignItems: "center",
-    ...theme.shadows.sm,
+    ...theme.elevation[1],
   },
-  empty: { fontFamily: "DMSans_400Regular", fontSize: 14, color: theme.colors.textSecondary, textAlign: "center" },
 
   // Class cards
   card: {
@@ -873,36 +1002,58 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
     padding: 14,
-    marginBottom: 10,
-    ...theme.shadows.md,
+    marginBottom: theme.layout.cardGap,
+    ...theme.elevation[2],
   },
   cardAccent: { width: 4, borderRadius: theme.radius.pill, alignSelf: "stretch" },
-  cardBody: { flex: 1, marginLeft: 12 },
+  cardBody: { flex: 1, marginLeft: theme.layout.cardGap },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  classTitle: { fontSize: 17, fontFamily: "DMSans_700Bold", color: theme.colors.text, flex: 1 },
-  cardActions: { flexDirection: "row", alignItems: "center", gap: 2 },
-  iconBtn: { padding: 5 },
-  classMeta: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
-  notifMutedLabel: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.orange, marginTop: 4, fontStyle: "italic" },
+  classTitle: { ...theme.text.heading, fontFamily: "DMSans_700Bold", color: theme.colors.text, flex: 1, marginRight: theme.spacing.sm },
+  cardActions: { flexDirection: "row", alignItems: "center" },
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
-  // "Leave by" status pill
+  // Day-of-week pills on each card
+  dayPillRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: theme.spacing.sm },
+  dayPillStatic: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  dayPillStaticToday: { backgroundColor: theme.colors.orangeSoft },
+  dayPillStaticText: { ...theme.text.badge, fontSize: 11, color: theme.colors.textSecondary },
+  dayPillStaticTextToday: { color: theme.colors.brandInk },
+
+  timeRange: { ...theme.text.numeric, color: theme.colors.text, marginTop: theme.spacing.sm },
+  buildingRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: theme.spacing.xs },
+  buildingText: { ...theme.text.caption, color: theme.colors.textMuted, flex: 1 },
+  mutedRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: theme.spacing.sm },
+  notifMutedLabel: { ...theme.text.caption, fontSize: 12, color: theme.colors.textMuted, fontStyle: "italic" },
+
+  // "Leave by" status pill — glyph + text, deep color on soft tint (AA)
   leavePill: {
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
     gap: 6,
     marginTop: 10,
-    paddingVertical: 5,
+    paddingVertical: 6,
     paddingHorizontal: 10,
     borderRadius: theme.radius.pill,
   },
-  leaveDot: { width: 7, height: 7, borderRadius: theme.radius.pill },
-  leavePillText: { fontSize: 12, fontFamily: "DMSans_600SemiBold" },
+  leavePillText: { ...theme.text.badge, fontSize: 13, fontVariant: ["tabular-nums"] },
 
   planWeekBtn: {
-    marginTop: 20,
-    paddingVertical: 13,
-    paddingHorizontal: 16,
+    marginTop: theme.spacing.lg,
+    minHeight: theme.layout.tapMin,
+    paddingVertical: 12,
+    paddingHorizontal: theme.layout.gutter,
     borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.orangeSoft,
     alignItems: "center",
@@ -910,15 +1061,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 6,
   },
-  planWeekBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange },
+  planWeekBtnText: { ...theme.text.subhead, color: theme.colors.brandInk },
 
   successToast: {
-    backgroundColor: theme.colors.success,
+    backgroundColor: theme.colors.successDeep,
     borderRadius: theme.radius.lg,
     padding: 12,
-    marginBottom: 12,
+    marginBottom: theme.layout.cardGap,
     alignItems: "center",
-    ...theme.shadows.sm,
+    ...theme.elevation[1],
   },
-  successToastText: { color: "#fff", fontSize: 14, fontFamily: "DMSans_600SemiBold" },
+  successToastText: { ...theme.text.subhead, fontSize: 14, color: theme.colors.surface },
 });

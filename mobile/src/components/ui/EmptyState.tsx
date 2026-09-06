@@ -5,7 +5,8 @@ import { Button } from "./Button";
 import { FadeInView, FloatingView } from "./motion";
 
 interface EmptyStateProps {
-  icon: LucideIcon;
+  /** Optional lucide icon shown in a soft orange halo with a gentle float. */
+  icon?: LucideIcon;
   title: string;
   subtitle?: string;
   action?: { label: string; onPress: () => void };
@@ -14,12 +15,16 @@ interface EmptyStateProps {
 export function EmptyState({ icon: Icon, title, subtitle, action }: EmptyStateProps) {
   return (
     <FadeInView style={styles.container}>
-      <FloatingView distance={6}>
-        <View style={styles.iconHalo}>
-          <Icon size={36} color={theme.colors.orange} strokeWidth={1.6} />
-        </View>
-      </FloatingView>
-      <Text style={styles.title}>{title}</Text>
+      {Icon && (
+        <FloatingView distance={6}>
+          <View style={styles.iconHalo}>
+            <Icon size={36} color={theme.colors.brandInk} strokeWidth={1.6} />
+          </View>
+        </FloatingView>
+      )}
+      <Text style={styles.title} accessibilityRole="header">
+        {title}
+      </Text>
       {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
       {action && (
         <View style={{ marginTop: theme.spacing.md }}>
@@ -46,17 +51,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   title: {
-    fontFamily: "DMSans_600SemiBold",
+    ...theme.text.heading,
     fontSize: 16,
     color: theme.colors.text,
     textAlign: "center",
     marginTop: theme.spacing.sm,
   },
   subtitle: {
-    fontFamily: "DMSans_400Regular",
+    ...theme.text.caption,
     fontSize: 14,
+    lineHeight: 20,
     color: theme.colors.textSecondary,
     textAlign: "center",
-    lineHeight: 20,
   },
 });

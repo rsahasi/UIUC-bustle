@@ -2,7 +2,7 @@ import { fetchAutocomplete, fetchBusRouteStops, fetchPlaceDetails, fetchRecommen
 import type { AutocompleteResult } from "@/src/api/client";
 import type { RecommendationOption, StopInfo, CrowdingInfo } from "@/src/api/types";
 import { CrowdingSheet } from "@/src/components/CrowdingSheet";
-import { crowdingColor } from "@/src/utils/crowding";
+import { CROWDING_ICONS, crowdingLabel } from "@/src/utils/crowding";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
@@ -27,27 +27,54 @@ import {
   View,
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
+import { LinearGradient } from "expo-linear-gradient";
 import { theme } from "@/src/constants/theme";
-import { FadeInView, PressableScale } from "@/src/components/ui/motion";
+import { FadeInView, PressableScale, Skeleton } from "@/src/components/ui/motion";
+import { Badge } from "@/src/components/ui/Badge";
+import { Button } from "@/src/components/ui/Button";
+import { DepartureRow } from "@/src/components/ui/DepartureRow";
 import { Bus, Footprints, MapPin, Search, X } from "lucide-react-native";
 
+/** Live vehicles chip — the shared Badge pairs its breathing dot with text and respects reduce-motion. */
 function MapLiveBadge({ count }: { count: number }) {
-  const opacity = useRef(new Animated.Value(1)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(opacity, { toValue: 0.4, duration: 900, useNativeDriver: true }),
-        Animated.timing(opacity, { toValue: 1, duration: 900, useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [opacity]);
+  return <Badge label={`LIVE · ${count} ${count === 1 ? "bus" : "buses"}`} variant="live" size="md" />;
+}
+
+/** AA crowding accent from theme tokens — same vocabulary as CrowdingBadge. */
+function crowdThemeColor(info: CrowdingInfo | null | undefined): string {
+  if (!info || info.source === "estimated") return theme.colors.crowd.estimated;
+  return theme.colors.crowd[info.level] ?? theme.colors.crowd.estimated;
+}
+
+/** Render-only vehicle marker face: orange bus dot, heading wedge, crowding ring + glyph bubble. */
+function VehicleDot({ ringColor, headingDeg, glyph }: { ringColor: string; headingDeg: number | null; glyph: string | null }) {
   return (
-    <Animated.View style={[{ backgroundColor: theme.colors.orange, borderRadius: 4, paddingHorizontal: 7, paddingVertical: 3, flexDirection: "row", alignItems: "center", gap: 4 }, { opacity }]}>
-      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: "#fff" }} />
-      <Text style={{ fontFamily: "DMSans_600SemiBold", fontSize: 11, color: "#fff" }}>Live · {count} buses</Text>
-    </Animated.View>
+    <View style={markerStyles.vehicleWrap}>
+      {headingDeg != null && (
+        <View style={[markerStyles.headingLayer, { transform: [{ rotate: `${headingDeg}deg` }] }]}>
+          <View style={markerStyles.headingWedge} />
+        </View>
+      )}
+      <View style={[markerStyles.vehicleDot, { borderColor: ringColor }]}>
+        <View style={markerStyles.vehicleCore} />
+      </View>
+      {glyph != null && (
+        <View style={markerStyles.crowdBubble}>
+          <Text style={markerStyles.crowdGlyph}>{glyph}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+/** Render-only stop marker: a quiet navy dot that grows (with an orange core) when selected. */
+function StopDot({ selected }: { selected: boolean }) {
+  return selected ? (
+    <View style={markerStyles.stopSelectedOuter}>
+      <View style={markerStyles.stopSelectedInner} />
+    </View>
+  ) : (
+    <View style={markerStyles.stopIdle} />
   );
 }
 
@@ -517,7 +544,12 @@ export default function MapScreen() {
             useUiucArea, so calling it here would retry GPS and its late
             setStatus could clobber the effect-driven reload that the flag
             change triggers via useEffect([loadStops]). */}
-        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => setUseUiucArea(true)}>
+        <Pressable
+          style={[styles.retryBtn, styles.retryBtnSecondary]}
+          onPress={() => setUseUiucArea(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Use UIUC area, Champaign-Urbana"
+        >
           <Text style={styles.retryBtnSecondaryText}>Use UIUC area (Champaign-Urbana)</Text>
         </Pressable>
       </View>
@@ -529,13 +561,18 @@ export default function MapScreen() {
       <View style={styles.centered}>
         <Text style={styles.errorText}>Could not load stops</Text>
         <Text style={styles.hint}>Check API URL in Settings and try again.</Text>
-        <Pressable style={styles.retryBtn} onPress={loadStops}>
+        <Pressable style={styles.retryBtn} onPress={loadStops} accessibilityRole="button" accessibilityLabel="Retry loading stops">
           <Text style={styles.retryBtnText}>Retry</Text>
         </Pressable>
         {/* Only flip the flag (see comment on the denied screen): the stale
             loadStops closure would retry GPS, fail, and set "error" after the
             effect-driven reload already set "ready". */}
-        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => setUseUiucArea(true)}>
+        <Pressable
+          style={[styles.retryBtn, styles.retryBtnSecondary]}
+          onPress={() => setUseUiucArea(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Use UIUC area instead"
+        >
           <Text style={styles.retryBtnSecondaryText}>Use UIUC area instead</Text>
         </Pressable>
       </View>
@@ -562,16 +599,26 @@ export default function MapScreen() {
         onPress={() => { Keyboard.dismiss(); setSuggestions([]); }}
         onRegionChangeComplete={(r) => { currentRegionRef.current = r; }}
       >
-        {stops.map((stop) => (
-          <Marker
-            key={stop.stop_id}
-            coordinate={{ latitude: stop.lat, longitude: stop.lng }}
-            title={stop.stop_name}
-            description={`${formatDistance(stop.distance_m)} away`}
-            onPress={() => onMarkerPress(stop)}
-            pinColor={selectedStop?.stop_id === stop.stop_id ? theme.colors.navy : theme.colors.error}
-          />
-        ))}
+        {stops.map((stop) => {
+          const isSelected = selectedStop?.stop_id === stop.stop_id;
+          return (
+            <Marker
+              // Selection is baked into the rasterized dot, so key on it: the
+              // marker remounts (redrawing once) when selection flips instead of
+              // re-rasterizing continuously (tracksViewChanges stays false).
+              key={`stop-${stop.stop_id}-${isSelected ? "selected" : "idle"}`}
+              tracksViewChanges={false}
+              anchor={{ x: 0.5, y: 0.5 }}
+              coordinate={{ latitude: stop.lat, longitude: stop.lng }}
+              title={stop.stop_name}
+              description={`${formatDistance(stop.distance_m)} away`}
+              onPress={() => onMarkerPress(stop)}
+              accessibilityLabel={`Bus stop ${stop.stop_name}, ${formatDistance(stop.distance_m)} away${isSelected ? ", selected" : ""}`}
+            >
+              <StopDot selected={isSelected} />
+            </Marker>
+          );
+        })}
         {selectedPlace && (
           <Marker
             coordinate={{ latitude: selectedPlace.lat, longitude: selectedPlace.lng }}
@@ -599,29 +646,29 @@ export default function MapScreen() {
         )}
         {vehicles.map((v) => {
           const crowding = vehicleCrowding[v.vehicle_id];
-          const ringColor = crowdingColor(crowding);
+          const ringColor = crowdThemeColor(crowding);
+          const glyph = crowding ? CROWDING_ICONS[crowding.level] ?? null : null;
+          // Quantize heading to 30° buckets so the rasterized marker only
+          // redraws when the bus meaningfully turns (tracksViewChanges stays false).
+          const headingDeg = Number.isFinite(v.heading)
+            ? (Math.round((((v.heading % 360) + 360) % 360) / 30) * 30) % 360
+            : null;
           return (
             <Marker
-              // ringColor is baked into the bitmap, so key on it: the marker
-              // remounts (redrawing once) when crowding changes, instead of
-              // re-rasterizing on every frame to catch a color that rarely moves.
-              key={`vehicle-${v.vehicle_id}-${ringColor}`}
+              // ringColor (plus the crowding glyph and heading bucket) is baked
+              // into the bitmap, so key on it: the marker remounts (redrawing
+              // once) when crowding or heading changes, instead of
+              // re-rasterizing on every frame to catch values that rarely move.
+              key={`vehicle-${v.vehicle_id}-${ringColor}-${crowding?.level ?? "none"}-${headingDeg ?? "x"}`}
               tracksViewChanges={false}
+              anchor={{ x: 0.5, y: 0.5 }}
               coordinate={{ latitude: v.lat, longitude: v.lng }}
               title={`Bus ${v.route_id}`}
               description={v.headsign || undefined}
               onPress={() => setCrowdingSheet({ vehicleId: v.vehicle_id, routeId: v.route_id })}
+              accessibilityLabel={`Bus ${v.route_id}${v.headsign ? ` to ${v.headsign}` : ""}, crowding ${crowdingLabel(crowding)}`}
             >
-              <View style={{ alignItems: "center", justifyContent: "center" }}>
-                <View style={{
-                  width: 28, height: 28, borderRadius: 14,
-                  borderWidth: 3, borderColor: ringColor,
-                  backgroundColor: theme.colors.orange,
-                  alignItems: "center", justifyContent: "center",
-                }}>
-                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "white" }} />
-                </View>
-              </View>
+              <VehicleDot ringColor={ringColor} headingDeg={headingDeg} glyph={glyph} />
             </Marker>
           );
         })}
@@ -699,7 +746,12 @@ export default function MapScreen() {
             autoCorrect={false}
           />
           {mapSearch.length > 0 && (
-            <Pressable style={styles.clearBtn} onPress={clearSearch}>
+            <Pressable
+              style={styles.clearBtn}
+              onPress={clearSearch}
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+            >
               <X size={14} color={theme.colors.textMuted} />
             </Pressable>
           )}
@@ -707,7 +759,13 @@ export default function MapScreen() {
         {suggestions.length > 0 && (
           <ScrollView style={styles.suggestionList} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
             {suggestions.map((r, i) => (
-              <Pressable key={i} style={styles.suggestionRow} onPress={() => onSelectSuggestion(r)}>
+              <Pressable
+                key={i}
+                style={styles.suggestionRow}
+                onPress={() => onSelectSuggestion(r)}
+                accessibilityRole="button"
+                accessibilityLabel={r.display_name && r.display_name !== r.name ? `${r.name}, ${r.display_name}` : r.name}
+              >
                 <Text style={styles.suggestionName}>{r.name}</Text>
                 {r.display_name && r.display_name !== r.name && (
                   <Text style={styles.suggestionSub} numberOfLines={1}>{r.display_name}</Text>
@@ -721,7 +779,12 @@ export default function MapScreen() {
       {useUiucArea && (
         <View style={styles.uiucBanner}>
           <Text style={styles.uiucBannerText}>Showing UIUC area</Text>
-          <Pressable onPress={() => { setUseUiucArea(false); loadStops(); }}>
+          <Pressable
+            onPress={() => { setUseUiucArea(false); loadStops(); }}
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Use my location"
+          >
             <Text style={styles.uiucBannerLink}>Use my location</Text>
           </Pressable>
         </View>
@@ -731,17 +794,23 @@ export default function MapScreen() {
           <MapLiveBadge count={vehicles.length} />
         </View>
       )}
-      <PressableScale style={styles.centerBtn} onPress={centerOnMe} accessibilityLabel="Center map on my location" scaleTo={0.88}>
-        <MapPin size={20} color="#fff" />
+      <PressableScale
+        style={styles.centerBtn}
+        onPress={centerOnMe}
+        accessibilityRole="button"
+        accessibilityLabel="Center map on my location"
+        scaleTo={0.88}
+      >
+        <MapPin size={20} color={theme.colors.textOnNavy} />
       </PressableScale>
 
       {/* Zoom controls */}
       <View style={styles.zoomControls}>
-        <PressableScale style={styles.zoomBtn} onPress={zoomIn} accessibilityLabel="Zoom in" scaleTo={0.85}>
+        <PressableScale style={styles.zoomBtn} onPress={zoomIn} accessibilityRole="button" accessibilityLabel="Zoom in" scaleTo={0.85}>
           <Text style={styles.zoomBtnText}>+</Text>
         </PressableScale>
         <View style={styles.zoomDivider} />
-        <PressableScale style={styles.zoomBtn} onPress={zoomOut} accessibilityLabel="Zoom out" scaleTo={0.85}>
+        <PressableScale style={styles.zoomBtn} onPress={zoomOut} accessibilityRole="button" accessibilityLabel="Zoom out" scaleTo={0.85}>
           <Text style={styles.zoomBtnText}>−</Text>
         </PressableScale>
       </View>
@@ -759,56 +828,69 @@ export default function MapScreen() {
             )}
           </View>
           {placeRoutesLoading ? (
-            <ActivityIndicator size="small" color={theme.colors.navy} style={{ marginVertical: 12 }} />
+            <View style={styles.panelSkeletons}>
+              <Skeleton height={64} radius={theme.radius.lg} />
+              <Skeleton height={64} radius={theme.radius.lg} />
+            </View>
           ) : placeRoutes.length > 0 ? (
             <ScrollView style={styles.routeList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-              {placeRoutes.map((opt, i) => (
-                <Pressable
-                  key={i}
-                  style={[styles.routeRow, selectedRouteIdx === i && styles.routeRowSelected]}
-                  onPress={() => setSelectedRouteIdx(i)}
-                >
-                  <View style={styles.routeInfo}>
-                    <Text style={styles.routeLabel}>
-                      {opt.type === "WALK" ? "Walk" : i === 0 ? "Best option" : "Alternative"}
-                    </Text>
-                    <Text style={styles.routeMeta}>
-                      {opt.type === "WALK"
-                        ? `${opt.eta_minutes} min walk`
-                        : opt.depart_in_minutes <= 1
-                        ? `Leave now · ${opt.eta_minutes} min total`
-                        : `Leave in ${opt.depart_in_minutes} min · ${opt.eta_minutes} min total`}
-                    </Text>
-                    <View style={{ flexDirection: 'row', gap: 4, marginTop: 5, flexWrap: 'wrap' }}>
-                      {opt.steps
-                        .filter(s => s.type === 'WALK_TO_STOP' || s.type === 'RIDE' || s.type === 'WALK_TO_DEST')
-                        .map((step, si) => (
-                          <View key={si} style={{
-                            flexDirection: 'row', alignItems: 'center', gap: 3,
-                            backgroundColor: step.type === 'RIDE' ? 'rgba(232,74,39,0.10)' : 'rgba(19,41,75,0.07)',
-                            paddingHorizontal: 7, paddingVertical: 3,
-                            borderRadius: 99,
-                          }}>
-                            {step.type === 'RIDE'
-                              ? <Bus size={10} color={theme.colors.orange} />
-                              : <Footprints size={10} color={theme.colors.navy} />}
-                            <Text style={{
-                              fontSize: 11, fontFamily: 'DMSans_500Medium',
-                              color: step.type === 'RIDE' ? theme.colors.orange : theme.colors.navy,
-                            }}>
-                              {step.type === 'RIDE'
-                                ? (step.route_short_name || step.route || 'Bus')
-                                : `${Math.round((step.walk_distance_m || 0) / 80)}m`}
-                            </Text>
-                          </View>
-                        ))}
-                    </View>
-                  </View>
-                  <Pressable style={styles.startBtn} onPress={() => onStartNavigation(opt)}>
-                    <Text style={styles.startBtnText}>Go</Text>
-                  </Pressable>
-                </Pressable>
-              ))}
+              {placeRoutes.map((opt, i) => {
+                const optionLabel = opt.type === "WALK" ? "Walk" : i === 0 ? "Best option" : "Alternative";
+                const optionMeta =
+                  opt.type === "WALK"
+                    ? `${opt.eta_minutes} min walk`
+                    : opt.depart_in_minutes <= 1
+                    ? `Leave now · ${opt.eta_minutes} min total`
+                    : `Leave in ${opt.depart_in_minutes} min · ${opt.eta_minutes} min total`;
+                return (
+                  <FadeInView key={i} delay={i * 60} dy={10}>
+                    <Pressable
+                      style={[styles.routeRow, selectedRouteIdx === i && styles.routeRowSelected]}
+                      onPress={() => setSelectedRouteIdx(i)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: selectedRouteIdx === i }}
+                      accessibilityLabel={`${optionLabel}, ${optionMeta}`}
+                    >
+                      <View style={styles.routeInfo}>
+                        <Text style={styles.routeLabel}>{optionLabel}</Text>
+                        <Text style={styles.routeMeta}>{optionMeta}</Text>
+                        <View style={styles.stepChips}>
+                          {opt.steps
+                            .filter(s => s.type === 'WALK_TO_STOP' || s.type === 'RIDE' || s.type === 'WALK_TO_DEST')
+                            .map((step, si) => (
+                              <View key={si} style={[styles.stepChip, step.type === 'RIDE' ? styles.stepChipRide : styles.stepChipWalk]}>
+                                {step.type === 'RIDE'
+                                  ? <Bus size={10} color={theme.colors.brandInk} />
+                                  : <Footprints size={10} color={theme.colors.navy} />}
+                                <Text style={[styles.stepChipText, { color: step.type === 'RIDE' ? theme.colors.brandInk : theme.colors.navy }]}>
+                                  {step.type === 'RIDE'
+                                    ? (step.route_short_name || step.route || 'Bus')
+                                    : `${Math.round((step.walk_distance_m || 0) / 80)}m`}
+                                </Text>
+                              </View>
+                            ))}
+                        </View>
+                      </View>
+                      <PressableScale
+                        style={styles.startBtn}
+                        onPress={() => onStartNavigation(opt)}
+                        scaleTo={0.92}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Start ${opt.type === "WALK" ? "walking" : "bus"} navigation`}
+                      >
+                        <LinearGradient
+                          colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.startBtnFill}
+                        >
+                          <Text style={styles.startBtnText}>Go</Text>
+                        </LinearGradient>
+                      </PressableScale>
+                    </Pressable>
+                  </FadeInView>
+                );
+              })}
             </ScrollView>
           ) : (
             <Text style={styles.depEmpty}>No routes available right now.</Text>
@@ -824,23 +906,28 @@ export default function MapScreen() {
             <Text style={styles.detailTitle}>{selectedStop.stop_name}</Text>
             <Text style={styles.detailDistance}>{formatDistance(selectedStop.distance_m)} away</Text>
           </View>
-          <Pressable
-            style={styles.tripBtn}
-            onPress={() => onOpenTrip(selectedStop)}
-          >
-            <Text style={styles.tripBtnText}>View departures →</Text>
-          </Pressable>
+          <View style={styles.tripBtnWrap}>
+            <Button label="View departures" onPress={() => onOpenTrip(selectedStop)} variant="primary" />
+          </View>
           {departuresLoading ? (
-            <ActivityIndicator size="small" color={theme.colors.navy} style={styles.depLoader} />
+            <View style={styles.panelSkeletons}>
+              <Skeleton height={44} radius={theme.radius.md} />
+              <Skeleton height={44} radius={theme.radius.md} />
+            </View>
           ) : departures.length > 0 ? (
             <ScrollView style={styles.depList} nestedScrollEnabled>
               {departures.slice(0, 8).map((d, i) => (
-                <View key={i} style={styles.depRow}>
-                  <View style={styles.depBadge}><Text style={styles.depBadgeText}>{d.route}</Text></View>
-                  <Text style={styles.depHeadsign} numberOfLines={1}>{d.headsign || "—"}</Text>
-                  <Text style={styles.depMins}>{d.expected_mins} min</Text>
-                  {d.is_realtime && <View style={styles.depLiveDot} />}
-                </View>
+                <FadeInView key={i} delay={i * 45} dy={8}>
+                  <DepartureRow
+                    route={d.route}
+                    headsign={d.headsign || "—"}
+                    expectedMins={d.expected_mins}
+                    isRealtime={d.is_realtime}
+                    expectedTimeIso={d.expected_time_iso}
+                    delayStatus={d.delay_status}
+                    delayMins={d.delay_mins}
+                  />
+                </FadeInView>
               ))}
             </ScrollView>
           ) : (
@@ -855,22 +942,32 @@ export default function MapScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1, width: "100%", height: "100%" },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24, backgroundColor: theme.colors.surface },
-  centeredText: { marginTop: 12, fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary },
-  errorText: { fontSize: 18, fontFamily: "DMSans_600SemiBold", color: theme.colors.error },
-  hint: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 8, textAlign: "center" },
-  retryBtn: { marginTop: 16, paddingVertical: 12, paddingHorizontal: 24, backgroundColor: theme.colors.navy, borderRadius: theme.radius.md },
-  retryBtnSecondary: { backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.navy, marginTop: 8 },
-  retryBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_600SemiBold" },
-  retryBtnSecondaryText: { color: theme.colors.navy, fontFamily: "DMSans_600SemiBold" },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: theme.spacing.lg + 4, backgroundColor: theme.colors.surfaceAlt },
+  errorText: { ...theme.text.heading, fontSize: 18, color: theme.colors.errorDeep },
+  hint: { ...theme.text.caption, fontSize: 14, color: theme.colors.textSecondary, marginTop: theme.spacing.sm + 2, textAlign: "center" },
+  retryBtn: {
+    marginTop: theme.spacing.lg - 4,
+    minHeight: theme.layout.tapMin,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg + 4,
+    backgroundColor: theme.colors.navy,
+    borderRadius: theme.radius.lg,
+    ...theme.shadows.glowNavy,
+  },
+  retryBtnSecondary: { backgroundColor: "transparent", borderWidth: 1.5, borderColor: theme.colors.navy, marginTop: theme.spacing.sm + 2, ...theme.elevation[0] },
+  retryBtnText: { ...theme.text.subhead, fontSize: 16, color: theme.colors.textOnNavy },
+  retryBtnSecondaryText: { ...theme.text.subhead, color: theme.colors.navy },
   loadingOverlay: {
     position: "absolute",
     top: 70,
     alignSelf: "center",
-    backgroundColor: "rgba(255,255,255,0.85)",
-    borderRadius: 20,
-    padding: 8,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.pill,
+    padding: theme.spacing.sm + 2,
     zIndex: 10,
+    ...theme.elevation[2],
   },
   searchContainer: {
     position: "absolute",
@@ -896,8 +993,8 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
   },
   clearBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    minWidth: theme.layout.tapMin,
+    minHeight: theme.layout.tapMin,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -910,40 +1007,36 @@ const styles = StyleSheet.create({
     ...theme.shadows.lg,
   },
   suggestionRow: {
+    minHeight: theme.layout.tapMin,
+    justifyContent: "center",
     paddingHorizontal: 14,
-    paddingVertical: 11,
+    paddingVertical: theme.spacing.sm + 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
+    borderBottomColor: theme.colors.borderSoft,
   },
-  suggestionName: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
-  suggestionSub: { fontSize: 12, fontFamily: "DMSans_400Regular", color: theme.colors.textMuted, marginTop: 2 },
+  suggestionName: { ...theme.text.subhead, color: theme.colors.text },
+  suggestionSub: { ...theme.text.caption, fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
   uiucBanner: {
     position: "absolute",
     top: 72,
-    left: 16,
+    left: theme.layout.gutter,
     right: 80,
-    backgroundColor: "rgba(255,255,255,0.95)",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    backgroundColor: theme.colors.surface,
+    paddingVertical: theme.spacing.sm + 2,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.lg,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     zIndex: 20,
+    ...theme.elevation[2],
   },
-  uiucBannerText: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary },
-  uiucBannerLink: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
+  uiucBannerText: { ...theme.text.caption, color: theme.colors.textSecondary },
+  uiucBannerLink: { ...theme.text.subhead, fontSize: 13, color: theme.colors.brandInk },
   vehicleLegend: {
     position: "absolute",
     top: 116,
-    left: 16,
-    backgroundColor: "rgba(255,255,255,0.9)",
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+    left: theme.layout.gutter,
     zIndex: 19,
   },
   fallbackTitle: { fontSize: 20, fontFamily: "DMSans_700Bold", color: theme.colors.navy, marginBottom: 8 },
@@ -1014,51 +1107,117 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   detailHeader: { marginBottom: 10 },
-  detailTitle: { fontSize: 19, fontFamily: "DMSerifDisplay_400Regular", color: theme.colors.navy },
-  detailDistance: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 4 },
-  routeList: { maxHeight: 200 },
+  detailTitle: { ...theme.text.title2, fontSize: 20, lineHeight: 26, color: theme.colors.navy },
+  detailDistance: { ...theme.text.caption, fontSize: 13, color: theme.colors.textMuted, marginTop: 4, fontVariant: ["tabular-nums"] },
+  routeList: { maxHeight: 220 },
   routeRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 10,
-    paddingHorizontal: 6,
+    minHeight: theme.layout.tapMin,
+    paddingVertical: theme.spacing.md - 2,
+    paddingHorizontal: theme.spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
-    borderRadius: theme.radius.sm,
+    borderBottomColor: theme.colors.borderSoft,
+    borderRadius: theme.radius.md,
   },
   routeRowSelected: {
     backgroundColor: theme.colors.orangeSoft,
     borderLeftWidth: 3,
     borderLeftColor: theme.colors.orange,
   },
-  routeInfo: { flex: 1, marginRight: 12 },
-  routeLabel: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
-  routeMeta: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 2 },
+  routeInfo: { flex: 1, marginRight: theme.spacing.md },
+  routeLabel: { ...theme.text.subhead, color: theme.colors.navy },
+  routeMeta: { ...theme.text.caption, color: theme.colors.textSecondary, marginTop: 2, fontVariant: ["tabular-nums"] },
+  stepChips: { flexDirection: "row", gap: 4, marginTop: 5, flexWrap: "wrap" },
+  stepChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: theme.radius.pill,
+  },
+  stepChipRide: { backgroundColor: theme.colors.orangeSoft },
+  stepChipWalk: { backgroundColor: theme.colors.borderSoft },
+  stepChipText: { ...theme.text.badge, fontSize: 11, fontVariant: ["tabular-nums"] },
   startBtn: {
-    backgroundColor: theme.colors.orange,
-    paddingVertical: 9,
-    paddingHorizontal: 18,
+    minWidth: theme.layout.tapMin,
+    minHeight: theme.layout.tapMin,
     borderRadius: theme.radius.lg,
+    overflow: "hidden",
     ...theme.shadows.glowOrange,
   },
-  startBtnText: { color: "#fff", fontSize: 15, fontFamily: "DMSans_700Bold" },
-  tripBtn: {
-    backgroundColor: theme.colors.navy,
-    padding: 13,
-    borderRadius: theme.radius.lg,
+  startBtnFill: {
+    flexGrow: 1,
     alignItems: "center",
-    marginBottom: 12,
-    ...theme.shadows.glowNavy,
+    justifyContent: "center",
+    paddingVertical: theme.spacing.sm + 3,
+    paddingHorizontal: theme.spacing.lg - 2,
   },
-  tripBtnText: { color: "#fff", fontSize: 16, fontFamily: "DMSans_600SemiBold" },
-  depLoader: { marginVertical: 8 },
-  depList: { maxHeight: 120 },
-  depRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 5, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.border },
-  depBadge: { backgroundColor: theme.colors.navy, borderRadius: 3, paddingHorizontal: 6, paddingVertical: 2, minWidth: 32, alignItems: "center" },
-  depBadgeText: { fontFamily: "DMSans_700Bold", fontSize: 11, color: "#fff" },
-  depHeadsign: { flex: 1, fontFamily: "DMSans_400Regular", fontSize: 13, color: theme.colors.text },
-  depMins: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: theme.colors.textSecondary },
-  depLiveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.orange },
-  depEmpty: { fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, fontStyle: "italic", marginTop: 8 },
+  startBtnText: { ...theme.text.subhead, color: theme.colors.surface },
+  tripBtnWrap: { marginBottom: theme.layout.cardGap },
+  panelSkeletons: { gap: theme.spacing.sm + 2, marginVertical: theme.spacing.sm + 2 },
+  depList: { maxHeight: 150 },
+  depEmpty: { ...theme.text.caption, fontSize: 14, color: theme.colors.textMuted, fontStyle: "italic", marginTop: theme.spacing.sm + 2 },
+});
+
+const markerStyles = StyleSheet.create({
+  vehicleWrap: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  headingLayer: { position: "absolute", width: 44, height: 44, alignItems: "center" },
+  headingWedge: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 5,
+    borderRightWidth: 5,
+    borderBottomWidth: 8,
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderBottomColor: theme.colors.navy,
+  },
+  vehicleDot: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 3,
+    backgroundColor: theme.colors.orange,
+    alignItems: "center",
+    justifyContent: "center",
+    ...theme.elevation[1],
+  },
+  vehicleCore: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.surface },
+  crowdBubble: {
+    position: "absolute",
+    right: 2,
+    bottom: 2,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  crowdGlyph: { fontSize: 8, lineHeight: 10 },
+  stopIdle: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: theme.colors.navy,
+    borderWidth: 2,
+    borderColor: theme.colors.surface,
+  },
+  stopSelectedOuter: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: theme.colors.navy,
+    borderWidth: 3,
+    borderColor: theme.colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    ...theme.elevation[2],
+  },
+  stopSelectedInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.orange },
 });

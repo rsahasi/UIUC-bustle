@@ -2,7 +2,9 @@ import { fetchBuildings, fetchClasses, fetchHealth } from "@/src/api/client";
 import { resetAllPatterns } from "@/src/utils/patternEngine";
 import { theme } from "@/src/constants/theme";
 import { WALKING_MODES } from "@/src/constants/walkingMode";
-import { FadeInView, PressableScale } from "@/src/components/ui/motion";
+import { Button } from "@/src/components/ui/Button";
+import { SectionHeader } from "@/src/components/ui/SectionHeader";
+import { AnimatedNumber, FadeInView, PressableScale, useReducedMotion } from "@/src/components/ui/motion";
 import { useAuth } from "@/src/auth/useAuth";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
@@ -14,13 +16,32 @@ import {
   sendTestNotification,
 } from "@/src/notifications/classReminders";
 import { MAX_BUFFER, MAX_WEIGHT_KG, MIN_BUFFER, MIN_WEIGHT_KG } from "@/src/storage/recommendationSettings";
-import Slider from "@react-native-community/slider";
 import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
+import {
+  Bell,
+  BellRing,
+  Bug,
+  ClipboardList,
+  CloudRain,
+  Footprints,
+  Info,
+  KeyRound,
+  LayoutGrid,
+  LogOut,
+  Mail,
+  Minus,
+  Plus,
+  RotateCcw,
+  Server,
+  ShieldCheck,
+  Timer,
+  Weight,
+  type LucideIcon,
+} from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Linking,
@@ -32,12 +53,15 @@ import {
   TextInput,
   View,
 } from "react-native";
+import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 
 const WIDGET_STEPS = [
   "Long-press your iPhone home screen until icons jiggle",
   "Tap the + button in the top-left corner",
   'Search for "UIUC Bus" and choose a size (small, medium, or large)',
 ];
+
+const KG_TO_LBS = 2.20462;
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -183,6 +207,24 @@ export default function SettingsScreen() {
     }
   }, [input, isValidApiUrl]);
 
+  // Render-only derived values for the steppers / segmented control
+  const bufferValue = Math.round(bufferSlider);
+  const weightKgValue = Math.round(weightSlider);
+  const weightLbs = Math.round(weightSlider * KG_TO_LBS);
+  const activeMode = WALKING_MODES.find((m) => m.id === walkingModeId) ?? WALKING_MODES[0];
+
+  const adjustBuffer = (delta: number) => {
+    const next = Math.min(MAX_BUFFER, Math.max(MIN_BUFFER, bufferValue + delta));
+    setBufferSlider(next);
+    void setBufferMinutes(next);
+  };
+
+  const adjustWeight = (delta: number) => {
+    const next = Math.min(MAX_WEIGHT_KG, Math.max(MIN_WEIGHT_KG, weightKgValue + delta));
+    setWeightSlider(next);
+    void setWeightKg(next);
+  };
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -190,7 +232,9 @@ export default function SettingsScreen() {
     >
     <ScrollView contentContainerStyle={styles.container}>
       <FadeInView delay={0}>
-        <Text style={styles.sectionHeader}>Account</Text>
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Account" />
+        </View>
         <View style={styles.sectionCard}>
           <View style={styles.accountRow}>
             <LinearGradient
@@ -204,495 +248,607 @@ export default function SettingsScreen() {
               </Text>
             </LinearGradient>
             <View style={{ flex: 1 }}>
-              <Text style={styles.accountEmail}>{user?.email ?? "—"}</Text>
+              <Text style={styles.accountEmail} numberOfLines={1}>{user?.email ?? "—"}</Text>
               <Text style={styles.accountHint}>Signed in via Supabase</Text>
             </View>
           </View>
-          <PressableScale
-            style={styles.signOutBtn}
-            onPress={handleSignOut}
-            accessibilityLabel="Sign out"
-            accessibilityRole="button"
-          >
-            <Text style={styles.signOutBtnText}>Sign out</Text>
-          </PressableScale>
+          <Button label="Sign out" variant="secondary" icon={LogOut} onPress={handleSignOut} />
         </View>
       </FadeInView>
 
       <FadeInView delay={70}>
-      <Text style={styles.sectionHeader}>Connection</Text>
-      <View style={styles.sectionCard}>
-      <Text style={styles.label}>API base URL</Text>
-      <Text style={styles.hint}>
-        Use localhost for simulator; use your computer’s IP for a physical device (e.g. http://192.168.1.100:8000).
-      </Text>
-      <TextInput
-        autoCapitalize="none"
-        autoCorrect={false}
-        editable={!saving}
-        keyboardType="url"
-        onChangeText={setInput}
-        onBlur={() => setInput((v) => v.trim().replace(/\/$/, ""))}
-        placeholder="http://localhost:8000"
-        placeholderTextColor={theme.colors.textMuted}
-        style={styles.input}
-        value={input}
-      />
-      <Text style={styles.label}>API key (optional)</Text>
-      <Text style={styles.hint}>Required only if the server has API key auth enabled. Leave blank for local dev.</Text>
-      <TextInput
-        autoCapitalize="none"
-        autoCorrect={false}
-        editable={!saving}
-        onChangeText={setApiKeyInput}
-        placeholder="Leave blank if not required"
-        placeholderTextColor={theme.colors.textMuted}
-        secureTextEntry
-        style={styles.input}
-        value={apiKeyInput}
-      />
-      <View style={styles.buttonRow}>
-        <View style={{ flex: 1 }}>
-          <PressableScale
-            accessibilityLabel="Test connection"
-            accessibilityRole="button"
-            disabled={saving || testingConnection}
-            onPress={testConnection}
-            style={[styles.buttonSecondary, (saving || testingConnection) && styles.buttonDisabled]}
-          >
-            {testingConnection ? (
-              <ActivityIndicator color={theme.colors.navy} size="small" />
-            ) : (
-              <Text style={styles.buttonSecondaryText}>Test connection</Text>
-            )}
-          </PressableScale>
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Connection" />
         </View>
-        <View style={{ flex: 1 }}>
-          <PressableScale
-            accessibilityLabel="Save API URL"
-            accessibilityRole="button"
-            disabled={saving || testingConnection}
-            onPress={save}
-            style={[styles.buttonWrap, (saving || testingConnection) && styles.buttonDisabled]}
-          >
-            <LinearGradient
-              colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.buttonGradient}
-            >
-              {saving ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.buttonText}>Save</Text>
-              )}
-            </LinearGradient>
-          </PressableScale>
+        <View style={styles.sectionCard}>
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={Server} />
+            <Text style={styles.rowLabel}>API base URL</Text>
+          </View>
+          <Text style={styles.hint}>
+            Use localhost for simulator; use your computer’s IP for a physical device (e.g. http://192.168.1.100:8000).
+          </Text>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!saving}
+            keyboardType="url"
+            onChangeText={setInput}
+            onBlur={() => setInput((v) => v.trim().replace(/\/$/, ""))}
+            placeholder="http://localhost:8000"
+            placeholderTextColor={theme.colors.textMuted}
+            style={styles.input}
+            value={input}
+          />
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={KeyRound} />
+            <Text style={styles.rowLabel}>API key (optional)</Text>
+          </View>
+          <Text style={styles.hint}>Required only if the server has API key auth enabled. Leave blank for local dev.</Text>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!saving}
+            onChangeText={setApiKeyInput}
+            placeholder="Leave blank if not required"
+            placeholderTextColor={theme.colors.textMuted}
+            secureTextEntry
+            style={styles.input}
+            value={apiKeyInput}
+          />
+          <View style={styles.buttonRow}>
+            <View style={{ flex: 1 }}>
+              <Button
+                label="Test connection"
+                variant="secondary"
+                onPress={testConnection}
+                loading={testingConnection}
+                disabled={saving || testingConnection}
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Button
+                label="Save"
+                variant="primary"
+                onPress={save}
+                loading={saving}
+                disabled={saving || testingConnection}
+              />
+            </View>
+          </View>
         </View>
-      </View>
-      </View>
       </FadeInView>
 
       <FadeInView delay={140}>
-      <Text style={styles.sectionHeader}>Walking preferences</Text>
-      <View style={styles.sectionCard}>
-      <View style={styles.toggleRow}>
-        <Text style={styles.label}>Walking mode</Text>
-        <Text style={styles.hint}>
-          Affects route times and recommendation order. Faster = shorter walk estimates.
-        </Text>
-        <View style={styles.walkingRow}>
-          {WALKING_MODES.map((mode) => (
-            <PressableScale
-              key={mode.id}
-              scaleTo={0.93}
-              accessibilityLabel={`Walking mode ${mode.label}`}
-              accessibilityRole="button"
-              accessibilityState={{ selected: walkingModeId === mode.id }}
-              onPress={() => setWalkingModeId(mode.id)}
-              style={[
-                styles.walkingBtn,
-                walkingModeId === mode.id && styles.walkingBtnOn,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.walkingBtnText,
-                  walkingModeId === mode.id && styles.walkingBtnTextOn,
-                ]}
-              >
-                {mode.label}
-              </Text>
-            </PressableScale>
-          ))}
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Route preferences" />
         </View>
-      </View>
-
-      <View style={styles.toggleRow}>
-        <View style={styles.labelRow}>
-          <Text style={[styles.label, styles.labelInRow]}>Buffer (minutes)</Text>
-          <View style={styles.valuePill}>
-            <Text style={styles.valuePillText}>{Math.round(bufferSlider)} min</Text>
+        <View style={styles.sectionCard}>
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={Footprints} />
+            <Text style={styles.rowLabel}>Walking mode</Text>
           </View>
-        </View>
-        <Text style={styles.hint}>
-          Extra time before arrival (0–15 min). More buffer = earlier suggested departure.
-        </Text>
-        <View style={styles.sliderRow}>
-          <Slider
-            accessibilityLabel="Buffer minutes before arrival"
-            accessibilityValue={{ min: MIN_BUFFER, max: MAX_BUFFER, now: Math.round(bufferSlider) }}
-            maximumTrackTintColor={theme.colors.borderSoft}
-            maximumValue={MAX_BUFFER}
-            minimumTrackTintColor={theme.colors.orange}
-            thumbTintColor={theme.colors.orangeBright}
-            minimumValue={MIN_BUFFER}
-            onSlidingComplete={(v) => setBufferMinutes(v)}
-            onValueChange={setBufferSlider}
-            step={1}
-            style={styles.slider}
-            value={bufferSlider}
+          <Text style={styles.hint}>
+            Affects route times and recommendation order. Faster = shorter walk estimates.
+          </Text>
+          <SegmentedControl
+            options={WALKING_MODES}
+            selectedId={walkingModeId}
+            onSelect={(id) => setWalkingModeId(id)}
           />
-          <View style={styles.sliderLabelRow}>
-            <Text style={styles.sliderMinMax}>0 min</Text>
-            <Text style={styles.sliderMinMax}>15 min</Text>
-          </View>
-        </View>
-      </View>
+          <Text style={styles.paceMeta}>{activeMode.label} pace · {activeMode.mps.toFixed(1)} m/s</Text>
 
-      <View style={[styles.toggleRow, styles.dividerTop]}>
-        <View style={styles.labelRow}>
-          <Text style={[styles.label, styles.labelInRow]}>Body weight (lbs)</Text>
-          <View style={styles.valuePill}>
-            <Text style={styles.valuePillText}>{Math.round(weightSlider * 2.20462)} lbs</Text>
+          <View style={styles.dividerTop}>
+            <StepperRow
+              icon={Timer}
+              label="Buffer"
+              hint="Extra time before arrival (0–15 min). More buffer = earlier suggested departure."
+              value={bufferValue}
+              unit="min"
+              accessibilityValueText={`Buffer ${bufferValue} minutes`}
+              atMin={bufferValue <= MIN_BUFFER}
+              atMax={bufferValue >= MAX_BUFFER}
+              onDecrement={() => adjustBuffer(-1)}
+              onIncrement={() => adjustBuffer(1)}
+              decrementLabel="Decrease buffer by one minute"
+              incrementLabel="Increase buffer by one minute"
+            />
+          </View>
+
+          <View style={styles.dividerTop}>
+            <StepperRow
+              icon={Weight}
+              label="Body weight"
+              hint="Used to calculate calories burned during walks (88–330 lbs)."
+              value={weightLbs}
+              unit="lbs"
+              accessibilityValueText={`Body weight ${weightLbs} pounds`}
+              atMin={weightKgValue <= MIN_WEIGHT_KG}
+              atMax={weightKgValue >= MAX_WEIGHT_KG}
+              onDecrement={() => adjustWeight(-1)}
+              onIncrement={() => adjustWeight(1)}
+              decrementLabel="Decrease body weight"
+              incrementLabel="Increase body weight"
+              footnote="Stored on-device only. Never transmitted to any server."
+            />
           </View>
         </View>
-        <Text style={styles.hint}>
-          Used to calculate calories burned during walks (88–330 lbs).
-        </Text>
-        <Text style={[styles.hint, { fontSize: 12, color: theme.colors.textMuted, marginTop: -8 }]}>
-          Stored on-device only. Never transmitted to any server.
-        </Text>
-        <View style={styles.sliderRow}>
-          <Slider
-            accessibilityLabel="Body weight in pounds"
-            accessibilityValue={{ min: MIN_WEIGHT_KG, max: MAX_WEIGHT_KG, now: Math.round(weightSlider) }}
-            maximumTrackTintColor={theme.colors.borderSoft}
-            maximumValue={MAX_WEIGHT_KG}
-            minimumTrackTintColor={theme.colors.orange}
-            thumbTintColor={theme.colors.orangeBright}
-            minimumValue={MIN_WEIGHT_KG}
-            onSlidingComplete={(v) => setWeightKg(v)}
-            onValueChange={setWeightSlider}
-            step={1}
-            style={styles.slider}
-            value={weightSlider}
-          />
-          <View style={styles.sliderLabelRow}>
-            <Text style={styles.sliderMinMax}>{Math.round(MIN_WEIGHT_KG * 2.20462)} lbs</Text>
-            <Text style={styles.sliderMinMax}>{Math.round(MAX_WEIGHT_KG * 2.20462)} lbs</Text>
-          </View>
-        </View>
-      </View>
-      </View>
       </FadeInView>
 
       <FadeInView delay={210}>
-      <Text style={styles.sectionHeader}>Notifications</Text>
-      <View style={styles.sectionCard}>
-      <View style={styles.toggleRow}>
-        <Text style={styles.label}>Class notifications</Text>
-        <Text style={styles.hint}>
-          Remind you 20 minutes before each class today. Opens Home with route options when you tap.
-        </Text>
-        <View style={styles.switchRow}>
-          <Text style={styles.toggleLabel}>
-            {classNotificationsEnabled ? "On" : "Off"}
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Notifications" />
+        </View>
+        <View style={styles.sectionCard}>
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={Bell} />
+            <View style={styles.rowLabelWrap}>
+              <Text style={styles.rowLabel}>Class notifications</Text>
+              <Text style={styles.rowStatus}>{classNotificationsEnabled ? "On" : "Off"}</Text>
+            </View>
+            <Switch
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Class notifications on or off"
+              accessibilityRole="switch"
+              accessibilityState={{ checked: classNotificationsEnabled, disabled: notificationsToggling }}
+              disabled={notificationsToggling}
+              onValueChange={onClassNotificationsToggle}
+              value={classNotificationsEnabled}
+              trackColor={{ false: theme.colors.border, true: theme.colors.orange }}
+              thumbColor={theme.colors.surface}
+            />
+          </View>
+          <Text style={styles.hint}>
+            Remind you 20 minutes before each class today. Opens Home with route options when you tap.
           </Text>
-          <Switch
-            accessibilityLabel="Class notifications on or off"
-            accessibilityRole="switch"
-            accessibilityState={{ checked: classNotificationsEnabled, disabled: notificationsToggling }}
-            disabled={notificationsToggling}
-            onValueChange={onClassNotificationsToggle}
-            value={classNotificationsEnabled}
-            trackColor={{ false: theme.colors.border, true: theme.colors.orange }}
-            thumbColor="#fff"
+          <Button
+            label="Send test notification"
+            variant="ghost"
+            icon={BellRing}
+            onPress={async () => {
+              try {
+                await sendTestNotification();
+                Alert.alert("Test sent", "You should get a notification in a few seconds.");
+              } catch (e) {
+                Alert.alert("Failed", e instanceof Error ? e.message : "Enable notifications and try again.");
+              }
+            }}
           />
-        </View>
-        <PressableScale
-          style={styles.testNotifBtn}
-          onPress={async () => {
-            try {
-              await sendTestNotification();
-              Alert.alert("Test sent", "You should get a notification in a few seconds.");
-            } catch (e) {
-              Alert.alert("Failed", e instanceof Error ? e.message : "Enable notifications and try again.");
-            }
-          }}
-        >
-          <Text style={styles.testNotifBtnText}>Send test notification</Text>
-        </PressableScale>
-      </View>
 
-      <View style={styles.innerCard}>
-      <View style={styles.toggleRow}>
-        <Text style={styles.label}>Rain mode</Text>
-        <Text style={styles.hint}>
-          Adds 5 min buffer and prioritises bus routes over walking when raining.
-        </Text>
-        <View style={styles.switchRow}>
-          <Text style={styles.toggleLabel}>{rainMode ? "On — bus preferred" : "Off"}</Text>
-          <Switch
-            accessibilityLabel="Rain mode on or off"
-            accessibilityRole="switch"
-            accessibilityState={{ checked: rainMode }}
-            onValueChange={setRainMode}
-            value={rainMode}
-            trackColor={{ false: theme.colors.border, true: theme.colors.orange }}
-            thumbColor="#fff"
-          />
+          <View style={styles.dividerTop}>
+            <View style={styles.rowHeader}>
+              <SettingIcon icon={CloudRain} />
+              <View style={styles.rowLabelWrap}>
+                <Text style={styles.rowLabel}>Rain mode</Text>
+                <Text style={styles.rowStatus}>{rainMode ? "On — bus preferred" : "Off"}</Text>
+              </View>
+              <Switch
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityLabel="Rain mode on or off"
+                accessibilityRole="switch"
+                accessibilityState={{ checked: rainMode }}
+                onValueChange={setRainMode}
+                value={rainMode}
+                trackColor={{ false: theme.colors.border, true: theme.colors.orange }}
+                thumbColor={theme.colors.surface}
+              />
+            </View>
+            <Text style={[styles.hint, styles.hintLast]}>
+              Adds 5 min buffer and prioritises bus routes over walking when raining.
+            </Text>
+          </View>
         </View>
-      </View>
-
-      </View>
-      </View>
       </FadeInView>
 
       <FadeInView delay={280}>
-      <Text style={styles.sectionHeader}>Privacy & data</Text>
-      <View style={styles.sectionCard}>
-      <View style={styles.toggleRow}>
-        <Text style={styles.label}>Commute learning</Text>
-        <Text style={styles.hint}>
-          The app quietly learns your walk times, stop choices, and departure habits to make suggestions more accurate. All data stays on your device and is never uploaded.
-        </Text>
-        <PressableScale
-          accessibilityLabel="Reset learned patterns"
-          accessibilityRole="button"
-          onPress={() =>
-            Alert.alert(
-              "Reset patterns?",
-              "This will delete all learned walk times, stop preferences, and departure habits. Suggestions will return to defaults.",
-              [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Reset",
-                  style: "destructive",
-                  onPress: async () => {
-                    await resetAllPatterns();
-                    Alert.alert("Patterns reset", "All learned data has been cleared.");
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Privacy & data" />
+        </View>
+        <View style={styles.sectionCard}>
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={ShieldCheck} />
+            <Text style={styles.rowLabel}>Commute learning</Text>
+          </View>
+          <Text style={styles.hint}>
+            The app quietly learns your walk times, stop choices, and departure habits to make suggestions more accurate. All data stays on your device and is never uploaded.
+          </Text>
+          <Button
+            label="Reset my patterns"
+            variant="destructive"
+            icon={RotateCcw}
+            onPress={() =>
+              Alert.alert(
+                "Reset patterns?",
+                "This will delete all learned walk times, stop preferences, and departure habits. Suggestions will return to defaults.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Reset",
+                    style: "destructive",
+                    onPress: async () => {
+                      await resetAllPatterns();
+                      Alert.alert("Patterns reset", "All learned data has been cleared.");
+                    },
                   },
-                },
-              ]
-            )
-          }
-          style={styles.dangerBtn}
-        >
-          <Text style={styles.dangerBtnText}>Reset my patterns</Text>
-        </PressableScale>
-      </View>
-      </View>
+                ]
+              )
+            }
+          />
+        </View>
       </FadeInView>
 
       <FadeInView delay={350}>
-      <Text style={styles.sectionHeader}>Home screen widget</Text>
-      <View style={styles.sectionCard}>
-      <View style={styles.toggleRow}>
-        <Text style={styles.label}>Add widget</Text>
-        <Text style={styles.hint}>
-          The UIUC Bus widget shows your next class and departure time on your home screen or lock screen. To add it:
-        </Text>
-        <View style={styles.widgetSteps}>
-          {WIDGET_STEPS.map((step, i) => (
-            <View key={step} style={styles.widgetStepRow}>
-              <View style={styles.stepCircle}>
-                <Text style={styles.stepCircleText}>{i + 1}</Text>
-              </View>
-              <Text style={styles.widgetStep}>{step}</Text>
-            </View>
-          ))}
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Home screen widget" />
         </View>
-        <Text style={styles.hint} numberOfLines={0}>
-          The widget refreshes every 15 minutes in the background. Tap the widget to open the app.
-        </Text>
-        <Text style={[styles.hint, { color: theme.colors.textMuted, fontSize: 12, marginTop: 4 }]}>
-          Note: Widget requires a production build via EAS Build (not Expo Go).
-        </Text>
-      </View>
-      </View>
+        <View style={styles.sectionCard}>
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={LayoutGrid} />
+            <Text style={styles.rowLabel}>Add widget</Text>
+          </View>
+          <Text style={styles.hint}>
+            The UIUC Bus widget shows your next class and departure time on your home screen or lock screen. To add it:
+          </Text>
+          <View style={styles.widgetSteps}>
+            {WIDGET_STEPS.map((step, i) => (
+              <View key={step} style={styles.widgetStepRow}>
+                <View style={styles.stepCircle}>
+                  <Text style={styles.stepCircleText}>{i + 1}</Text>
+                </View>
+                <Text style={styles.widgetStep}>{step}</Text>
+              </View>
+            ))}
+          </View>
+          <Text style={styles.hint} numberOfLines={0}>
+            The widget refreshes every 15 minutes in the background. Tap the widget to open the app.
+          </Text>
+          <Text style={styles.note}>
+            Note: Widget requires a production build via EAS Build (not Expo Go).
+          </Text>
+        </View>
       </FadeInView>
 
       <FadeInView delay={420}>
-      <Text style={styles.sectionHeader}>Debug</Text>
-      <View style={styles.sectionCard}>
-      <View style={styles.toggleRow}>
-        <Text style={styles.label}>Report issue</Text>
-        <Text style={styles.hint}>Copy recent logs to paste when reporting a bug (no external service).</Text>
-        <PressableScale
-          accessibilityLabel="Open Report issue screen"
-          accessibilityRole="button"
-          onPress={() => router.push("/report-issue")}
-          style={styles.linkButton}
-        >
-          <Text style={styles.linkButtonText}>Copy logs & report</Text>
-        </PressableScale>
-      </View>
-      </View>
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Debug" />
+        </View>
+        <View style={styles.sectionCard}>
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={Bug} />
+            <Text style={styles.rowLabel}>Report issue</Text>
+          </View>
+          <Text style={styles.hint}>Copy recent logs to paste when reporting a bug (no external service).</Text>
+          <Button
+            label="Copy logs & report"
+            variant="secondary"
+            icon={ClipboardList}
+            onPress={() => router.push("/report-issue")}
+          />
+        </View>
       </FadeInView>
 
       <FadeInView delay={490}>
-      <Text style={styles.sectionHeader}>About</Text>
-      <View style={styles.sectionCard}>
-        <View style={styles.aboutRow}>
-          <Text style={styles.aboutLabel}>App version</Text>
-          <Text style={styles.aboutValue}>{Constants.expoConfig?.version ?? '—'}</Text>
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="About" />
         </View>
-        <View style={[styles.aboutRow, { borderTopWidth: 1, borderTopColor: theme.colors.borderSoft, marginTop: 12, paddingTop: 12 }]}>
-          <PressableScale
-            accessibilityRole="link"
-            onPress={() => Linking.openURL('mailto:support@uiucbus.app?subject=UIUC%20Bus%20App%20Feedback')}
-          >
-            <Text style={styles.aboutLink}>Send feedback</Text>
-          </PressableScale>
+        <View style={styles.sectionCard}>
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={Info} />
+            <Text style={[styles.rowLabel, { flex: 1 }]}>App version</Text>
+            <Text style={styles.aboutValue}>{Constants.expoConfig?.version ?? "—"}</Text>
+          </View>
+          <View style={styles.dividerTop}>
+            <Button
+              label="Send feedback"
+              variant="ghost"
+              icon={Mail}
+              onPress={() => Linking.openURL("mailto:support@uiucbus.app?subject=UIUC%20Bus%20App%20Feedback")}
+            />
+          </View>
         </View>
-      </View>
       </FadeInView>
     </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
+// ── Render-only subcomponents ─────────────────────────────────────────────
+
+/** Small tinted icon tile that leads every settings row. */
+function SettingIcon({ icon: Icon }: { icon: LucideIcon }) {
+  return (
+    <View style={styles.iconTile}>
+      <Icon size={17} color={theme.colors.brandInk} strokeWidth={2.2} />
+    </View>
+  );
+}
+
+/** Segmented control with a navy pill that springs under the active segment. */
+function SegmentedControl<T extends string>({
+  options,
+  selectedId,
+  onSelect,
+}: {
+  options: ReadonlyArray<{ readonly id: T; readonly label: string }>;
+  selectedId: string;
+  onSelect: (id: T) => void;
+}) {
+  const reduceMotion = useReducedMotion();
+  const [rowWidth, setRowWidth] = useState(0);
+  const count = options.length;
+  const segmentWidth = count > 0 ? rowWidth / count : 0;
+  const selectedIndex = Math.max(0, options.findIndex((o) => o.id === selectedId));
+  const x = useSharedValue(0);
+
+  useEffect(() => {
+    if (segmentWidth <= 0) return;
+    const target = selectedIndex * segmentWidth;
+    x.value = reduceMotion ? withTiming(target, { duration: 0 }) : withSpring(target, theme.motion.springBouncy);
+  }, [selectedIndex, segmentWidth, reduceMotion, x]);
+
+  const indicatorStyle = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }] }));
+
+  return (
+    <View style={styles.segmentTrack}>
+      <View style={styles.segmentRow} onLayout={(e) => setRowWidth(e.nativeEvent.layout.width)}>
+        {segmentWidth > 0 && (
+          <Animated.View style={[styles.segmentIndicator, { width: segmentWidth }, indicatorStyle]} />
+        )}
+        {options.map((option) => {
+          const selected = option.id === selectedId;
+          return (
+            <View key={option.id} style={styles.segmentSlot}>
+              <PressableScale
+                scaleTo={0.97}
+                onPress={() => onSelect(option.id)}
+                style={styles.segment}
+                accessibilityRole="button"
+                accessibilityLabel={`Walking mode ${option.label}`}
+                accessibilityState={{ selected }}
+              >
+                <Text style={[styles.segmentLabel, selected && styles.segmentLabelOn]} numberOfLines={1}>
+                  {option.label}
+                </Text>
+              </PressableScale>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+/** Departure-board stepper: minus / big tabular numeral / plus. */
+function StepperRow({
+  icon,
+  label,
+  hint,
+  value,
+  unit,
+  accessibilityValueText,
+  atMin,
+  atMax,
+  onDecrement,
+  onIncrement,
+  decrementLabel,
+  incrementLabel,
+  footnote,
+}: {
+  icon: LucideIcon;
+  label: string;
+  hint: string;
+  value: number;
+  unit: string;
+  accessibilityValueText: string;
+  atMin: boolean;
+  atMax: boolean;
+  onDecrement: () => void;
+  onIncrement: () => void;
+  decrementLabel: string;
+  incrementLabel: string;
+  footnote?: string;
+}) {
+  return (
+    <View>
+      <View style={styles.rowHeader}>
+        <SettingIcon icon={icon} />
+        <Text style={styles.rowLabel}>{label}</Text>
+      </View>
+      <Text style={styles.hint}>{hint}</Text>
+      <View style={styles.stepperRow}>
+        <PressableScale
+          scaleTo={0.9}
+          disabled={atMin}
+          onPress={onDecrement}
+          style={[styles.stepBtn, atMin && styles.stepBtnDisabled]}
+          accessibilityRole="button"
+          accessibilityLabel={decrementLabel}
+          accessibilityState={{ disabled: atMin }}
+        >
+          <Minus size={20} color={atMin ? theme.colors.textMuted : theme.colors.navy} strokeWidth={2.4} />
+        </PressableScale>
+        <View style={styles.stepValueWrap}>
+          <AnimatedNumber value={value} style={styles.stepValue} accessibilityLabel={accessibilityValueText} />
+          <Text style={styles.stepUnit}>{unit}</Text>
+        </View>
+        <PressableScale
+          scaleTo={0.9}
+          disabled={atMax}
+          onPress={onIncrement}
+          style={[styles.stepBtn, atMax && styles.stepBtnDisabled]}
+          accessibilityRole="button"
+          accessibilityLabel={incrementLabel}
+          accessibilityState={{ disabled: atMax }}
+        >
+          <Plus size={20} color={atMax ? theme.colors.textMuted : theme.colors.navy} strokeWidth={2.4} />
+        </PressableScale>
+      </View>
+      {footnote != null && <Text style={styles.stepFootnote}>{footnote}</Text>}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
-    padding: 16,
-    paddingBottom: 40,
+    padding: theme.layout.gutter,
+    paddingBottom: 48,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  sectionHeader: { fontSize: 11, fontFamily: "DMSans_600SemiBold", letterSpacing: 0.8, textTransform: "uppercase" as const, color: theme.colors.textMuted, marginTop: 20, marginBottom: 8, marginLeft: 4 },
-  sectionCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.xl, padding: 16, marginBottom: 4, ...theme.shadows.md },
-  innerCard: { backgroundColor: theme.colors.surfaceRaised, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.borderSoft, padding: 14, marginTop: 12 },
-  label: {
-    fontSize: 16,
-    fontFamily: "DMSans_600SemiBold",
-    color: theme.colors.navy,
-    marginBottom: 8,
-  },
-  labelRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
-  labelInRow: { marginBottom: 0 },
-  valuePill: { backgroundColor: theme.colors.orangeSoft, borderRadius: theme.radius.pill, paddingVertical: 4, paddingHorizontal: 12 },
-  valuePillText: { fontSize: 14, fontFamily: "DMSans_700Bold", color: theme.colors.orange },
-  hint: {
-    fontSize: 14,
-    fontFamily: "DMSans_400Regular",
-    color: theme.colors.textSecondary,
-    marginBottom: 12,
-  },
-  input: {
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    borderRadius: theme.radius.lg,
-    padding: 12,
-    fontSize: 16,
-    fontFamily: "DMSans_400Regular",
-    color: theme.colors.text,
-    marginBottom: 16,
-  },
-  buttonRow: { flexDirection: "row", gap: 12, marginTop: 8 },
-  buttonSecondary: {
+  sectionHeaderWrap: { marginBottom: 10 },
+  sectionCard: {
     backgroundColor: theme.colors.surface,
-    borderWidth: 1.5,
-    borderColor: theme.colors.navy,
-    paddingVertical: 13,
-    borderRadius: theme.radius.lg,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  buttonSecondaryText: { color: theme.colors.navy, fontSize: 16, fontFamily: "DMSans_600SemiBold" },
-  buttonWrap: { borderRadius: theme.radius.lg, ...theme.shadows.glowOrange },
-  buttonGradient: {
-    borderRadius: theme.radius.lg,
-    paddingVertical: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  buttonDisabled: { opacity: 0.7 },
-  buttonText: { color: theme.colors.surface, fontSize: 16, fontFamily: "DMSans_600SemiBold" },
-  toggleRow: { marginTop: 0 },
-  dividerTop: { borderTopWidth: 1, borderTopColor: theme.colors.borderSoft, marginTop: 16, paddingTop: 16 },
-  walkingRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
-  walkingBtn: {
-    paddingVertical: 9,
-    paddingHorizontal: 16,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.xl,
+    padding: theme.layout.gutter,
+    marginBottom: theme.layout.sectionGap,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
+    ...theme.elevation[2],
   },
-  walkingBtnOn: { backgroundColor: theme.colors.navy, borderColor: theme.colors.navy, ...theme.shadows.glowNavy },
-  walkingBtnText: { fontSize: 14, fontFamily: "DMSans_500Medium", color: theme.colors.text },
-  walkingBtnTextOn: { color: theme.colors.surface, fontFamily: "DMSans_600SemiBold" },
-  sliderRow: { marginTop: 4 },
-  slider: { width: "100%", height: 40 },
-  switchRow: {
+  rowHeader: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 8,
+    gap: theme.layout.cardGap,
+    minHeight: theme.layout.tapMin,
   },
-  toggleLabel: { fontSize: 16, fontFamily: "DMSans_400Regular", color: theme.colors.text },
-  testNotifBtn: {
-    marginTop: 12,
-    padding: 12,
+  rowLabelWrap: { flex: 1 },
+  rowLabel: { ...theme.text.heading, color: theme.colors.navy },
+  rowStatus: { ...theme.text.caption, color: theme.colors.textMuted, marginTop: 1 },
+  iconTile: {
+    width: 34,
+    height: 34,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.orangeSoft,
     alignItems: "center",
+    justifyContent: "center",
   },
-  testNotifBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.orange },
-  linkButton: {
-    marginTop: 8,
-    padding: 13,
+  hint: {
+    ...theme.text.caption,
+    color: theme.colors.textSecondary,
+    marginTop: 2,
+    marginBottom: theme.layout.cardGap,
+  },
+  hintLast: { marginBottom: 0 },
+  note: { ...theme.text.caption, fontSize: 12, color: theme.colors.textMuted, marginTop: 4 },
+  input: {
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     borderRadius: theme.radius.lg,
-    borderWidth: 1.5,
-    borderColor: theme.colors.navy,
-    backgroundColor: theme.colors.surface,
-    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    minHeight: theme.layout.tapMin,
+    fontFamily: "DMSans_400Regular",
+    fontSize: 16,
+    color: theme.colors.text,
+    marginBottom: theme.layout.cardGap,
   },
-  linkButtonText: { fontSize: 16, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
-  dangerBtn: {
-    marginTop: 8,
-    padding: 13,
+  buttonRow: { flexDirection: "row", gap: theme.layout.cardGap, marginTop: 4 },
+  dividerTop: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderSoft,
+    marginTop: theme.layout.gutter,
+    paddingTop: theme.layout.gutter,
+  },
+  // Segmented control
+  segmentTrack: {
+    backgroundColor: theme.colors.surfaceAlt,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.errorSoft,
-    alignItems: "center",
+    padding: 3,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
   },
-  dangerBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.error },
-  widgetSteps: { marginBottom: 12 },
+  segmentRow: { flexDirection: "row", position: "relative" },
+  segmentIndicator: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.navy,
+    ...theme.elevation[1],
+  },
+  segmentSlot: { flex: 1 },
+  segment: {
+    minHeight: theme.layout.tapMin,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  segmentLabel: { ...theme.text.badge, fontSize: 13, color: theme.colors.text },
+  segmentLabelOn: { color: theme.colors.surface },
+  paceMeta: {
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
+    fontVariant: ["tabular-nums" as const],
+    marginTop: 8,
+    textAlign: "center",
+  },
+  // Stepper
+  stepperRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.layout.cardGap,
+  },
+  stepBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stepBtnDisabled: { opacity: 0.4 },
+  stepValueWrap: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    gap: 6,
+  },
+  stepValue: { ...theme.text.display, fontSize: 42, lineHeight: 48, color: theme.colors.navy },
+  stepUnit: { ...theme.text.eyebrow, color: theme.colors.textMuted, paddingBottom: 9 },
+  stepFootnote: {
+    ...theme.text.caption,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+    textAlign: "center",
+    marginTop: 8,
+  },
+  // Widget steps
+  widgetSteps: { marginBottom: theme.layout.cardGap, marginTop: 2 },
   widgetStepRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 8 },
-  stepCircle: { width: 22, height: 22, borderRadius: 11, backgroundColor: theme.colors.navy, alignItems: "center", justifyContent: "center", marginTop: 1 },
-  stepCircleText: { fontSize: 12, fontFamily: "DMSans_700Bold", color: theme.colors.surface },
-  widgetStep: { flex: 1, fontSize: 14, fontFamily: "DMSans_400Regular", color: theme.colors.text, lineHeight: 20 },
-  sliderLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
-  sliderMinMax: { fontSize: 11, fontFamily: 'DMSans_400Regular', color: theme.colors.textMuted },
-  aboutRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  aboutLabel: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.text },
-  aboutValue: { fontSize: 14, fontFamily: 'DMSans_400Regular', color: theme.colors.textSecondary },
-  aboutLink: { fontSize: 14, fontFamily: 'DMSans_600SemiBold', color: theme.colors.navy },
-  accountRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
+  stepCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: theme.colors.navy,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
+  stepCircleText: {
+    fontSize: 12,
+    fontFamily: "DMSans_700Bold",
+    color: theme.colors.surface,
+    fontVariant: ["tabular-nums" as const],
+  },
+  widgetStep: { flex: 1, ...theme.text.body, fontSize: 14, lineHeight: 20, color: theme.colors.text },
+  // About
+  aboutValue: { ...theme.text.numeric, color: theme.colors.textSecondary },
+  // Account
+  accountRow: { flexDirection: "row", alignItems: "center", gap: theme.layout.cardGap, marginBottom: theme.layout.gutter },
   accountAvatar: {
-    width: 46, height: 46, borderRadius: 23,
-    justifyContent: "center", alignItems: "center",
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    justifyContent: "center",
+    alignItems: "center",
     ...theme.shadows.glowOrange,
   },
-  accountAvatarText: { color: "#fff", fontSize: 19, fontFamily: "DMSans_700Bold" },
-  accountEmail: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.text },
-  accountHint: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textSecondary, marginTop: 2 },
-  signOutBtn: {
-    padding: 13, borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1.5, borderColor: theme.colors.navy,
-    alignItems: "center",
-  },
-  signOutBtnText: { fontSize: 15, fontFamily: "DMSans_600SemiBold", color: theme.colors.navy },
+  accountAvatarText: { fontFamily: "DMSans_700Bold", fontSize: 19, color: theme.colors.surface },
+  accountEmail: { ...theme.text.subhead, color: theme.colors.text },
+  accountHint: { ...theme.text.caption, color: theme.colors.textSecondary, marginTop: 2 },
 });

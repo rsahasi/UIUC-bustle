@@ -1,11 +1,11 @@
 import { theme } from "@/src/constants/theme";
 import type { CrowdingLevel } from "@/src/api/types";
 import { useSubmitCrowding } from "@/src/queries/crowding";
-import { CROWDING_COLORS, CROWDING_ICONS } from "@/src/utils/crowding";
+import { CROWDING_ICONS } from "@/src/utils/crowding";
+import { Button } from "@/src/components/ui/Button";
+import { CelebrationBurst, PressableScale } from "@/src/components/ui/motion";
 import { useState, useEffect } from "react";
-import {
-  ActivityIndicator, Modal, Pressable, StyleSheet, Text, View,
-} from "react-native";
+import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const COOLDOWN_KEY_PREFIX = "crowding_cooldown_";
@@ -31,6 +31,7 @@ export function CrowdingSheet({ visible, vehicleId, routeId, tripId, onClose }: 
   const [submitted, setSubmitted] = useState(false);
   const [cooldownSecs, setCooldownSecs] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<CrowdingLevel | null>(null);
 
   const cooldownKey = `${COOLDOWN_KEY_PREFIX}${vehicleId}`;
 
@@ -54,6 +55,11 @@ export function CrowdingSheet({ visible, vehicleId, routeId, tripId, onClose }: 
     return () => clearInterval(t);
   }, [cooldownSecs]);
 
+  // Visual-only: clear the highlighted option each time the sheet reopens.
+  useEffect(() => {
+    if (visible) setSelected(null);
+  }, [visible]);
+
   async function handleSelect(level: CrowdingLevel) {
     setError(null);
     try {
@@ -71,14 +77,25 @@ export function CrowdingSheet({ visible, vehicleId, routeId, tripId, onClose }: 
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} />
+      <Pressable
+        style={styles.backdrop}
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="Dismiss crowding sheet"
+      />
       <View style={styles.sheet}>
         <View style={styles.handle} />
-        <Text style={styles.title}>How full is this bus?</Text>
-        <Text style={styles.subtitle}>Route {routeId}</Text>
+        <Text style={styles.title} accessibilityRole="header">
+          How full is this bus?
+        </Text>
+        <Text style={styles.subtitle}>Route {routeId} · your report helps other riders</Text>
 
         {submitted ? (
           <View style={styles.thankYou}>
+            <CelebrationBurst count={14} radius={72} style={StyleSheet.absoluteFill} />
+            <View style={styles.thankYouGlyph}>
+              <Text style={styles.thankYouCheck}>✓</Text>
+            </View>
             <Text style={styles.thankYouText}>Thanks for reporting!</Text>
             {cooldownSecs > 0 && (
               <Text style={styles.cooldownText}>
@@ -88,30 +105,60 @@ export function CrowdingSheet({ visible, vehicleId, routeId, tripId, onClose }: 
           </View>
         ) : (
           <>
-            {OPTIONS.map((opt) => (
-              <Pressable
-                key={opt.level}
-                style={({ pressed }) => [styles.option, pressed && styles.optionPressed]}
-                onPress={() => handleSelect(opt.level)}
-                disabled={isPending}
-              >
-                <View style={[styles.dot, { backgroundColor: CROWDING_COLORS[opt.level] }]} />
-                <View style={styles.optionText}>
-                  <Text style={styles.optionLabel}>
-                    {CROWDING_ICONS[opt.level]} {opt.label}
-                  </Text>
-                  <Text style={styles.optionSub}>{opt.sub}</Text>
-                </View>
-                {isPending && <ActivityIndicator size="small" color={theme.colors.navy} />}
-              </Pressable>
-            ))}
-            {error && <Text style={styles.error}>{error}</Text>}
+            {OPTIONS.map((opt) => {
+              const isSelected = selected === opt.level;
+              return (
+                <PressableScale
+                  key={opt.level}
+                  scaleTo={0.98}
+                  onPress={() => setSelected(opt.level)}
+                  disabled={isPending}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: isSelected, selected: isSelected, disabled: isPending }}
+                  accessibilityLabel={`${opt.label}. ${opt.sub}`}
+                  style={[styles.option, isSelected && styles.optionSelected]}
+                >
+                  <View style={[styles.glyphHalo, { borderColor: theme.colors.crowd[opt.level] }]}>
+                    <Text style={styles.glyph}>{CROWDING_ICONS[opt.level]}</Text>
+                  </View>
+                  <View style={styles.optionText}>
+                    <Text style={styles.optionLabel}>{opt.label}</Text>
+                    <Text style={styles.optionSub}>{opt.sub}</Text>
+                  </View>
+                  <View style={[styles.radio, isSelected && styles.radioSelected]}>
+                    {isSelected && <Text style={styles.radioCheck}>✓</Text>}
+                  </View>
+                </PressableScale>
+              );
+            })}
+            {error && (
+              <Text style={styles.error} accessibilityLiveRegion="polite">
+                {error}
+              </Text>
+            )}
+            <View style={styles.submitWrap}>
+              <Button
+                label={selected ? "Submit report" : "Select a level to report"}
+                onPress={() => {
+                  if (selected) handleSelect(selected);
+                }}
+                variant="primary"
+                loading={isPending}
+                disabled={!selected}
+              />
+            </View>
           </>
         )}
 
-        <Pressable style={styles.closeBtn} onPress={onClose}>
+        <PressableScale
+          onPress={onClose}
+          haptic={false}
+          style={styles.closeBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+        >
           <Text style={styles.closeBtnText}>Close</Text>
-        </Pressable>
+        </PressableScale>
       </View>
     </Modal>
   );
@@ -121,58 +168,126 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)" },
   sheet: {
     backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: theme.radius.xxl,
+    borderTopRightRadius: theme.radius.xxl,
     padding: theme.spacing.lg,
-    paddingBottom: 32,
+    paddingBottom: theme.spacing.xxl,
+    ...theme.elevation[3],
   },
   handle: {
-    width: 36, height: 4, borderRadius: 2,
+    width: 36,
+    height: 4,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.border,
-    alignSelf: "center", marginBottom: theme.spacing.md,
+    alignSelf: "center",
+    marginBottom: theme.spacing.md,
   },
   title: {
-    fontFamily: "DMSerif_400Regular",
-    fontSize: 20, color: theme.colors.text,
+    ...theme.text.title2,
+    color: theme.colors.text,
     marginBottom: 2,
   },
   subtitle: {
-    fontFamily: "DMSans_400Regular",
-    fontSize: 13, color: theme.colors.textSecondary,
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
     marginBottom: theme.spacing.md,
   },
   option: {
-    flexDirection: "row", alignItems: "center",
-    paddingVertical: theme.spacing.md,
-    borderBottomWidth: 1, borderBottomColor: theme.colors.border,
+    flexDirection: "row",
+    alignItems: "center",
     gap: theme.spacing.md,
+    minHeight: theme.layout.tapMin + 12,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderSoft,
+    backgroundColor: theme.colors.surface,
+    marginBottom: theme.spacing.sm,
   },
-  optionPressed: { backgroundColor: theme.colors.background },
-  dot: { width: 12, height: 12, borderRadius: 6 },
+  optionSelected: {
+    borderColor: theme.colors.navy,
+    backgroundColor: theme.colors.surfaceRaised,
+    ...theme.elevation[1],
+  },
+  glyphHalo: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1.5,
+    backgroundColor: theme.colors.surfaceAlt,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  glyph: { fontSize: 14 },
   optionText: { flex: 1 },
   optionLabel: {
-    fontFamily: "DMSans_500Medium", fontSize: 15, color: theme.colors.text,
+    ...theme.text.subhead,
+    color: theme.colors.text,
   },
   optionSub: {
-    fontFamily: "DMSans_400Regular", fontSize: 12, color: theme.colors.textSecondary,
+    ...theme.text.caption,
+    fontSize: 12,
+    color: theme.colors.textMuted,
   },
-  thankYou: { paddingVertical: theme.spacing.lg, alignItems: "center" },
-  thankYouText: {
-    fontFamily: "DMSans_600SemiBold", fontSize: 16, color: theme.colors.text,
+  radio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  cooldownText: {
-    fontFamily: "DMSans_400Regular", fontSize: 13,
-    color: theme.colors.textSecondary, marginTop: theme.spacing.sm,
+  radioSelected: {
+    borderColor: theme.colors.navy,
+    backgroundColor: theme.colors.navy,
+  },
+  radioCheck: {
+    color: theme.colors.textOnNavy,
+    fontSize: 12,
+    lineHeight: 14,
+    fontFamily: "DMSans_700Bold",
   },
   error: {
-    fontFamily: "DMSans_400Regular", fontSize: 13,
-    color: "#F44336", marginTop: theme.spacing.sm,
+    ...theme.text.caption,
+    color: theme.colors.errorDeep,
+    marginTop: theme.spacing.sm,
+  },
+  submitWrap: { marginTop: theme.spacing.md },
+  thankYou: { paddingVertical: theme.spacing.lg, alignItems: "center", gap: theme.spacing.sm },
+  thankYouGlyph: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: theme.colors.successSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  thankYouCheck: {
+    fontSize: 26,
+    lineHeight: 32,
+    color: theme.colors.successDeep,
+    fontFamily: "DMSans_700Bold",
+  },
+  thankYouText: {
+    ...theme.text.heading,
+    color: theme.colors.text,
+  },
+  cooldownText: {
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
+    fontVariant: ["tabular-nums"],
   },
   closeBtn: {
-    marginTop: theme.spacing.md, alignItems: "center",
-    paddingVertical: theme.spacing.sm,
+    marginTop: theme.spacing.md,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: theme.layout.tapMin,
   },
   closeBtnText: {
-    fontFamily: "DMSans_500Medium", fontSize: 14, color: theme.colors.textSecondary,
+    ...theme.text.subhead,
+    fontSize: 14,
+    color: theme.colors.textMuted,
   },
 });
