@@ -27,9 +27,21 @@ import {
   View,
 } from "react-native";
 import MapView, { Callout, Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
+import Animated, { interpolateColor, useAnimatedStyle, useSharedValue, withSpring } from "react-native-reanimated";
 import { theme } from "@/src/constants/theme";
+import { SPRING, TIMING } from "@/src/constants/motion";
 import { Button } from "@/src/components/ui/Button";
-import { AnimatedNumber, CelebrationBurst, FadeInView, PressableScale, TickingCountdown } from "@/src/components/ui/motion";
+import {
+  CelebrationBurst,
+  FadeInView,
+  fireHaptic,
+  Odometer,
+  PressableScale,
+  ProgressRing,
+  Stagger,
+  TickingCountdown,
+  useGlide,
+} from "@/src/components/ui/motion";
 import { getEntranceCoords } from "@/src/utils/buildingEntrance";
 
 const ARRIVAL_THRESHOLD_M = 30;
@@ -85,6 +97,228 @@ function StatTile({ icon: Icon, value, label }: { icon: LucideIcon; value: strin
       <Text style={styles.statTileValue} numberOfLines={1}>{value}</Text>
       <Text style={styles.statTileLabel}>{label}</Text>
     </View>
+  );
+}
+
+// ── HUD primary readout ───────────────────────────────────────────────────
+
+/** Column count for a non-negative integer, minimum one. */
+function digitPlaces(n: number): number {
+  return String(Math.max(0, Math.floor(n))).length;
+}
+
+/**
+ * `formatDistance()` output split into odometer parts.
+ *
+ * Deliberately parses that helper's own string rather than re-deriving feet
+ * and miles: the rolling digits and the spoken label are then the same number
+ * by construction, so a rounding difference can never make the HUD say one
+ * thing and VoiceOver another.
+ */
+function splitDistance(meters: number): { whole: number; tenths: number | null; unit: string; label: string } {
+  const label = formatDistance(meters);
+  const [num, unit] = label.split(" ");
+  const [w, t] = num.split(".");
+  const whole = parseInt(w, 10);
+  return {
+    whole: Number.isFinite(whole) ? whole : 0,
+    tenths: t != null ? parseInt(t, 10) : null,
+    unit: unit ?? "",
+    label,
+  };
+}
+
+/**
+ * A big HUD number as rolling odometer columns plus a quiet unit suffix.
+ *
+ * The odometers carry their own (stable) labels, but every caller wraps this in
+ * an `accessible` HudPrimaryCell, so the cell speaks once and the individual
+ * digit columns stay out of the VoiceOver order.
+ */
+function HudRollingValue({
+  whole,
+  tenths,
+  unit,
+  a11yLabel,
+}: { whole: number; tenths: number | null; unit: string; a11yLabel: string }) {
+  return (
+    <View style={styles.hudValueRow}>
+      <Odometer
+        value={whole}
+        places={digitPlaces(whole)}
+        padWithZeros={false}
+        style={styles.hudPrimaryValue}
+        accessibilityLabel={a11yLabel}
+      />
+      {tenths != null && (
+        <React.Fragment>
+          <Text style={styles.hudPrimaryValue}>.</Text>
+          <Odometer
+            value={tenths}
+            places={1}
+            style={styles.hudPrimaryValue}
+            accessibilityLabel={a11yLabel}
+          />
+        </React.Fragment>
+      )}
+      {unit.length > 0 && <Text style={styles.hudPrimaryUnit}>{unit}</Text>}
+    </View>
+  );
+}
+
+/** Elapsed m:ss as rolling columns. Seconds roll fast so the tick reads as live. */
+function HudElapsedValue({ totalSeconds }: { totalSeconds: number }) {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return (
+    <View style={styles.hudValueRow}>
+      <Odometer
+        value={m}
+        places={digitPlaces(m)}
+        padWithZeros={false}
+        style={styles.hudPrimaryValue}
+        accessibilityLabel="Elapsed minutes"
+      />
+      <Text style={styles.hudPrimaryValue}>:</Text>
+      <Odometer
+        value={s}
+        places={2}
+        duration={TIMING.fast.duration}
+        style={styles.hudPrimaryValue}
+        accessibilityLabel="Elapsed seconds"
+      />
+    </View>
+  );
+}
+
+/**
+ * One cell of the primary HUD row. `accessible` on the cell is what keeps the
+ * live digits from being announced individually: the cell speaks a single
+ * whole-unit label that only changes when the whole unit changes.
+ */
+function HudPrimaryCell({
+  label,
+  a11yLabel,
+  children,
+}: { label: string; a11yLabel: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.hudPrimaryCell} accessible accessibilityLabel={a11yLabel}>
+      <Text style={styles.hudPrimaryLabel}>{label}</Text>
+      {children}
+    </View>
+  );
+}
+
+// ── Pace chip ─────────────────────────────────────────────────────────────
+
+type PaceStatus = "on-track" | "behind" | "ahead";
+
+/**
+ * Pace chip whose fill glides mint -> amber as the margin against class time
+ * shrinks.
+ *
+ * The colour is a second channel, never the only one: the icon and the full
+ * sentence carry the status on their own, and the fill stays light enough that
+ * navy ink on it clears AA at both ends of the ramp (white ink would not).
+ */
+function PaceChip({ status, marginMins }: { status: PaceStatus; marginMins: number }) {
+  // +3 min of slack reads fully mint, -1 min reads fully amber — the same two
+  // thresholds the already-computed paceStatus uses, so colour and word agree.
+  const t = Math.min(Math.max((3 - marginMins) / 4, 0), 1);
+  const glide = useGlide(t, { timing: TIMING.base });
+  const fill = useAnimatedStyle(() => ({
+    backgroundColor: interpolateColor(glide.value, [0, 1], [theme.colors.mint, theme.colors.gold]),
+  }));
+
+  const lateMins = Math.abs(Math.round(marginMins));
+  const text =
+    status === "behind"
+      ? `Behind pace — ${lateMins} min late at this speed`
+      : status === "ahead"
+        ? "On track — arriving early"
+        : "On pace for class";
+  const Icon = status === "behind" ? AlertTriangle : Check;
+  // Spoken separately from the printed sentence: screen readers say the
+  // abbreviation "min" as-is, and the em dash reads as nothing at all.
+  const a11yText =
+    status === "behind"
+      ? `Behind pace, ${lateMins} ${lateMins === 1 ? "minute" : "minutes"} late at this speed`
+      : status === "ahead"
+        ? "On track, arriving early"
+        : "On pace for class";
+
+  return (
+    <Animated.View style={[styles.paceChip, fill]} accessible accessibilityLabel={a11yText}>
+      <Icon size={13} color={theme.colors.navyDeep} strokeWidth={2.6} />
+      <Text style={styles.paceChipText}>{text}</Text>
+    </Animated.View>
+  );
+}
+
+// ── Arrival card ──────────────────────────────────────────────────────────
+
+interface ArrivalCardProps {
+  destName: string;
+  distanceLabel: string;
+  durationLabel: string;
+  energyLabel: string;
+  stepsLabel: string | null;
+  encouragement: string | null;
+  onFinish: () => void;
+}
+
+/**
+ * The arrival moment: the ring closes to 100%, the success haptic fires, the
+ * burst goes off and the stat tiles rise in.
+ *
+ * This is the ONE place in the app allowed to use SPRING.joy — the card's
+ * entrance overshoots on purpose. Everything here is render-only; the trip is
+ * already recorded by the time this mounts.
+ */
+function ArrivalCard({
+  destName,
+  distanceLabel,
+  durationLabel,
+  energyLabel,
+  stepsLabel,
+  encouragement,
+  onFinish,
+}: ArrivalCardProps) {
+  const scale = useSharedValue(0.92);
+  useEffect(() => {
+    fireHaptic("arrive");
+    scale.value = withSpring(1, SPRING.joy);
+  }, [scale]);
+  const cardStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+
+  return (
+    <Animated.View style={[styles.modalCard, cardStyle]}>
+      <View style={styles.ringWrap}>
+        <ProgressRing progress={1} size={96} strokeWidth={8} colors={theme.gradients.sunset}>
+          <View style={styles.modalHalo}>
+            <PartyPopper size={30} color={theme.colors.brandInk} strokeWidth={1.8} />
+          </View>
+        </ProgressRing>
+      </View>
+      <Text style={styles.modalEyebrow}>Trip complete</Text>
+      <Text style={styles.modalTitle} accessibilityRole="header">You arrived!</Text>
+      <Text style={styles.modalDest} numberOfLines={2}>{destName}</Text>
+      <Stagger style={styles.statGrid} itemStyle={styles.statTileWrap}>
+        <StatTile icon={MapPin} value={distanceLabel} label="Distance" />
+        <StatTile icon={Timer} value={durationLabel} label="Duration" />
+        <StatTile icon={Flame} value={energyLabel} label="Energy" />
+        {stepsLabel != null && <StatTile icon={Footprints} value={stepsLabel} label="Steps" />}
+      </Stagger>
+      {encouragement && (
+        <Text style={styles.encouragementText}>{encouragement}</Text>
+      )}
+      <View style={styles.modalCtaWrap}>
+        <Button label="Save & finish" onPress={onFinish} />
+      </View>
+      <View pointerEvents="none" style={styles.burstLayer}>
+        <CelebrationBurst count={22} radius={130} />
+      </View>
+    </Animated.View>
   );
 }
 
@@ -617,6 +851,8 @@ export default function WalkNavScreen() {
   const target = currentTargetRef.current;
   const etaSeconds = distanceM != null && speedMps > 0 ? Math.round(distanceM / speedMps) : null;
   const etaMinutes = etaSeconds != null ? Math.ceil(etaSeconds / 60) : null;
+  // Render-only split of the same formatDistance() string the modal uses.
+  const distanceParts = distanceM != null ? splitDistance(distanceM) : null;
 
   // Pace warning calculation
   const classStartTime = params.arrive_by_class_time as string | undefined;
@@ -944,27 +1180,49 @@ export default function WalkNavScreen() {
         </View>
 
         <View style={styles.hudPrimaryRow}>
-          <View style={styles.hudPrimaryCell}>
-            <Text style={styles.hudPrimaryLabel}>{navPhase === "walking" ? "Distance" : "Dist to stop"}</Text>
-            <Text style={styles.hudPrimaryValue} numberOfLines={1}>
-              {distanceM != null ? formatDistance(distanceM) : "—"}
-            </Text>
-          </View>
+          <HudPrimaryCell
+            label={navPhase === "walking" ? "Distance" : "Dist to stop"}
+            a11yLabel={
+              distanceParts != null
+                ? `${navPhase === "walking" ? "Distance" : "Distance to stop"} ${distanceParts.label}`
+                : "Distance unavailable"
+            }
+          >
+            {distanceParts != null ? (
+              <HudRollingValue
+                whole={distanceParts.whole}
+                tenths={distanceParts.tenths}
+                unit={distanceParts.unit}
+                a11yLabel={distanceParts.label}
+              />
+            ) : (
+              <Text style={styles.hudPrimaryValue} numberOfLines={1}>—</Text>
+            )}
+          </HudPrimaryCell>
           <View style={styles.hudPrimaryDivider} />
           {navPhase === "walking" ? (
-            <View style={styles.hudPrimaryCell}>
-              <Text style={styles.hudPrimaryLabel}>ETA</Text>
-              <AnimatedNumber
-                value={etaMinutes != null ? `${etaMinutes} min` : "—"}
-                style={styles.hudPrimaryValue}
-                accessibilityLabel={etaMinutes != null ? `ETA ${etaMinutes} minutes` : "ETA unavailable"}
-              />
-            </View>
+            <HudPrimaryCell
+              label="ETA"
+              a11yLabel={etaMinutes != null ? `ETA ${etaMinutes} minutes` : "ETA unavailable"}
+            >
+              {etaMinutes != null ? (
+                <HudRollingValue
+                  whole={etaMinutes}
+                  tenths={null}
+                  unit="min"
+                  a11yLabel={`ETA ${etaMinutes} minutes`}
+                />
+              ) : (
+                <Text style={styles.hudPrimaryValue} numberOfLines={1}>—</Text>
+              )}
+            </HudPrimaryCell>
           ) : (
-            <View style={styles.hudPrimaryCell}>
-              <Text style={styles.hudPrimaryLabel}>Elapsed</Text>
-              <Text style={styles.hudPrimaryValue} numberOfLines={1}>{formatElapsed(durationSeconds)}</Text>
-            </View>
+            <HudPrimaryCell
+              label="Elapsed"
+              a11yLabel={`Elapsed ${Math.floor(durationSeconds / 60)} minutes`}
+            >
+              <HudElapsedValue totalSeconds={durationSeconds} />
+            </HudPrimaryCell>
           )}
         </View>
 
@@ -978,17 +1236,8 @@ export default function WalkNavScreen() {
           )}
         </View>
 
-        {navPhase === "walking" && paceStatus === 'behind' && etaMinutes != null && minsUntilClass != null && (
-          <View style={[styles.paceChip, styles.paceChipBehind]} accessible accessibilityLabel={`Behind pace, ${Math.abs(Math.round(minsUntilClass - etaMinutes))} minutes late at this speed`}>
-            <AlertTriangle size={13} color={theme.colors.textOnNavy} strokeWidth={2.4} />
-            <Text style={styles.paceChipText}>Behind pace — {Math.abs(Math.round(minsUntilClass - etaMinutes))} min late at this speed</Text>
-          </View>
-        )}
-        {navPhase === "walking" && paceStatus === 'ahead' && (
-          <View style={[styles.paceChip, styles.paceChipAhead]} accessible accessibilityLabel="On track, arriving early">
-            <Check size={13} color={theme.colors.textOnNavy} strokeWidth={2.4} />
-            <Text style={styles.paceChipText}>On track — arriving early</Text>
-          </View>
+        {navPhase === "walking" && paceStatus != null && etaMinutes != null && minsUntilClass != null && (
+          <PaceChip status={paceStatus} marginMins={minsUntilClass - etaMinutes} />
         )}
 
         <View style={styles.hudFooter}>
@@ -1017,34 +1266,18 @@ export default function WalkNavScreen() {
         </View>
       )}
 
-      {/* Completion modal — celebration + stat tiles */}
+      {/* Completion modal — ring closes, haptic, burst, then the tiles rise in */}
       <Modal visible={showCompletion} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHalo}>
-              <PartyPopper size={30} color={theme.colors.brandInk} strokeWidth={1.8} />
-            </View>
-            <Text style={styles.modalEyebrow}>Trip complete</Text>
-            <Text style={styles.modalTitle} accessibilityRole="header">You arrived!</Text>
-            <Text style={styles.modalDest} numberOfLines={2}>{destName}</Text>
-            <View style={styles.statGrid}>
-              <StatTile icon={MapPin} value={formatDistance(walkedDistanceMRef.current)} label="Distance" />
-              <StatTile icon={Timer} value={formatElapsed(durationSeconds)} label="Duration" />
-              <StatTile icon={Flame} value={`${caloriesBurned.toFixed(1)} kcal`} label="Energy" />
-              {pedometerAvailable && (
-                <StatTile icon={Footprints} value={String(stepCount)} label="Steps" />
-              )}
-            </View>
-            {encouragement && (
-              <Text style={styles.encouragementText}>{encouragement}</Text>
-            )}
-            <View style={styles.modalCtaWrap}>
-              <Button label="Save & finish" onPress={finishWalk} />
-            </View>
-            <View pointerEvents="none" style={styles.burstLayer}>
-              <CelebrationBurst count={22} radius={130} />
-            </View>
-          </View>
+          <ArrivalCard
+            destName={destName}
+            distanceLabel={formatDistance(walkedDistanceMRef.current)}
+            durationLabel={formatElapsed(durationSeconds)}
+            energyLabel={`${caloriesBurned.toFixed(1)} kcal`}
+            stepsLabel={pedometerAvailable ? String(stepCount) : null}
+            encouragement={encouragement}
+            onFinish={finishWalk}
+          />
         </View>
       </Modal>
     </View>
@@ -1224,6 +1457,16 @@ const styles = StyleSheet.create({
     lineHeight: 46,
     color: theme.colors.textOnNavy,
   },
+  // The odometer sizes its digit window from lineHeight, so the row only has to
+  // line the columns up next to each other.
+  hudValueRow: { flexDirection: "row", alignItems: "center" },
+  hudPrimaryUnit: {
+    ...theme.text.numeric,
+    fontSize: 15,
+    lineHeight: 46,
+    marginLeft: 5,
+    color: theme.colors.textOnNavyMuted,
+  },
   hudStatsRow: {
     flexDirection: "row",
     justifyContent: "center",
@@ -1246,12 +1489,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 5,
     marginTop: 6,
+    // Static fallback so the pill is never colourless on its first frame, before
+    // the animated fill has run once.
+    backgroundColor: theme.colors.mint,
   },
-  paceChipBehind: { backgroundColor: theme.colors.errorDeep },
-  paceChipAhead: { backgroundColor: theme.colors.successDeep },
+  // Fill comes from the animated mint -> amber ramp; navy ink clears AA on both
+  // ends of it, which white ink would not.
   paceChipText: {
     ...theme.text.badge,
-    color: theme.colors.textOnNavy,
+    color: theme.colors.navyDeep,
   },
   hudFooter: {
     flexDirection: "row",
@@ -1316,6 +1562,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     ...theme.elevation[3],
   },
+  ringWrap: { marginBottom: 10 },
   modalHalo: {
     width: 68,
     height: 68,
@@ -1323,7 +1570,6 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.orangeSoft,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
   },
   modalEyebrow: {
     ...theme.text.eyebrow,
@@ -1348,9 +1594,10 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
     marginBottom: 16,
   },
+  // Stagger wraps each tile in its own Animated.View, so the flex sizing has to
+  // live on that wrapper — the tile itself just fills it.
+  statTileWrap: { flexGrow: 1, flexBasis: "40%" },
   statTile: {
-    flexGrow: 1,
-    flexBasis: "40%",
     backgroundColor: theme.colors.surfaceAlt,
     borderRadius: theme.radius.lg,
     paddingVertical: 12,
