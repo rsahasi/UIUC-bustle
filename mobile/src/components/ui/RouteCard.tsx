@@ -5,6 +5,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { Badge } from "./Badge";
 import { Button } from "./Button";
 import { CrowdingBadge } from "./CrowdingBadge";
+import { Press } from "./motion";
 import type { CrowdingInfo } from "@/src/api/types";
 
 export interface RouteCardProps {
@@ -13,17 +14,28 @@ export interface RouteCardProps {
   onStartBus?: () => void;
   isHighlighted?: boolean;
   crowding?: CrowdingInfo | null;
+  /**
+   * Makes the whole card a press surface (`Press variant="lift"`): it rises
+   * off the list and its shadow deepens from the resting elevation.
+   *
+   * Optional on purpose. A card with nothing to open is not a control, and
+   * wrapping one in a Pressable anyway would give it a press state, a haptic,
+   * and a screen-reader "button" for a tap that does nothing.
+   */
+  onPress?: () => void;
 }
 
-export function RouteCard({ option, onStartWalk, onStartBus, isHighlighted, crowding }: RouteCardProps) {
+export function RouteCard({ option, onStartWalk, onStartBus, isHighlighted, crowding, onPress }: RouteCardProps) {
   const isBus = option.type === "BUS";
   const etaText = `${option.eta_minutes ?? "?"}m ETA`;
   const departText = option.depart_in_minutes != null
     ? option.depart_in_minutes <= 0 ? "Leave now" : `Depart in ${option.depart_in_minutes}m`
     : null;
 
-  return (
-    <View style={[styles.card, isHighlighted && styles.highlighted]}>
+  const cardStyle = [styles.card, isHighlighted && styles.highlighted];
+
+  const body = (
+    <>
       {isHighlighted && <View style={styles.accentBar} />}
       <View style={styles.header}>
         <Badge label={isBus ? "Bus" : "Walk"} variant={isBus ? "route" : "info"} />
@@ -45,7 +57,28 @@ export function RouteCard({ option, onStartWalk, onStartBus, isHighlighted, crow
           <Button label="Start Walk" onPress={onStartWalk} variant="primary" size="sm" icon={Footprints} />
         )}
       </View>
-    </View>
+    </>
+  );
+
+  if (!onPress) {
+    return <View style={cardStyle}>{body}</View>;
+  }
+
+  // `lift` animates shadowOpacity / shadowRadius / elevation off the resting
+  // `theme.elevation[2]` in `styles.card`, so the card leaves the surface
+  // rather than sliding across it. The inner Buttons keep their own press
+  // state: the nested Pressable wins the responder.
+  return (
+    <Press
+      variant="lift"
+      liftBy={2}
+      onPress={onPress}
+      style={cardStyle}
+      accessibilityRole="button"
+      accessibilityLabel={`${isBus ? "Bus" : "Walk"} option, ${etaText}${departText ? `, ${departText}` : ""}`}
+    >
+      {body}
+    </Press>
   );
 }
 
