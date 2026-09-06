@@ -1,21 +1,19 @@
 import { fetchAutocomplete, fetchBusRouteStops, fetchPlaceDetails, fetchRecommendation, fetchWalkingRoute, fetchCrowding } from "@/src/api/client";
 import type { AutocompleteResult } from "@/src/api/client";
-import type { RecommendationOption, StopInfo, CrowdingInfo } from "@/src/api/types";
+import type { RecommendationOption, StopInfo, CrowdingInfo, VehicleInfo } from "@/src/api/types";
 import { CrowdingSheet } from "@/src/components/CrowdingSheet";
-import { CROWDING_ICONS, crowdingLabel } from "@/src/utils/crowding";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
 import { formatDistance, haversineMeters } from "@/src/utils/distance";
 import * as Location from "expo-location";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
 import React from "react";
 import { useVehicles } from "@/src/queries/map";
 import { useDepartures, useNearbyStops } from "@/src/queries/departures";
 import {
   ActivityIndicator,
-  Animated,
   Keyboard,
   Linking,
   Platform,
@@ -26,10 +24,14 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useSharedValue, withTiming } from "react-native-reanimated";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import { theme } from "@/src/constants/theme";
-import { FadeInView, PressableScale, Skeleton } from "@/src/components/ui/motion";
+import { STAGGER, TIMING } from "@/src/constants/motion";
+import { FadeInView, PressableScale, Skeleton, Stagger } from "@/src/components/ui/motion";
+import { VehicleMarker, vehicleMarkerKey } from "@/src/components/map";
+import { Sheet, type SheetExternalGesture } from "@/src/components/ui/Sheet";
 import { Badge } from "@/src/components/ui/Badge";
 import { Button } from "@/src/components/ui/Button";
 import { DepartureRow } from "@/src/components/ui/DepartureRow";
@@ -40,41 +42,50 @@ function MapLiveBadge({ count }: { count: number }) {
   return <Badge label={`LIVE · ${count} ${count === 1 ? "bus" : "buses"}`} variant="live" size="md" />;
 }
 
-/** AA crowding accent from theme tokens — same vocabulary as CrowdingBadge. */
-function crowdThemeColor(info: CrowdingInfo | null | undefined): string {
-  if (!info || info.source === "estimated") return theme.colors.crowd.estimated;
-  return theme.colors.crowd[info.level] ?? theme.colors.crowd.estimated;
-}
+/**
+ * Detents for the stop sheet: closed, a peek that leaves most of the map
+ * visible, and a near-full read of the departure board.
+ *
+ * `Sheet` sizes its surface to the LARGEST detent, so the content box is
+ * always 0.85 of the screen; at 0.45 the lower half simply sits below the
+ * fold. That is why the departures list scrolls rather than being trimmed.
+ */
+const STOP_SNAP_POINTS = [0, 0.45, 0.85] as const;
+/** The detent a freshly picked stop opens at. */
+const STOP_PEEK_INDEX = 1;
 
-/** Render-only vehicle marker face: orange bus dot, heading wedge, crowding ring + glyph bubble. */
-function VehicleDot({ ringColor, headingDeg, glyph }: { ringColor: string; headingDeg: number | null; glyph: string | null }) {
-  return (
-    <View style={markerStyles.vehicleWrap}>
-      {headingDeg != null && (
-        <View style={[markerStyles.headingLayer, { transform: [{ rotate: `${headingDeg}deg` }] }]}>
-          <View style={markerStyles.headingWedge} />
-        </View>
-      )}
-      <View style={[markerStyles.vehicleDot, { borderColor: ringColor }]}>
-        <View style={markerStyles.vehicleCore} />
-      </View>
-      {glyph != null && (
-        <View style={markerStyles.crowdBubble}>
-          <Text style={markerStyles.crowdGlyph}>{glyph}</Text>
-        </View>
-      )}
-    </View>
-  );
-}
+/**
+ * How many buses may glide at once.
+ *
+ * `VehicleMarker`'s glide is an `AnimatedRegion`, and there is no native
+ * driver for a map coordinate — every gliding puck drives JS-thread frames for
+ * `GLIDE.vehicle` ms after each 15s poll. Forty is the ceiling the marker's own
+ * docs give; past that the whole screen janks once per poll. Everything else
+ * gets `glide={false}`, which snaps.
+ */
+const GLIDE_BUDGET = 40;
 
-/** Render-only stop marker: a quiet navy dot that grows (with an orange core) when selected. */
+/**
+ * Render-only stop marker: a quiet navy dot that grows (with an orange core)
+ * when selected.
+ *
+ * The dot is 12-24pt but the marker it rasterizes into is 44x44 and centred on
+ * the coordinate, so the tap target clears the accessibility minimum without
+ * the dot itself growing — the same trick `VehicleMarker` uses for its puck.
+ * Padding it out here (rather than with `hitSlop`, which a native map marker
+ * does not honour) is the only way to widen the target.
+ */
 function StopDot({ selected }: { selected: boolean }) {
-  return selected ? (
-    <View style={markerStyles.stopSelectedOuter}>
-      <View style={markerStyles.stopSelectedInner} />
+  return (
+    <View style={markerStyles.stopTapTarget}>
+      {selected ? (
+        <View style={markerStyles.stopSelectedOuter}>
+          <View style={markerStyles.stopSelectedInner} />
+        </View>
+      ) : (
+        <View style={markerStyles.stopIdle} />
+      )}
     </View>
-  ) : (
-    <View style={markerStyles.stopIdle} />
   );
 }
 
@@ -138,16 +149,20 @@ export default function MapScreen() {
   const [crowdingSheet, setCrowdingSheet] = useState<{ vehicleId: string; routeId: string } | null>(null);
 
   const [showEmptyState, setShowEmptyState] = useState(true);
-  const emptyStateOpacity = useRef(new Animated.Value(1)).current;
+  // Was two hand-picked RN Animated durations (300 out / 200 in). Now one
+  // token: `TIMING.base` is the app's default crossfade curve and carries
+  // `ReduceMotion.System`, so the fade collapses to a cut when the OS asks for
+  // reduced motion instead of relying on this screen to remember.
+  const emptyStateOpacity = useSharedValue(1);
 
   const fadeOutEmptyState = useCallback(() => {
     setShowEmptyState(false);
-    Animated.timing(emptyStateOpacity, { toValue: 0, duration: 300, useNativeDriver: true }).start();
+    emptyStateOpacity.value = withTiming(0, TIMING.base);
   }, [emptyStateOpacity]);
 
   const fadeInEmptyState = useCallback(() => {
     setShowEmptyState(true);
-    Animated.timing(emptyStateOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+    emptyStateOpacity.value = withTiming(1, TIMING.base);
   }, [emptyStateOpacity]);
 
   const mapRef = useRef<MapView | null>(null);
@@ -515,6 +530,82 @@ export default function MapScreen() {
     [router]
   );
 
+  // `VehicleMarker` is memoized, so an inline arrow here would give every puck
+  // a new `onPress` on every render and defeat that memo. Same body as before.
+  const onVehiclePress = useCallback((v: VehicleInfo) => {
+    setCrowdingSheet({ vehicleId: v.vehicle_id, routeId: v.route_id });
+  }, []);
+
+  // ── Which buses are allowed to glide ────────────────────────────────────
+  // Recomputed only when a poll delivers a new `vehicles` array, which is also
+  // the only moment the answer is used: the markers re-render, each one reads
+  // its flag, and the glide either starts or the puck snaps.
+  //
+  // `currentRegionRef` is read rather than mirrored into state on purpose.
+  // `onRegionChangeComplete` fires at the end of every pan and pinch; turning
+  // that into a `setState` would re-render the entire map screen — and every
+  // marker on it — for a value that is only ever consulted here. The ref is
+  // current by the time a poll lands, and a bus that drifts out of view
+  // between polls just finishes the glide it already started.
+  const glidingVehicleIds = useMemo(() => {
+    const r = currentRegionRef.current;
+    const latPad = r.latitudeDelta / 2;
+    const lngPad = r.longitudeDelta / 2;
+    const visible: { id: string; d2: number }[] = [];
+    for (const v of vehicles) {
+      if (!Number.isFinite(v.lat) || !Number.isFinite(v.lng)) continue;
+      const dLat = v.lat - r.latitude;
+      const dLng = v.lng - r.longitude;
+      // Champaign-Urbana never crosses the antimeridian, so a plain box test
+      // is the whole story; no longitude wrapping needed.
+      if (Math.abs(dLat) > latPad || Math.abs(dLng) > lngPad) continue;
+      visible.push({ id: v.vehicle_id, d2: dLat * dLat + dLng * dLng });
+    }
+    // If more buses are on screen than the budget allows, spend it on the ones
+    // nearest the centre of the map — the ones the eye is actually on.
+    if (visible.length > GLIDE_BUDGET) visible.sort((a, b) => a.d2 - b.d2);
+    return new Set(visible.slice(0, GLIDE_BUDGET).map((v) => v.id));
+  }, [vehicles]);
+
+  // ── Stop sheet detent ───────────────────────────────────────────────────
+  // The sheet is mounted for the life of the screen and driven by `index`;
+  // detent 0 is "closed", which is what `selectedStop === null` means. Keeping
+  // it mounted is what lets a selection animate the sheet up instead of
+  // popping a freshly mounted surface into place.
+  const [stopDetent, setStopDetent] = useState<number>(STOP_PEEK_INDEX);
+  const stopSheetOpen = !!selectedStop && !selectedPlace;
+  const stopSheetIndex = stopSheetOpen ? stopDetent : 0;
+
+  const onStopSheetIndexChange = useCallback((next: number) => {
+    if (next === 0) {
+      // Dragging (or flinging) to the closed detent is the sheet's dismiss
+      // affordance, so it drops the selection exactly the way picking a place
+      // already did. Without this, re-tapping the same stop would leave
+      // `selectedStop` unchanged and the sheet would stay shut.
+      setStopDetent(STOP_PEEK_INDEX);
+      setSelectedStop(null);
+      return;
+    }
+    setStopDetent(next);
+  }, []);
+
+  // Retain what the sheet is showing while it springs closed. Clearing
+  // `selectedStop` disables the departures query in the same commit, so
+  // without this the sheet would blank to "No departures" for the length of
+  // the close animation.
+  const lastStopRef = useRef<StopWithDistance | null>(null);
+  const lastDeparturesRef = useRef<typeof departures>([]);
+
+  // RNGH's `GestureRef` models a ref to a *gesture* or to a component TYPE; a
+  // MapView ref is `RefObject<MapView | null>`, an INSTANCE that may be null,
+  // so the published type has no shape for it and this cast is that gap.
+  // Be aware the runtime does not accept it either: RNGH reads
+  // `ref.current?.handlerTag` and drops anything that resolves to -1, which a
+  // MapView does. See the note on the prop below.
+  // The ref object itself is reference-stable, so the memoized pan gesture
+  // inside `Sheet` is never rebuilt because of it.
+  const mapGestureRef = mapRef as unknown as SheetExternalGesture;
+
   if (Platform.OS === "web") {
     return (
       <View style={styles.centered}>
@@ -579,6 +670,16 @@ export default function MapScreen() {
     );
   }
 
+  // Idempotent render-phase latch (see `lastStopRef`): while a stop is
+  // selected these track it, and once it is cleared they keep feeding the
+  // sheet its last contents until the close animation is done.
+  if (selectedStop) {
+    lastStopRef.current = selectedStop;
+    lastDeparturesRef.current = departures;
+  }
+  const sheetStop = selectedStop ?? lastStopRef.current;
+  const sheetDepartures = selectedStop ? departures : lastDeparturesRef.current;
+
   const mapCenter = location ?? UIUC_FALLBACK;
   const initialRegion = {
     latitude: mapCenter.lat,
@@ -613,6 +714,8 @@ export default function MapScreen() {
               title={stop.stop_name}
               description={`${formatDistance(stop.distance_m)} away`}
               onPress={() => onMarkerPress(stop)}
+              accessible
+              accessibilityRole="button"
               accessibilityLabel={`Bus stop ${stop.stop_name}, ${formatDistance(stop.distance_m)} away${isSelected ? ", selected" : ""}`}
             >
               <StopDot selected={isSelected} />
@@ -626,6 +729,11 @@ export default function MapScreen() {
             anchor={{ x: 0.5, y: 1.0 }}
             key="dest"
             tracksViewChanges={false}
+            // Not tappable — it is a location pin, so it is announced as an
+            // image rather than offered as a control that does nothing.
+            accessible
+            accessibilityRole="image"
+            accessibilityLabel={`Destination: ${selectedPlace.name}`}
           >
             <View style={{ alignItems: 'center' }}>
               <View style={{
@@ -646,30 +754,25 @@ export default function MapScreen() {
         )}
         {vehicles.map((v) => {
           const crowding = vehicleCrowding[v.vehicle_id];
-          const ringColor = crowdThemeColor(crowding);
-          const glyph = crowding ? CROWDING_ICONS[crowding.level] ?? null : null;
-          // Quantize heading to 30° buckets so the rasterized marker only
-          // redraws when the bus meaningfully turns (tracksViewChanges stays false).
-          const headingDeg = Number.isFinite(v.heading)
-            ? (Math.round((((v.heading % 360) + 360) % 360) / 30) * 30) % 360
-            : null;
           return (
-            <Marker
-              // ringColor (plus the crowding glyph and heading bucket) is baked
-              // into the bitmap, so key on it: the marker remounts (redrawing
-              // once) when crowding or heading changes, instead of
-              // re-rasterizing on every frame to catch values that rarely move.
-              key={`vehicle-${v.vehicle_id}-${ringColor}-${crowding?.level ?? "none"}-${headingDeg ?? "x"}`}
-              tracksViewChanges={false}
-              anchor={{ x: 0.5, y: 0.5 }}
-              coordinate={{ latitude: v.lat, longitude: v.lng }}
-              title={`Bus ${v.route_id}`}
-              description={v.headsign || undefined}
-              onPress={() => setCrowdingSheet({ vehicleId: v.vehicle_id, routeId: v.route_id })}
-              accessibilityLabel={`Bus ${v.route_id}${v.headsign ? ` to ${v.headsign}` : ""}, crowding ${crowdingLabel(crowding)}`}
-            >
-              <VehicleDot ringColor={ringColor} headingDeg={headingDeg} glyph={glyph} />
-            </Marker>
+            <VehicleMarker
+              // Unchanged strategy, now owned by the marker: the ring colour and
+              // the crowding glyph are baked into the bitmap by
+              // `tracksViewChanges={false}`, so the only way to redraw them is
+              // to remount — which `vehicleMarkerKey` does exactly once, when
+              // crowding actually changes. Deliberately NOT a live animation:
+              // an animated ring under a rasterized marker renders nothing at
+              // all on Android.
+              //
+              // Heading has dropped out of the key because it now rides the
+              // marker's native `rotation` prop, so a turning bus no longer
+              // costs a remount — and no longer throws away a glide in flight.
+              key={vehicleMarkerKey(v, crowding)}
+              vehicle={v}
+              crowding={crowding}
+              glide={glidingVehicleIds.has(v.vehicle_id)}
+              onPress={onVehiclePress}
+            />
           );
         })}
         {walkPolylines.map((coords, i) => (
@@ -898,43 +1001,74 @@ export default function MapScreen() {
         </FadeInView>
       )}
 
-      {/* Bus stop detail card */}
-      {selectedStop && !selectedPlace && (
-        <FadeInView dy={28} duration={theme.motion.base} style={styles.detailCard}>
-          <View style={styles.grabber} />
-          <View style={styles.detailHeader}>
-            <Text style={styles.detailTitle}>{selectedStop.stop_name}</Text>
-            <Text style={styles.detailDistance}>{formatDistance(selectedStop.distance_m)} away</Text>
-          </View>
-          <View style={styles.tripBtnWrap}>
-            <Button label="View departures" onPress={() => onOpenTrip(selectedStop)} variant="primary" />
-          </View>
-          {departuresLoading ? (
-            <View style={styles.panelSkeletons}>
-              <Skeleton height={44} radius={theme.radius.md} />
-              <Skeleton height={44} radius={theme.radius.md} />
+      {/* Bus stop detail sheet.
+          Mounted for the life of the screen and driven by `index` — detent 0
+          is closed. Keeping it mounted is what makes a stop tap animate the
+          sheet up rather than pop a new surface into place, and it is why the
+          departures list can keep rendering while the sheet slides away. */}
+      <Sheet
+        snapPoints={STOP_SNAP_POINTS}
+        index={stopSheetIndex}
+        onIndexChange={onStopSheetIndexChange}
+        // Declares that the sheet's pan may run alongside the map's own
+        // recognizer. NOTE: verified against RNGH 2.28's
+        // `convertToHandlerTag` (GestureDetector/utils.js), a ref whose
+        // `current` has no `handlerTag` resolves to -1 and is FILTERED OUT —
+        // a bare MapView instance is not an RNGH handler, so this currently
+        // registers no relation at all. It is kept because it is the correct
+        // wiring the moment the map is wrapped in a `Gesture.Native()`
+        // detector; it is NOT what keeps the map pannable today. What does is
+        // geometry: the sheet's GestureDetector covers only the sheet
+        // surface, so touches on the exposed map never reach it.
+        simultaneousWithExternalGesture={mapGestureRef}
+        accessibilityLabel={sheetStop ? `Departures from ${sheetStop.stop_name}` : "Stop details"}
+        contentStyle={styles.sheetContent}
+        testID="stop-sheet"
+        header={
+          sheetStop ? (
+            <View style={styles.sheetHeader}>
+              <Text style={styles.detailTitle} numberOfLines={2}>{sheetStop.stop_name}</Text>
+              <Text style={styles.detailDistance}>{formatDistance(sheetStop.distance_m)} away</Text>
             </View>
-          ) : departures.length > 0 ? (
-            <ScrollView style={styles.depList} nestedScrollEnabled>
-              {departures.slice(0, 8).map((d, i) => (
-                <FadeInView key={i} delay={i * 45} dy={8}>
-                  <DepartureRow
-                    route={d.route}
-                    headsign={d.headsign || "—"}
-                    expectedMins={d.expected_mins}
-                    isRealtime={d.is_realtime}
-                    expectedTimeIso={d.expected_time_iso}
-                    delayStatus={d.delay_status}
-                    delayMins={d.delay_mins}
-                  />
-                </FadeInView>
-              ))}
-            </ScrollView>
-          ) : (
-            <Text style={styles.depEmpty}>No departures in the next 60 min.</Text>
-          )}
-        </FadeInView>
-      )}
+          ) : null
+        }
+      >
+        {sheetStop ? (
+          <>
+            <View style={styles.tripBtnWrap}>
+              <Button label="View departures" onPress={() => onOpenTrip(sheetStop)} variant="primary" />
+            </View>
+            {departuresLoading ? (
+              <View style={styles.panelSkeletons}>
+                <Skeleton height={44} radius={theme.radius.md} />
+                <Skeleton height={44} radius={theme.radius.md} />
+              </View>
+            ) : sheetDepartures.length > 0 ? (
+              <ScrollView style={styles.depList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                {/* `Stagger` replaces the hand-written `delay={i * 45}`: it caps
+                    the delay, so row 8 does not wait a third of a second for a
+                    list that is already on screen. */}
+                <Stagger step={STAGGER.listStep} cap={STAGGER.listCap} dy={8}>
+                  {sheetDepartures.slice(0, 8).map((d, i) => (
+                    <DepartureRow
+                      key={i}
+                      route={d.route}
+                      headsign={d.headsign || "—"}
+                      expectedMins={d.expected_mins}
+                      isRealtime={d.is_realtime}
+                      expectedTimeIso={d.expected_time_iso}
+                      delayStatus={d.delay_status}
+                      delayMins={d.delay_mins}
+                    />
+                  ))}
+                </Stagger>
+              </ScrollView>
+            ) : (
+              <Text style={styles.depEmpty}>No departures in the next 60 min.</Text>
+            )}
+          </>
+        ) : null}
+      </Sheet>
     </View>
   );
 }
@@ -1158,48 +1292,21 @@ const styles = StyleSheet.create({
   startBtnText: { ...theme.text.subhead, color: theme.colors.surface },
   tripBtnWrap: { marginBottom: theme.layout.cardGap },
   panelSkeletons: { gap: theme.spacing.sm + 2, marginVertical: theme.spacing.sm + 2 },
-  depList: { maxHeight: 150 },
+  // The Sheet gives its content a flex:1 box sized to the tallest detent, so
+  // the padding that used to live on `detailCard` belongs here instead.
+  sheetHeader: { paddingHorizontal: theme.layout.gutter, marginBottom: 10 },
+  sheetContent: { paddingHorizontal: theme.layout.gutter, paddingBottom: theme.spacing.lg },
+  // Fills the sheet rather than a fixed 150pt window: at the 0.85 detent the
+  // whole board is readable, at 0.45 the same list scrolls in a shorter frame.
+  depList: { flex: 1 },
   depEmpty: { ...theme.text.caption, fontSize: 14, color: theme.colors.textMuted, fontStyle: "italic", marginTop: theme.spacing.sm + 2 },
 });
 
+// The vehicle puck's geometry moved to `VehicleMarker` with the marker itself.
 const markerStyles = StyleSheet.create({
-  vehicleWrap: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  headingLayer: { position: "absolute", width: 44, height: 44, alignItems: "center" },
-  headingWedge: {
-    width: 0,
-    height: 0,
-    borderLeftWidth: 5,
-    borderRightWidth: 5,
-    borderBottomWidth: 8,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    borderBottomColor: theme.colors.navy,
-  },
-  vehicleDot: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 3,
-    backgroundColor: theme.colors.orange,
-    alignItems: "center",
-    justifyContent: "center",
-    ...theme.elevation[1],
-  },
-  vehicleCore: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.surface },
-  crowdBubble: {
-    position: "absolute",
-    right: 2,
-    bottom: 2,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  crowdGlyph: { fontSize: 8, lineHeight: 10 },
+  // Transparent 44pt tap target around the dot; the marker is anchored at its
+  // centre, so the visible dot does not move.
+  stopTapTarget: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   stopIdle: {
     width: 12,
     height: 12,
