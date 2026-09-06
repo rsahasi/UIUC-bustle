@@ -1,4 +1,5 @@
 import "react-native-reanimated"; // must be first — initializes worklets runtime
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { NotificationRedirect } from "@/src/components/NotificationRedirect";
 import "@/src/tasks/notificationRefresh"; // registers defineTask at module level
 import { registerNotificationRefreshTask } from "@/src/tasks/notificationRefresh";
@@ -164,11 +165,18 @@ export default function RootLayout() {
         autocapture={false}
       >
         <AnalyticsIdentifier userId={user?.id} />
-        <>
+        <GestureHandlerRootView style={{ flex: 1 }}>
           <StatusBar style="light" />
           <NotificationRedirect />
           <Stack
             screenOptions={{
+              // NOTE: `animationDuration` is deliberately NOT set here. Verified in
+              // node_modules: RNScreens maps "slide_from_right" -> RNSScreenStackAnimationDefault
+              // on iOS (RNSConvert.mm), and +[RNSScreenStackAnimator isCustomAnimation:] returns NO
+              // for Default, so no custom animator is installed and transitionDuration is never read.
+              // On Android `transitionDuration` is not a Screen prop at all. A duration set here
+              // would be inert on both platforms — do not build timed choreography off one.
+              animation: "slide_from_right",
               headerShown: false,
               headerStyle: { backgroundColor: theme.colors.navy },
               headerShadowVisible: false,
@@ -180,11 +188,11 @@ export default function RootLayout() {
             <Stack.Screen name="sign-in" options={{ headerShown: false }} />
             <Stack.Screen name="trip" options={{ headerShown: true, title: "Trip", headerBackTitle: "Back" }} />
             <Stack.Screen name="report-issue" options={{ headerShown: true, title: "Report issue", headerBackTitle: "Back" }} />
-            <Stack.Screen name="walk-nav" options={{ headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
-            <Stack.Screen name="after-class-planner" options={{ headerShown: true, title: "Plan my evening", headerBackTitle: "Back", presentation: "modal" }} />
+            <Stack.Screen name="walk-nav" options={{ animation: "default", headerShown: true, title: "Walking Navigation", headerBackTitle: "Back", presentation: "fullScreenModal" }} />
+            <Stack.Screen name="after-class-planner" options={{ animation: "default", headerShown: true, title: "Plan my evening", headerBackTitle: "Back", presentation: "modal" }} />
             <Stack.Screen name="route-tracker" options={{ headerShown: true, title: "Route", headerBackTitle: "Back" }} />
           </Stack>
-        </>
+        </GestureHandlerRootView>
       </PostHogProvider>
     </QueryClientProvider>
   );

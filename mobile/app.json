@@ -18,6 +18,7 @@
       "bundleIdentifier": "com.uiucbustle.app",
       "buildNumber": "1",
       "infoPlist": {
+        "CADisableMinimumFrameDurationOnPhone": true,
         "NSLocationWhenInUseUsageDescription": "UIUC Bustle uses your location to show nearby bus stops and departures.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "UIUC Bustle uses your location in the background to detect walks and provide timely bus alerts.",
         "NSLocationAlwaysUsageDescription": "UIUC Bustle uses your location in the background to detect walks and provide timely bus alerts.",
