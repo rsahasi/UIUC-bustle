@@ -7,6 +7,8 @@
  * is the orange for TEXT/ICONS on light surfaces, and ctaEnd is the dark
  * gradient stop that keeps white CTA labels readable.
  */
+import { SPRING, SPRING_D, STAGGER, TIMING } from "./motion";
+
 export const theme = {
   colors: {
     orange: "#E84A27",       // brand signal — fills, accents, route lines (NOT text on white)
@@ -169,8 +171,17 @@ export const theme = {
     fast: 160,
     base: 280,
     slow: 450,
+    /** @deprecated Use `theme.motion.v2.SPRING.press` / `.settle` — see src/constants/motion.ts. */
     spring: { damping: 16, stiffness: 220, mass: 0.7 },
+    /** @deprecated Use `theme.motion.v2.SPRING.joy` (arrival only) — see src/constants/motion.ts. */
     springBouncy: { damping: 12, stiffness: 180, mass: 0.8 },
+    /**
+     * Motion vocabulary v2 — re-exported so screens have one import path
+     * (`theme.motion.v2.SPRING.press`) instead of two. Canonical definitions
+     * and the physics-lane / duration-lane rules live in src/constants/motion.ts;
+     * import from there directly when you also need GLIDE or HAPTIC.
+     */
+    v2: { SPRING, SPRING_D, TIMING, STAGGER },
   },
   /**
    * Type roles — spread one of these instead of hand-rolling sizes.
