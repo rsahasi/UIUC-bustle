@@ -19,9 +19,11 @@ import {
   FloatingView,
   PressableScale,
   RouteProgress,
+  Stagger,
   TickingCountdown,
   type RoutePoint,
 } from "@/src/components/ui/motion";
+import { STAGGER } from "@/src/constants/motion";
 import { Badge } from "@/src/components/ui/Badge";
 import { Button } from "@/src/components/ui/Button";
 
@@ -32,12 +34,21 @@ WebBrowser.maybeCompleteAuthSession();
 const REDIRECT_URI = ExpoLinking.createURL("auth/callback");
 
 // ── Decorative route scene ────────────────────────────────────────────────
+// Stays on RouteProgress rather than moving to Charts' RouteRibbon: the hero
+// shape is an open polyline that has to DRAW ITSELF once on mount and then
+// loop a bus dot along its own arc-length. RouteRibbon is a width-varying
+// filled band sized to a container, with no self-drawing pass and no dot to
+// travel the path, so the hero's whole reason for existing would be lost in
+// the swap. (It is also not in the tree yet — see the note in the PR summary.)
+//
 // Mirrors RouteProgress's internal padding (max(strokeWidth, dotRadius) + 2)
 // so the stop-dot overlays land exactly on the polyline vertices.
 const ROUTE_STROKE = 3;
 const BUS_DOT_RADIUS = 5;
 const ROUTE_PAD = Math.max(ROUTE_STROKE, BUS_DOT_RADIUS) + 2;
 const STOP_DOT = 10;
+/** Head start before the stop dots land, so the line is visibly drawing first. */
+const ROUTE_DRAW_LEAD_MS = 200;
 
 /** A route line that draws itself across the hero while a bus dot loops it. */
 function RouteScene() {
@@ -71,10 +82,17 @@ function RouteScene() {
         dotRadius={BUS_DOT_RADIUS}
         trackColor="rgba(255,255,255,0.14)"
       />
+      {/*
+        Absolutely positioned overlays, so these cannot go through <Stagger>
+        (it wraps each child in a layout box of its own, which would collapse
+        the left/top coordinates). They keep hand-held delays, but the delays
+        now come off the shared STAGGER token and are capped like every other
+        list in the app instead of running away at index * 170.
+      */}
       {points.map((pt, i) => (
         <FadeInView
           key={i}
-          delay={200 + i * 170}
+          delay={ROUTE_DRAW_LEAD_MS + Math.min(i, STAGGER.cap) * STAGGER.step}
           dy={6}
           style={[
             styles.stopDot,
@@ -230,67 +248,73 @@ export default function SignInScreen() {
       <FloatingView distance={10} duration={3800} delay={1100} style={[styles.blob, styles.blobWhite]} />
 
       <View style={styles.content}>
-        <FadeInView delay={0}>
+        {/*
+          One Stagger replaces the hand-tuned 0/140/260/380/500/580/660 ladder.
+          Two things change on purpose: the whole sequence now lands in ~270ms
+          instead of ~660ms (STAGGER.step 45, capped at STAGGER.cap), and it
+          becomes the same entrance every other list in the app uses.
+
+          The status cards below are deliberately NOT children here. Stagger
+          keys its children off React.Children.toArray, so a conditional child
+          appearing would renumber the keys after it and re-run the entrance on
+          rows that were already on screen. StatusCard brings its own FadeInView
+          anyway, which is the correct motion for something that arrives late.
+        */}
+        <Stagger step={STAGGER.step} cap={STAGGER.cap}>
           <RouteScene />
-        </FadeInView>
 
-        <FadeInView delay={140} style={styles.brandBlock}>
-          <View style={styles.eyebrowRow}>
-            <Bus size={14} color={theme.colors.orangeBright} strokeWidth={2.4} />
-            <Text style={styles.eyebrow}>Campus transit, live</Text>
+          <View style={styles.brandBlock}>
+            <View style={styles.eyebrowRow}>
+              <Bus size={14} color={theme.colors.orangeBright} strokeWidth={2.4} />
+              <Text style={styles.eyebrow}>Campus transit, live</Text>
+            </View>
+            <Text style={styles.title} accessibilityRole="header">
+              UIUC Bustle
+            </Text>
           </View>
-          <Text style={styles.title} accessibilityRole="header">
-            UIUC Bustle
-          </Text>
-        </FadeInView>
 
-        <FadeInView delay={260}>
           <Text style={styles.tagline}>Never miss the bus to class again.</Text>
-        </FadeInView>
 
-        <FadeInView delay={380}>
           <DepartureVignette />
-        </FadeInView>
 
-        <FadeInView delay={500}>
           <Button
             label="Continue with Google"
             onPress={handleGoogleSignIn}
             loading={loading}
             disabled={loading}
           />
-        </FadeInView>
 
-        <FadeInView delay={580} style={styles.dividerRow}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.divider}>or</Text>
-          <View style={styles.dividerLine} />
-        </FadeInView>
+          <View style={styles.dividerRow}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.divider}>or</Text>
+            <View style={styles.dividerLine} />
+          </View>
 
-        <FadeInView delay={660}>
-          <TextInput
-            style={styles.input}
-            placeholder="Email address"
-            placeholderTextColor={theme.colors.textOnNavyMuted}
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            editable={!loading}
-            accessibilityLabel="Email address"
-          />
-          <PressableScale
-            onPress={handleMagicLink}
-            disabled={loading}
-            style={[styles.magicButton, loading && styles.magicButtonDisabled]}
-            accessibilityRole="button"
-            accessibilityLabel="Send magic link"
-            accessibilityState={{ disabled: loading }}
-          >
-            <Send size={16} color={theme.colors.textOnNavy} strokeWidth={2.2} />
-            <Text style={styles.magicButtonText}>Send magic link</Text>
-          </PressableScale>
-        </FadeInView>
+          <View>
+            <TextInput
+              style={styles.input}
+              placeholder="Email address"
+              placeholderTextColor={theme.colors.textOnNavyMuted}
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              editable={!loading}
+              accessibilityLabel="Email address"
+            />
+            <PressableScale
+              onPress={handleMagicLink}
+              disabled={loading}
+              style={[styles.magicButton, loading && styles.magicButtonDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Send magic link"
+              accessibilityState={{ disabled: loading }}
+            >
+              <Send size={16} color={theme.colors.textOnNavy} strokeWidth={2.2} />
+              <Text style={styles.magicButtonText}>Send magic link</Text>
+            </PressableScale>
+          </View>
+        </Stagger>
 
         {magicLinkSent && (
           <StatusCard

@@ -4,7 +4,8 @@ import { Badge } from "@/src/components/ui/Badge";
 import { DepartureRow } from "@/src/components/ui/DepartureRow";
 import { EmptyState } from "@/src/components/ui/EmptyState";
 import { SectionHeader } from "@/src/components/ui/SectionHeader";
-import { FadeInView, PressableScale, Skeleton } from "@/src/components/ui/motion";
+import { FadeInView, PressableScale, Skeleton, Stagger } from "@/src/components/ui/motion";
+import { STAGGER } from "@/src/constants/motion";
 import { theme } from "@/src/constants/theme";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { LinearGradient } from "expo-linear-gradient";
@@ -21,16 +22,100 @@ import {
 
 const REFRESH_INTERVAL_MS = 25000;
 
+// ── Route gradient identity ───────────────────────────────────────────────
+/**
+ * ROUTE_GRADIENT — one stable gradient per route id.
+ *
+ * Reanimated 4.1.7 has no shared-element transition (`sharedTransitionTag` and
+ * `SharedTransition` do not exist in this version, at any import path). The
+ * continuity trick instead is IDENTITY, not morphing: a route always paints
+ * itself with the same gradient, so the surface you tapped and the header you
+ * land on read as the same object even though nothing actually animated
+ * between the two screens. Content then staggers in on top of that held
+ * backdrop, which is what sells it as one continuous thing.
+ *
+ * Every triple here is deliberately DARK. The header renders
+ * `textOnNavy` / `textOnNavyMuted` over it, so the lightest stop in each triple
+ * is held near or below the luminance of `theme.colors.navyLight` — white type
+ * clears 4.5:1 on all six. `theme.gradients.skyline` / `.mintFresh` / `.sunrise`
+ * are NOT in the pool for exactly this reason: they are gorgeous and they would
+ * put 92%-white text on #38BDF8 at roughly 1.9:1.
+ *
+ * NOTE(cross-screen): the second half of "the same gradient in both places"
+ * cannot be wired from this file yet. See the PR summary — no route card in
+ * the tree carries a gradient, and nothing routes into /trip with a route id.
+ * When that lands, this map moves to src/constants/ verbatim and both sides
+ * import it; keep `routeGradient` pure so that move stays a cut-and-paste.
+ */
+const ROUTE_GRADIENTS: readonly (readonly [string, string, string])[] = [
+  ["#0B1B36", "#13294B", "#1D3D6F"], // illini navy (matches theme.gradients.hero)
+  ["#2A1207", "#5A2410", "#7A3418"], // deep ember
+  ["#1B1035", "#2E1A5C", "#3F2483"], // deep violet
+  ["#04212B", "#07384A", "#0A4C64"], // deep teal
+  ["#062015", "#0B3A25", "#0F4E31"], // deep moss
+  ["#2A0A1E", "#4A1234", "#631846"], // deep plum
+] as const;
+
+/** Neutral backdrop for "this board has no route identity yet". */
+const NEUTRAL_GRADIENT = ROUTE_GRADIENTS[0];
+
+/**
+ * Deterministic route id -> gradient. Pure and stable across launches: the
+ * same route must land on the same gradient every time or the continuity
+ * illusion breaks the second the user comes back to a screen.
+ */
+function routeGradient(routeId?: string | null): readonly [string, string, string] {
+  if (!routeId) return NEUTRAL_GRADIENT;
+  let hash = 0;
+  for (let i = 0; i < routeId.length; i++) {
+    hash = (hash * 31 + routeId.charCodeAt(i)) | 0;
+  }
+  return ROUTE_GRADIENTS[Math.abs(hash) % ROUTE_GRADIENTS.length];
+}
+
 /** Render-only placeholder row while the departure board loads. */
-function DepartureRowSkeleton({ delay }: { delay: number }) {
+function DepartureRowSkeleton() {
   return (
-    <FadeInView delay={delay} dy={8} style={styles.skeletonRow}>
+    <View style={styles.skeletonRow}>
       <Skeleton width={44} height={20} radius={theme.radius.pill} />
       <View style={styles.skeletonMiddle}>
         <Skeleton width="72%" height={14} />
       </View>
       <Skeleton width={48} height={16} />
-    </FadeInView>
+    </View>
+  );
+}
+
+/**
+ * Render-only wrapper: a DepartureRow with its route's gradient showing as a
+ * hairline stripe down the leading edge.
+ *
+ * This is what makes the header's tint legible as a route rather than as
+ * decoration — the top row's stripe and the header behind it are the same
+ * hue. Purely additive: the stripe is decorative, hidden from assistive tech,
+ * and never the only carrier of meaning (the route is already a text Badge
+ * inside the row, and delay/live state are already text chips).
+ */
+function RouteIdentityRow({ departure }: { departure: DepartureItem }) {
+  const stripe = routeGradient(departure.route)[2];
+  return (
+    <View style={styles.identityRow}>
+      <View
+        style={[styles.identityStripe, { backgroundColor: stripe }]}
+        pointerEvents="none"
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      />
+      <DepartureRow
+        route={departure.route}
+        headsign={departure.headsign || "—"}
+        expectedMins={departure.expected_mins}
+        isRealtime={departure.is_realtime}
+        expectedTimeIso={departure.expected_time_iso}
+        delayStatus={departure.delay_status}
+        delayMins={departure.delay_mins}
+      />
+    </View>
   );
 }
 
@@ -72,6 +157,11 @@ export default function TripScreen() {
     router.replace("/(tabs)?highlight=walk" as any);
   }, [router]);
 
+  // Render-only derivation, deliberately not a hook: the board takes its
+  // identity from the next bus listed, and falls back to neutral navy when
+  // there is nothing to take it from.
+  const headerGradient = departures.length > 0 ? routeGradient(departures[0].route) : NEUTRAL_GRADIENT;
+
   if (!stop_id) {
     return (
       <View style={styles.centered}>
@@ -100,8 +190,21 @@ export default function TripScreen() {
       }
     >
       <FadeInView delay={0} style={styles.board}>
+        {/*
+          The header wears the LEAD departure's gradient, so the board is
+          tinted by the bus you are actually waiting for and matches that row's
+          edge stripe below. Falls back to the neutral navy while loading,
+          erroring, or empty — a board with no departures has no route identity
+          to borrow.
+
+          Derived during render on purpose: no extra hook, nothing added to
+          this screen's audited hook list. The swap on a lead-route change is
+          instantaneous rather than crossfaded, which is fine because all six
+          gradients sit at the same darkness — it reads as a hue shift, not a
+          flash. Do NOT drive this from a scroll or gesture value.
+        */}
         <LinearGradient
-          colors={[theme.gradients.hero[0], theme.gradients.hero[1], theme.gradients.hero[2]]}
+          colors={[headerGradient[0], headerGradient[1], headerGradient[2]]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.boardHeader}
@@ -120,9 +223,11 @@ export default function TripScreen() {
         <View style={styles.boardBody}>
           {loading ? (
             <View accessibilityLabel="Loading departures">
-              {[0, 1, 2, 3, 4].map((i) => (
-                <DepartureRowSkeleton key={i} delay={i * 70} />
-              ))}
+              <Stagger step={STAGGER.listStep} cap={STAGGER.listCap} dy={8}>
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <DepartureRowSkeleton key={i} />
+                ))}
+              </Stagger>
             </View>
           ) : loadError ? (
             <EmptyState
@@ -140,19 +245,20 @@ export default function TripScreen() {
           ) : (
             <View>
               <SectionHeader title="Next departures" />
-              {departures.map((d, i) => (
-                <FadeInView key={i} delay={i * 55} dy={10}>
-                  <DepartureRow
-                    route={d.route}
-                    headsign={d.headsign || "—"}
-                    expectedMins={d.expected_mins}
-                    isRealtime={d.is_realtime}
-                    expectedTimeIso={d.expected_time_iso}
-                    delayStatus={d.delay_status}
-                    delayMins={d.delay_mins}
-                  />
-                </FadeInView>
-              ))}
+              {/*
+                Stagger instead of `delay={i * 55}`: with 15 rows the old ladder
+                put the last row 770ms out, which reads as the board hanging.
+                STAGGER.listCap holds the worst case near 320ms.
+
+                Keys stay index-based, exactly as before. `entering` only fires
+                on mount, so reusing the same keys across the 25s refresh is
+                what keeps the board from re-animating every poll.
+              */}
+              <Stagger step={STAGGER.listStep} cap={STAGGER.listCap} dy={10}>
+                {departures.map((d, i) => (
+                  <RouteIdentityRow key={i} departure={d} />
+                ))}
+              </Stagger>
             </View>
           )}
         </View>
@@ -210,7 +316,14 @@ const styles = StyleSheet.create({
     width: 44,
     height: 3,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.orange,
+    // Gold, not `orange`. This bar used to sit on the fixed navy hero, where
+    // orange read as a signal mark. The header hue is now route-derived, and
+    // on the deep-ember triple (#2A1207 → #7A3418) brand orange lands at
+    // roughly 3:1 against its own background and effectively disappears.
+    // Gold is the one palette accent with high enough luminance to separate
+    // from all six gradients, and it already carries "numeric accent on a dark
+    // ground" elsewhere in the app.
+    backgroundColor: theme.colors.gold,
     marginTop: 8,
     marginBottom: 12,
   },
@@ -237,6 +350,19 @@ const styles = StyleSheet.create({
     borderBottomColor: theme.colors.borderSoft,
   },
   skeletonMiddle: { flex: 1 },
+  identityRow: {
+    position: "relative",
+  },
+  identityStripe: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    // Stops short of the row's own 1px bottom divider so the stripes read as
+    // separate marks per row rather than one continuous rail.
+    bottom: 1,
+    width: 3,
+    zIndex: 1,
+  },
   walkBtn: {
     minHeight: theme.layout.tapMin,
     flexDirection: "row",
