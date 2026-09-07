@@ -15,7 +15,8 @@ import {
   View,
 } from "react-native";
 import { theme } from "@/src/constants/theme";
-import { FadeInView, PressableScale, Skeleton } from "@/src/components/ui/motion";
+import { STAGGER } from "@/src/constants/motion";
+import { FadeInView, Press, Skeleton, Stagger } from "@/src/components/ui/motion";
 import { LinearGradient } from "expo-linear-gradient";
 import { Bus, Footprints, Heart, Sparkles } from "lucide-react-native";
 
@@ -101,12 +102,18 @@ export default function AfterClassPlannerScreen() {
 
       <Text style={styles.orLabel}>or pick a destination</Text>
 
-      {/* Preset chips */}
-      <View style={styles.chipsRow}>
+      {/*
+        Preset chips — a small cluster, so the tighter `STAGGER.step`/`cap`
+        default is right here (the list cadence is for scrolling content).
+        `Press` rather than `PressableScale`: it enforces the 44pt floor and a
+        declared accessibility role at compile time, which is what a row of
+        small pill targets most needs.
+      */}
+      <Stagger style={styles.chipsRow}>
         {PRESET_CHIPS.map((chip) => {
           const on = selectedDest === chip;
           return (
-            <PressableScale
+            <Press
               key={chip}
               scaleTo={0.93}
               style={[styles.chip, on && styles.chipActive]}
@@ -119,18 +126,18 @@ export default function AfterClassPlannerScreen() {
               accessibilityState={{ selected: on }}
             >
               <Text style={[styles.chipText, on && styles.chipTextActive]}>{chip}</Text>
-            </PressableScale>
+            </Press>
           );
         })}
-      </View>
+      </Stagger>
 
       {/* Saved favorites */}
       {favorites.length > 0 && (
-        <View style={styles.favRow}>
+        <Stagger style={styles.favRow}>
           {favorites.map((f) => {
             const on = selectedDest === f.name;
             return (
-              <PressableScale
+              <Press
                 key={f.id}
                 scaleTo={0.93}
                 style={[styles.chip, on && styles.chipActive]}
@@ -150,13 +157,13 @@ export default function AfterClassPlannerScreen() {
                   />
                   <Text style={[styles.chipText, on && styles.chipTextActive]}>{f.name}</Text>
                 </View>
-              </PressableScale>
+              </Press>
             );
           })}
-        </View>
+        </Stagger>
       )}
 
-      <PressableScale
+      <Press
         scaleTo={0.97}
         style={[styles.planBtn, !canPlan && styles.planBtnDisabled]}
         onPress={onGetPlan}
@@ -177,7 +184,7 @@ export default function AfterClassPlannerScreen() {
             <Text style={styles.planBtnText}>Get Plan</Text>
           )}
         </LinearGradient>
-      </PressableScale>
+      </Press>
 
       {loading && (
         <View style={styles.skeletonStack}>
@@ -200,9 +207,15 @@ export default function AfterClassPlannerScreen() {
         </FadeInView>
       )}
 
-      {results.map((item, idx) => (
-        <FadeInView key={idx} delay={idx * 90}>
-          <View style={styles.destBlock}>
+      {/*
+        The plan's legs, in order. `Stagger` replaces the old `delay={idx * 90}`
+        so this reads at the same cadence as every other list in the app — and
+        so it disappears entirely under reduced motion rather than each leg
+        waiting out a hand-rolled delay.
+      */}
+      <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
+        {results.map((item, idx) => (
+          <View key={idx} style={styles.destBlock}>
             <View style={styles.destHeader}>
               <View style={styles.destStep}>
                 <Text style={styles.destStepText}>{idx + 1}</Text>
@@ -228,8 +241,8 @@ export default function AfterClassPlannerScreen() {
               </View>
             ))}
           </View>
-        </FadeInView>
-      ))}
+        ))}
+      </Stagger>
     </ScrollView>
   );
 }

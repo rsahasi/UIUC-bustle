@@ -14,7 +14,8 @@ import type { LucideIcon } from 'lucide-react-native';
 import { formatDistance } from '@/src/utils/distance';
 import { Button } from '@/src/components/ui/Button';
 import { EmptyState } from '@/src/components/ui/EmptyState';
-import { FadeInView, Skeleton, TickingCountdown } from '@/src/components/ui/motion';
+import { Skeleton, Stagger, TickingCountdown } from '@/src/components/ui/motion';
+import { STAGGER } from '@/src/constants/motion';
 
 interface CatchableBus {
   stopId: string;
@@ -216,60 +217,73 @@ export default function RunningLateScreen() {
         />
       )}
 
-      {!loading && catchableBuses.map((bus, i) => {
-        const pace = PACE_META[bus.walkPaceNeeded];
-        const PaceIcon = pace.icon;
-        const isNext = i === 0;
-        return (
-          <FadeInView
-            key={`${bus.stopId}-${bus.routeId}-${i}`}
-            delay={i * 60}
-            style={[styles.busCard, isNext && styles.busCardNext]}
-          >
-            {/* Top row: route badge + headsign + live countdown */}
-            <View
-              style={styles.busCardTopRow}
-              accessible
-              accessibilityLabel={`Bus ${bus.routeId} toward ${bus.headsign}, leaves in about ${bus.departsInMins} minutes from ${bus.stopName}`}
-            >
-              <View style={styles.routeBadge}>
-                <Text style={styles.routeBadgeText}>{bus.routeId}</Text>
-              </View>
-              <Text style={styles.headsign} numberOfLines={2}>{bus.headsign}</Text>
-              <View style={styles.countdownCol}>
-                <Text style={styles.countdownLabel}>Leaves in</Text>
-                <TickingCountdown
-                  targetMs={bus.departsEpochMs}
-                  nowLabel="Now"
-                  style={isNext ? styles.countdownNext : styles.countdown}
-                />
-              </View>
-            </View>
-
-            {/* Stop name + distance */}
-            <View style={styles.stopRow}>
-              <MapPin size={13} color={theme.colors.textMuted} />
-              <Text style={styles.stopName} numberOfLines={1}>
-                {bus.stopName} · {formatDistance(bus.distanceM)} away
-              </Text>
-            </View>
-
-            {/* Pace chip: icon + text on an AA-deep fill */}
-            <View style={styles.paceRow}>
+      {/*
+        One entrance vocabulary for the departure board. Replaces the old
+        hand-written `delay={i * 60}`: `listCap` bounds the wait, so a dense
+        block of catchable buses still finishes arriving in about a third of a
+        second instead of scaling with the list.
+      */}
+      {!loading && catchableBuses.length > 0 && (
+        <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
+          {catchableBuses.map((bus, i) => {
+            const pace = PACE_META[bus.walkPaceNeeded];
+            const PaceIcon = pace.icon;
+            const isNext = i === 0;
+            return (
               <View
-                style={[styles.paceBadge, { backgroundColor: pace.color }]}
-                accessible
-                accessibilityLabel={`Pace needed: ${pace.label}`}
+                // Stable across refreshes. The list re-sorts by departure time on
+                // every fetch, so an index in the key makes a bus that changed
+                // position unmount, remount and replay its entrance. departsEpochMs
+                // is no good either: it is re-anchored to Date.now() each poll.
+                key={`${bus.stopId}-${bus.routeId}-${bus.headsign}`}
+                style={[styles.busCard, isNext && styles.busCardNext]}
               >
-                <PaceIcon size={12} color={theme.colors.surface} strokeWidth={2.4} />
-                <Text style={styles.paceBadgeText}>{pace.label}</Text>
-              </View>
-            </View>
+                {/* Top row: route badge + headsign + live countdown */}
+                <View
+                  style={styles.busCardTopRow}
+                  accessible
+                  accessibilityLabel={`Bus ${bus.routeId} toward ${bus.headsign}, leaves in about ${bus.departsInMins} minutes from ${bus.stopName}`}
+                >
+                  <View style={styles.routeBadge}>
+                    <Text style={styles.routeBadgeText}>{bus.routeId}</Text>
+                  </View>
+                  <Text style={styles.headsign} numberOfLines={2}>{bus.headsign}</Text>
+                  <View style={styles.countdownCol}>
+                    <Text style={styles.countdownLabel}>Leaves in</Text>
+                    <TickingCountdown
+                      targetMs={bus.departsEpochMs}
+                      nowLabel="Now"
+                      style={isNext ? styles.countdownNext : styles.countdown}
+                    />
+                  </View>
+                </View>
 
-            <Button label="Navigate to stop" accessibilityLabel={`Navigate to ${bus.stopName}`} icon={Navigation} onPress={() => onNavigateToStop(bus)} />
-          </FadeInView>
-        );
-      })}
+                {/* Stop name + distance */}
+                <View style={styles.stopRow}>
+                  <MapPin size={13} color={theme.colors.textMuted} />
+                  <Text style={styles.stopName} numberOfLines={1}>
+                    {bus.stopName} · {formatDistance(bus.distanceM)} away
+                  </Text>
+                </View>
+
+                {/* Pace chip: icon + text on an AA-deep fill */}
+                <View style={styles.paceRow}>
+                  <View
+                    style={[styles.paceBadge, { backgroundColor: pace.color }]}
+                    accessible
+                    accessibilityLabel={`Pace needed: ${pace.label}`}
+                  >
+                    <PaceIcon size={12} color={theme.colors.surface} strokeWidth={2.4} />
+                    <Text style={styles.paceBadgeText}>{pace.label}</Text>
+                  </View>
+                </View>
+
+                <Button label="Navigate to stop" accessibilityLabel={`Navigate to ${bus.stopName}`} icon={Navigation} onPress={() => onNavigateToStop(bus)} />
+              </View>
+            );
+          })}
+        </Stagger>
+      )}
     </ScrollView>
   );
 }

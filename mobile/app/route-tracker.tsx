@@ -1,5 +1,6 @@
 import { fetchAllStopsForRoute, fetchVehicles } from "@/src/api/client";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
+import { STAGGER } from "@/src/constants/motion";
 import { theme } from "@/src/constants/theme";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -8,7 +9,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { AlertTriangle, Bus, MapPinOff } from "lucide-react-native";
 import { Badge } from "@/src/components/ui/Badge";
 import { EmptyState } from "@/src/components/ui/EmptyState";
-import { AnimatedNumber, FadeInView, PulseView, RouteProgress, Skeleton } from "@/src/components/ui/motion";
+import { AnimatedNumber, FadeInView, PulseView, RouteProgress, Skeleton, Stagger } from "@/src/components/ui/motion";
 
 const VEHICLE_POLL_MS = 10_000;
 
@@ -37,6 +38,25 @@ const LIST_PAD_TOP = 8;
 const LINE_STROKE = 3;
 const LINE_DOT_R = 4;
 const LINE_PAD = Math.max(LINE_STROKE, LINE_DOT_R) + 2;
+
+/**
+ * The one "this data is arriving live" mark on this screen: a steady dot with a
+ * pulsing halo behind it. The halo is a `PulseView`, so it stops on its own
+ * under reduced motion and the dot underneath still reads as present — the
+ * liveness is never carried by the animation alone.
+ */
+function LiveDot({ small = false }: { small?: boolean }) {
+  return (
+    <View style={small ? styles.liveDotWrapSm : styles.liveDotWrap}>
+      <PulseView
+        minOpacity={0.3}
+        maxScale={1.7}
+        style={small ? styles.liveDotHaloSm : styles.liveDotHalo}
+      />
+      <View style={small ? styles.liveDotSm : styles.liveDot} />
+    </View>
+  );
+}
 
 /**
  * Render-only stop timeline: a self-drawing route line down the rail, quiet
@@ -68,50 +88,62 @@ function StopTimeline({ stops, vehicles }: { stops: BusStop[]; vehicles: Vehicle
           />
         </View>
       )}
-      {stops.map((stop, i) => {
-        const isFirst = i === 0;
-        const isLast = i === stops.length - 1;
-        // Find if any vehicle is near this stop (within ~200m)
-        const hasVehicleNearby = vehicles.some((v) => {
-          const dlat = v.lat - stop.lat;
-          const dlng = v.lng - stop.lng;
-          return Math.sqrt(dlat * dlat + dlng * dlng) * 111_000 < 200;
-        });
+      {/*
+        A scrolling list, so it enters on the list cadence (`listStep`/`listCap`)
+        rather than the tighter cluster cadence. The cap is what keeps stop 30 of
+        a long route from waiting more than a beat to appear.
 
-        return (
-          <View key={stop.stop_id} style={styles.stopRow}>
-            <View style={styles.rail}>
-              {hasVehicleNearby ? (
-                <View style={styles.busDotWrap}>
-                  <PulseView minOpacity={0.25} maxScale={1.5} style={styles.busDotHalo} />
-                  <View style={styles.busDot}>
-                    <Bus size={12} color={theme.colors.surface} strokeWidth={2.5} />
+        The drawn rail line stays a SIBLING of this Stagger, not a child: it is
+        absolutely positioned against `stopList`, and wrapping it in an entrance
+        view would reparent it onto a zero-height wrapper and pull the line off
+        the dots.
+      */}
+      <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
+        {stops.map((stop, i) => {
+          const isFirst = i === 0;
+          const isLast = i === stops.length - 1;
+          // Find if any vehicle is near this stop (within ~200m)
+          const hasVehicleNearby = vehicles.some((v) => {
+            const dlat = v.lat - stop.lat;
+            const dlng = v.lng - stop.lng;
+            return Math.sqrt(dlat * dlat + dlng * dlng) * 111_000 < 200;
+          });
+
+          return (
+            <View key={stop.stop_id} style={styles.stopRow}>
+              <View style={styles.rail}>
+                {hasVehicleNearby ? (
+                  <View style={styles.busDotWrap}>
+                    <PulseView minOpacity={0.25} maxScale={1.5} style={styles.busDotHalo} />
+                    <View style={styles.busDot}>
+                      <Bus size={12} color={theme.colors.surface} strokeWidth={2.5} />
+                    </View>
                   </View>
-                </View>
-              ) : (
-                <View style={[styles.stopDot, (isFirst || isLast) && styles.stopDotTerminus]} />
-              )}
+                ) : (
+                  <View style={[styles.stopDot, (isFirst || isLast) && styles.stopDotTerminus]} />
+                )}
+              </View>
+              <View style={[styles.stopInfo, !isLast && styles.stopInfoDivider]}>
+                <Text
+                  style={[styles.stopName, (isFirst || isLast) && styles.stopNameTerminus]}
+                  numberOfLines={1}
+                >
+                  {stop.stop_name}
+                </Text>
+                {(isFirst || isLast) && (
+                  <Text style={styles.stopMeta}>{isFirst ? "First stop" : "Last stop"}</Text>
+                )}
+                {hasVehicleNearby && (
+                  <View style={styles.busHereChip} accessible accessibilityLabel="Bus at this stop now">
+                    <Bus size={11} color={theme.colors.brandInk} strokeWidth={2.4} />
+                    <Text style={styles.busHereText}>Bus here now</Text>
+                  </View>
+                )}
+              </View>
             </View>
-            <View style={[styles.stopInfo, !isLast && styles.stopInfoDivider]}>
-              <Text
-                style={[styles.stopName, (isFirst || isLast) && styles.stopNameTerminus]}
-                numberOfLines={1}
-              >
-                {stop.stop_name}
-              </Text>
-              {(isFirst || isLast) && (
-                <Text style={styles.stopMeta}>{isFirst ? "First stop" : "Last stop"}</Text>
-              )}
-              {hasVehicleNearby && (
-                <View style={styles.busHereChip} accessible accessibilityLabel="Bus at this stop now">
-                  <Bus size={11} color={theme.colors.brandInk} strokeWidth={2.4} />
-                  <Text style={styles.busHereText}>Bus here now</Text>
-                </View>
-              )}
-            </View>
-          </View>
-        );
-      })}
+          );
+        })}
+      </Stagger>
     </View>
   );
 }
@@ -214,20 +246,42 @@ export default function RouteTrackerScreen() {
 
       {/* Live vehicles */}
       {vehicles.length > 0 && (
-        <FadeInView style={styles.vehiclesBanner}>
-          <View style={styles.liveDotWrap}>
-            <PulseView minOpacity={0.3} maxScale={1.7} style={styles.liveDotHalo} />
-            <View style={styles.liveDot} />
+        <FadeInView style={styles.vehiclesCard}>
+          <View style={styles.vehiclesBanner}>
+            <LiveDot />
+            <Bus size={14} color={theme.colors.brandInk} strokeWidth={2.2} />
+            <AnimatedNumber
+              value={vehicles.length}
+              style={styles.vehiclesCount}
+              accessibilityLabel={`${vehicles.length} ${vehicles.length === 1 ? "bus" : "buses"} live on this route`}
+            />
+            <Text style={styles.vehiclesText}>
+              bus{vehicles.length !== 1 ? "es" : ""} live on this route
+            </Text>
           </View>
-          <Bus size={14} color={theme.colors.brandInk} strokeWidth={2.2} />
-          <AnimatedNumber
-            value={vehicles.length}
-            style={styles.vehiclesCount}
-            accessibilityLabel={`${vehicles.length} ${vehicles.length === 1 ? "bus" : "buses"} live on this route`}
-          />
-          <Text style={styles.vehiclesText}>
-            bus{vehicles.length !== 1 ? "es" : ""} live on this route
-          </Text>
+
+          {/*
+            One row per reporting vehicle. Keyed by `vehicle_id` so a bus that
+            drops out of the 10s poll does not hand its entrance animation to
+            whichever bus takes its index.
+          */}
+          <Stagger style={styles.vehicleList} itemStyle={styles.vehicleItem}>
+            {vehicles.map((v) => (
+              <View
+                key={v.vehicle_id}
+                style={styles.vehicleRow}
+                accessible
+                accessibilityLabel={`Bus ${v.vehicle_id}, reporting live`}
+              >
+                <LiveDot small />
+                <Text style={styles.vehicleName} numberOfLines={1}>
+                  Bus {v.vehicle_id}
+                </Text>
+                {/* "Live" in words, so the pulsing dot is never the only signal. */}
+                <Text style={styles.vehicleLive}>Live</Text>
+              </View>
+            ))}
+          </Stagger>
         </FadeInView>
       )}
 
@@ -310,17 +364,44 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
   },
 
-  vehiclesBanner: {
-    flexDirection: "row",
-    alignItems: "center",
+  vehiclesCard: {
     backgroundColor: theme.colors.surface,
     marginHorizontal: theme.layout.gutter,
     marginTop: theme.layout.cardGap,
     borderRadius: theme.radius.lg,
     paddingVertical: 10,
     paddingHorizontal: 12,
-    gap: 8,
     ...theme.elevation[1],
+  },
+  vehiclesBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  vehicleList: {
+    marginTop: 10,
+    paddingTop: 8,
+    gap: 2,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderSoft,
+  },
+  vehicleItem: { justifyContent: "center" },
+  vehicleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 28,
+  },
+  vehicleName: {
+    ...theme.text.body,
+    fontSize: 14,
+    color: theme.colors.text,
+    flex: 1,
+  },
+  vehicleLive: {
+    ...theme.text.badge,
+    fontSize: 11,
+    color: theme.colors.successDeep,
   },
   liveDotWrap: {
     width: 16,
@@ -339,6 +420,25 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+    backgroundColor: theme.colors.ctaEnd,
+  },
+  liveDotWrapSm: {
+    width: 12,
+    height: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveDotHaloSm: {
+    position: "absolute",
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: theme.colors.orange,
+  },
+  liveDotSm: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: theme.colors.ctaEnd,
   },
   vehiclesCount: {
