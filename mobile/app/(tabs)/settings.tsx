@@ -20,6 +20,7 @@ import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import {
+  Accessibility,
   Bell,
   BellRing,
   Bug,
@@ -53,7 +54,14 @@ import {
   TextInput,
   View,
 } from "react-native";
-import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
+import Animated, {
+  ReduceMotion,
+  ReducedMotionConfig,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
 
 const WIDGET_STEPS = [
   "Long-press your iPhone home screen until icons jiggle",
@@ -86,6 +94,9 @@ export default function SettingsScreen() {
   const [notificationsToggling, setNotificationsToggling] = useState(false);
   const [bufferSlider, setBufferSlider] = useState(bufferMinutes);
   const [weightSlider, setWeightSlider] = useState(weightKg);
+  // Developer-only motion override. Deliberately NOT persisted: a debug switch
+  // that survives a restart is a debug switch someone forgets is on.
+  const [forceReducedMotion, setForceReducedMotion] = useState(false);
 
   // Keep input in sync when stored URL loads or changes
   useEffect(() => {
@@ -527,7 +538,52 @@ export default function SettingsScreen() {
         </View>
       </FadeInView>
 
+      {__DEV__ ? (
       <FadeInView delay={490}>
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Developer" />
+        </View>
+        <View style={[styles.sectionCard, styles.devCard]}>
+          <Text style={styles.devTag}>DEVELOPER TOOLS — NOT FOR RELEASE BUILDS</Text>
+          <View style={styles.rowHeader}>
+            <SettingIcon icon={Accessibility} />
+            <View style={styles.rowLabelWrap}>
+              <Text style={styles.rowLabel}>Force reduced motion</Text>
+              <Text style={styles.rowStatus}>
+                {forceReducedMotion ? "On — animations jump to their end state" : "Off — following system setting"}
+              </Text>
+            </View>
+            <Switch
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Force reduced motion for testing"
+              accessibilityRole="switch"
+              accessibilityState={{ checked: forceReducedMotion }}
+              onValueChange={setForceReducedMotion}
+              value={forceReducedMotion}
+              trackColor={{ false: theme.colors.border, true: theme.colors.orange }}
+              thumbColor={theme.colors.surface}
+            />
+          </View>
+          <Text style={styles.hint}>
+            Overrides Reanimated app-wide so every animation lands on its final frame — for checking static
+            layouts without digging through iOS Accessibility settings.
+          </Text>
+          <Text style={[styles.hint, styles.hintLast]}>
+            Note: this drives Reanimated only. Looping indicators (live dots, shimmers, beacons) read the real
+            system “Reduce Motion” switch, so flip that one to test them.
+          </Text>
+        </View>
+      </FadeInView>
+      ) : null}
+
+      {/*
+        Renders nothing — it just sets Reanimated's global reduce-motion mode
+        while mounted, and restores the previous mode when unmounted (i.e. when
+        the switch goes back off).
+      */}
+      {forceReducedMotion && <ReducedMotionConfig mode={ReduceMotion.Always} />}
+
+      <FadeInView delay={560}>
         <View style={styles.sectionHeaderWrap}>
           <SectionHeader title="About" />
         </View>
@@ -728,6 +784,19 @@ const styles = StyleSheet.create({
     marginBottom: theme.layout.cardGap,
   },
   hintLast: { marginBottom: 0 },
+  // Developer section — visually fenced off so nobody mistakes it for a
+  // user-facing preference.
+  devCard: {
+    borderColor: theme.colors.border,
+    borderStyle: "dashed",
+    backgroundColor: theme.colors.surfaceRaised,
+  },
+  devTag: {
+    ...theme.text.eyebrow,
+    fontSize: 10,
+    color: theme.colors.textMuted,
+    marginBottom: theme.spacing.sm,
+  },
   note: { ...theme.text.caption, fontSize: 12, color: theme.colors.textMuted, marginTop: 4 },
   input: {
     backgroundColor: theme.colors.surfaceAlt,
