@@ -1,9 +1,31 @@
+/**
+ * PatternInsightCards — what the app has quietly learned about this rider.
+ *
+ * ── One icon per insight type ─────────────────────────────────────────────
+ * Three kinds of insight exist and each owns a glyph for the life of the app:
+ * walk-time corrections are footprints, departure habits are an alarm clock,
+ * route preferences are a route. The icon is a second read of the title, never
+ * the only one — a card that lost its glyph still says what it is in words,
+ * and a dismissed card is dimmed AND drops its accent border AND swaps the
+ * warm halo for a neutral one rather than relying on opacity alone.
+ *
+ * ── Entrances ─────────────────────────────────────────────────────────────
+ * `Stagger` rather than hand-written `delay={i * 60}`. The difference that
+ * matters is the CAP: a rider with a dozen learnings would otherwise watch the
+ * last card wait most of a second, and the section would read as hung. Stagger
+ * also skips the entrance entirely under reduced motion, which the hand-rolled
+ * delays did not.
+ *
+ * Stagger keys each wrapper from its child's `key`, so the insight keys below
+ * are what keep a dismissal from animating the wrong row.
+ */
 import React, { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { AlarmClock, ChevronDown, ChevronUp, Footprints, Route, Sparkles } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { theme } from '@/src/constants/theme';
-import { FadeInView, PressableScale } from '@/src/components/ui/motion';
+import { STAGGER } from '@/src/constants/motion';
+import { Press, Stagger } from '@/src/components/ui/motion';
 import type { PatternInsights } from '@/src/utils/patternEngine';
 
 interface InsightCardData {
@@ -38,8 +60,9 @@ function InsightCard({ card, dimmed, onDismiss }: {
         <Text style={[styles.cardBody, dimmed && styles.cardBodyDismissed]}>{card.body}</Text>
       </View>
       {onDismiss && (
-        <PressableScale
-          haptic={false}
+        <Press
+          variant="tint"
+          haptic="tap"
           onPress={() => onDismiss(card.key)}
           hitSlop={8}
           style={styles.dismissBtn}
@@ -47,7 +70,7 @@ function InsightCard({ card, dimmed, onDismiss }: {
           accessibilityLabel={`Got it, dismiss ${card.title}`}
         >
           <Text style={styles.dismissBtnText}>Got it</Text>
-        </PressableScale>
+        </Press>
       )}
     </View>
   );
@@ -102,15 +125,16 @@ export default function PatternInsightCards({ insights, dismissedKeys, onDismiss
             <Text style={styles.sectionHeaderText} accessibilityRole="header">Your patterns</Text>
           </View>
 
-          {visibleNew.map((card, i) => (
-            <FadeInView key={card.key} delay={i * 60} dy={10}>
-              <InsightCard card={card} onDismiss={onDismiss} />
-            </FadeInView>
-          ))}
+          <Stagger step={STAGGER.step} cap={STAGGER.cap} dy={10}>
+            {visibleNew.map((card) => (
+              <InsightCard key={card.key} card={card} onDismiss={onDismiss} />
+            ))}
+          </Stagger>
 
           {!showAllNew && hiddenNewCount > 0 && (
-            <PressableScale
-              haptic={false}
+            <Press
+              variant="tint"
+              haptic="tap"
               onPress={() => setShowAllNew(true)}
               style={styles.seeMoreBtn}
               accessibilityRole="button"
@@ -118,15 +142,16 @@ export default function PatternInsightCards({ insights, dismissedKeys, onDismiss
             >
               <ChevronDown size={14} color={theme.colors.brandInk} strokeWidth={2.2} />
               <Text style={styles.seeMoreText}>See {hiddenNewCount} more</Text>
-            </PressableScale>
+            </Press>
           )}
         </>
       )}
 
       {dismissedCards.length > 0 && (
         <View style={styles.dismissedSection}>
-          <PressableScale
-            haptic={false}
+          <Press
+            variant="tint"
+            haptic="tap"
             onPress={() => setShowDismissed((v) => !v)}
             style={styles.dismissedToggle}
             accessibilityRole="button"
@@ -145,14 +170,15 @@ export default function PatternInsightCards({ insights, dismissedKeys, onDismiss
             <Text style={styles.dismissedToggleText}>
               {showDismissed ? 'Hide' : `Show all ${dismissedCards.length} learning${dismissedCards.length > 1 ? 's' : ''}`} — About your commute
             </Text>
-          </PressableScale>
+          </Press>
 
-          {showDismissed &&
-            dismissedCards.map((card, i) => (
-              <FadeInView key={card.key} delay={i * 50} dy={8}>
-                <InsightCard card={card} dimmed />
-              </FadeInView>
-            ))}
+          {showDismissed && (
+            <Stagger step={STAGGER.step} cap={STAGGER.cap} dy={8}>
+              {dismissedCards.map((card) => (
+                <InsightCard key={card.key} card={card} dimmed />
+              ))}
+            </Stagger>
+          )}
         </View>
       )}
     </View>

@@ -1,15 +1,85 @@
+/**
+ * CrowdingSheet — "how full is this bus?" report form.
+ *
+ * ── Presentation ──────────────────────────────────────────────────────────
+ * The surface, the drag handle, the detent spring and the backdrop all come
+ * from the shared `Sheet` now; this file only supplies content. Two things
+ * about that are worth knowing:
+ *
+ * 1. WHY THERE IS STILL A `Modal`. It is a PORTAL, not the presentation.
+ *    `Sheet` positions itself with `StyleSheet.absoluteFill`, so it has to be
+ *    mounted somewhere that covers the screen. One of this component's two
+ *    call sites satisfies that (map.tsx renders it as a sibling of the
+ *    MapView); the other does not — `CrowdingBanner` sits deep inside the home
+ *    screen's scrolling content, where an absolutely-positioned sheet would be
+ *    laid out against a scrolled inner box and clipped. A transparent
+ *    `animationType="none"` Modal gives the sheet a full-screen coordinate
+ *    space from either site. The `GestureHandlerRootView` inside it is not
+ *    redundant with the app root's: RNGH does not reach across a Modal
+ *    boundary, and without it the sheet's pan is dead.
+ *
+ * 2. THE DETENT IS RAISED ONE FRAME AFTER MOUNT. `Sheet` deliberately does not
+ *    animate its first positioning (that would show every sheet sliding in
+ *    from nowhere on mount), so opening at index 1 would make this one appear
+ *    fully open with no travel. Mounting closed and stepping to the open
+ *    detent on the next frame is what turns that into a slide-up. Under
+ *    reduced motion the step happens synchronously and `SPRING_D.sheet`'s
+ *    `ReduceMotion.System` lands it instantly.
+ *
+ * The open detent is MEASURED, not guessed: the body reports its own height
+ * and the snap fraction follows it. A fixed fraction clips this form on a
+ * small phone and leaves a lake of empty surface under the thank-you state,
+ * which is a much shorter layout — the measurement is also what makes the
+ * sheet shrink to fit after a report lands.
+ *
+ * ── Colour is never the signal ────────────────────────────────────────────
+ * Every level pairs its crowd token with a distinctly-SHAPED glyph (a seat, a
+ * pair of riders, a standing figure, a "no entry" ring) and a written label.
+ * The previous coloured-circle emoji were colour twice over and read as one
+ * identical dot to anyone who could not separate the hues.
+ *
+ * ── Not touched by the visual pass ────────────────────────────────────────
+ * The submit path, the 10-minute client-side cooldown and its AsyncStorage
+ * token, and the crowding mutation are exactly as the reliability audit left
+ * them. The only addition inside `handleSelect` is feedback: `HAPTIC.commit`
+ * when a report lands and `HAPTIC.warn` when it does not, which `Button`
+ * documents as the call site's job precisely because only the call site knows
+ * whether the request succeeded.
+ */
 import { theme } from "@/src/constants/theme";
 import type { CrowdingLevel } from "@/src/api/types";
 import { useSubmitCrowding } from "@/src/queries/crowding";
-import { CROWDING_ICONS } from "@/src/utils/crowding";
 import { Button } from "@/src/components/ui/Button";
-import { CelebrationBurst, PressableScale } from "@/src/components/ui/motion";
-import { useState, useEffect } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Sheet } from "@/src/components/ui/Sheet";
+import { CelebrationBurst, fireHaptic, Press, useReducedMotion } from "@/src/components/ui/motion";
+import { Armchair, Ban, Check, PersonStanding, Users, type LucideIcon } from "lucide-react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Modal,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+  type LayoutChangeEvent,
+} from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const COOLDOWN_KEY_PREFIX = "crowding_cooldown_";
 const COOLDOWN_MS = 10 * 60 * 1000;
+
+/**
+ * Per-level glyph. Shared with `CrowdingBanner` so a level looks the same
+ * wherever it is shown, and chosen for SILHOUETTE rather than hue: seat,
+ * people, standing figure, barred ring are four different shapes at a glance.
+ */
+export const CROWD_GLYPHS: Record<CrowdingLevel, LucideIcon> = {
+  1: Armchair,
+  2: Users,
+  3: PersonStanding,
+  4: Ban,
+};
 
 const OPTIONS: { level: CrowdingLevel; label: string; sub: string }[] = [
   { level: 1, label: "Plenty of seats", sub: "Easy to find a spot" },
@@ -17,6 +87,35 @@ const OPTIONS: { level: CrowdingLevel; label: string; sub: string }[] = [
   { level: 3, label: "Standing room only", sub: "Bus is packed" },
   { level: 4, label: "Full — no space", sub: "Cannot board" },
 ];
+
+/** Closed detent, then the measured open one. Ascending, as `Sheet` requires. */
+const CLOSED_INDEX = 0;
+const OPEN_INDEX = 1;
+
+/**
+ * How long the exit spring is given before the Modal host unmounts.
+ * `SPRING_D.sheet.duration` is PERCEPTUAL (320ms reads as ~480ms of real
+ * tail), but the last stretch of that tail happens with the sheet already off
+ * the bottom edge, so waiting the full wall-clock time only delays the
+ * backdrop's disappearance.
+ */
+const EXIT_MS = 360;
+
+/**
+ * Whole-minute phrasing for the cooldown, so assistive tech is not handed a
+ * string that changes every second. The visible text still ticks in seconds —
+ * only the announced label rounds, which is what keeps a focused VoiceOver
+ * cursor from re-reading the line once a second.
+ */
+function cooldownAnnouncement(seconds: number): string {
+  const mins = Math.max(1, Math.ceil(seconds / 60));
+  return `You can report again in about ${mins} minute${mins === 1 ? "" : "s"}`;
+}
+
+/** Snap fraction used until the body has measured itself once. */
+const FALLBACK_FRACTION = 0.6;
+const MIN_FRACTION = 0.26;
+const MAX_FRACTION = 0.92;
 
 interface CrowdingSheetProps {
   visible: boolean;
@@ -60,6 +159,70 @@ export function CrowdingSheet({ visible, vehicleId, routeId, tripId, onClose }: 
     if (visible) setSelected(null);
   }, [visible]);
 
+  // ── Presentation state. Everything below this line is visual. ───────────
+
+  const reduced = useReducedMotion();
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+
+  /** Is the Modal portal mounted? Outlives `visible` by one exit animation. */
+  const [hosted, setHosted] = useState(visible);
+  const [detent, setDetent] = useState(CLOSED_INDEX);
+  const [bodyHeight, setBodyHeight] = useState(0);
+
+  const snapPoints = useMemo(() => {
+    if (bodyHeight <= 0 || windowHeight <= 0) return [0, FALLBACK_FRACTION];
+    // `theme.layout.tapMin` is the drag handle's fixed height above the body.
+    const needed = (bodyHeight + theme.layout.tapMin) / windowHeight;
+    return [0, Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, needed))];
+  }, [bodyHeight, windowHeight]);
+
+  useEffect(() => {
+    if (visible) {
+      setHosted(true);
+      return;
+    }
+    setDetent(CLOSED_INDEX);
+    if (reduced) {
+      setHosted(false);
+      return;
+    }
+    const t = setTimeout(() => setHosted(false), EXIT_MS);
+    return () => clearTimeout(t);
+  }, [visible, reduced]);
+
+  useEffect(() => {
+    if (!hosted || !visible) return;
+    // Do not raise until the body has reported its height at least once.
+    // The snap fraction is derived from that measurement, and `Sheet` sizes
+    // its surface to the largest detent — so raising first and measuring
+    // second lets the surface resize part-way through the slide-up, which
+    // reads as the sheet hitching. The measurement lands on the layout pass
+    // immediately after the portal mounts, so this costs a frame, not a beat.
+    if (bodyHeight <= 0) return;
+    if (reduced) {
+      setDetent(OPEN_INDEX);
+      return;
+    }
+    // One frame later, so `Sheet`'s non-animated first positioning happens at
+    // the closed detent and the move to open springs.
+    const frame = requestAnimationFrame(() => setDetent(OPEN_INDEX));
+    return () => cancelAnimationFrame(frame);
+  }, [hosted, visible, reduced, bodyHeight]);
+
+  const handleIndexChange = useCallback(
+    (next: number) => {
+      setDetent(next);
+      if (next === CLOSED_INDEX) onClose();
+    },
+    [onClose]
+  );
+
+  const handleBodyLayout = useCallback((event: LayoutChangeEvent) => {
+    const measured = event.nativeEvent.layout.height;
+    if (measured > 0) setBodyHeight((prev) => (Math.abs(prev - measured) < 1 ? prev : measured));
+  }, []);
+
   async function handleSelect(level: CrowdingLevel) {
     setError(null);
     try {
@@ -68,119 +231,133 @@ export function CrowdingSheet({ visible, vehicleId, routeId, tripId, onClose }: 
       await AsyncStorage.setItem(cooldownKey, String(expiry));
       setCooldownSecs(Math.round(COOLDOWN_MS / 1000));
       setSubmitted(true);
+      // HAPTIC.commit — the report landed. `Button` deliberately leaves this to
+      // the call site so a failed request never feels like a success.
+      fireHaptic("commit");
     } catch (e: any) {
       setError(e.message ?? "Failed to submit. Try again.");
+      fireHaptic("warn");
     }
   }
 
   const fmtCooldown = (s: number) => `${Math.floor(s / 60)}m ${s % 60}s`;
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable
-        style={styles.backdrop}
-        onPress={onClose}
-        accessibilityRole="button"
-        accessibilityLabel="Dismiss crowding sheet"
-      />
-      <View style={styles.sheet}>
-        <View style={styles.handle} />
-        <Text style={styles.title} accessibilityRole="header">
-          How full is this bus?
-        </Text>
-        <Text style={styles.subtitle}>Route {routeId} · your report helps other riders</Text>
-
-        {submitted ? (
-          <View style={styles.thankYou}>
-            <CelebrationBurst count={14} radius={72} style={StyleSheet.absoluteFill} />
-            <View style={styles.thankYouGlyph}>
-              <Text style={styles.thankYouCheck}>✓</Text>
-            </View>
-            <Text style={styles.thankYouText}>Thanks for reporting!</Text>
-            {cooldownSecs > 0 && (
-              <Text style={styles.cooldownText}>
-                You can report again in {fmtCooldown(cooldownSecs)}
-              </Text>
-            )}
-          </View>
-        ) : (
-          <>
-            {OPTIONS.map((opt) => {
-              const isSelected = selected === opt.level;
-              return (
-                <PressableScale
-                  key={opt.level}
-                  scaleTo={0.98}
-                  onPress={() => setSelected(opt.level)}
-                  disabled={isPending}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: isSelected, selected: isSelected, disabled: isPending }}
-                  accessibilityLabel={`${opt.label}. ${opt.sub}`}
-                  style={[styles.option, isSelected && styles.optionSelected]}
-                >
-                  <View style={[styles.glyphHalo, { borderColor: theme.colors.crowd[opt.level] }]}>
-                    <Text style={styles.glyph}>{CROWDING_ICONS[opt.level]}</Text>
-                  </View>
-                  <View style={styles.optionText}>
-                    <Text style={styles.optionLabel}>{opt.label}</Text>
-                    <Text style={styles.optionSub}>{opt.sub}</Text>
-                  </View>
-                  <View style={[styles.radio, isSelected && styles.radioSelected]}>
-                    {isSelected && <Text style={styles.radioCheck}>✓</Text>}
-                  </View>
-                </PressableScale>
-              );
-            })}
-            {error && (
-              <Text style={styles.error} accessibilityLiveRegion="polite">
-                {error}
-              </Text>
-            )}
-            <View style={styles.submitWrap}>
-              <Button
-                label={selected ? "Submit report" : "Select a level to report"}
-                onPress={() => {
-                  if (selected) handleSelect(selected);
-                }}
-                variant="primary"
-                loading={isPending}
-                disabled={!selected}
-              />
-            </View>
-          </>
-        )}
-
-        <PressableScale
-          onPress={onClose}
-          haptic={false}
-          style={styles.closeBtn}
-          accessibilityRole="button"
-          accessibilityLabel="Close"
+    <Modal visible={hosted} transparent animationType="none" statusBarTranslucent onRequestClose={onClose}>
+      <GestureHandlerRootView style={styles.portal}>
+        <Sheet
+          snapPoints={snapPoints}
+          index={detent}
+          onIndexChange={handleIndexChange}
+          accessibilityLabel={`Report how full route ${routeId} is`}
+          // `flex: 0` so the body keeps its natural height and `onLayout`
+          // reports the content, not the surface it is measuring itself for.
+          contentStyle={styles.sheetContent}
+          testID="crowding-sheet"
         >
-          <Text style={styles.closeBtnText}>Close</Text>
-        </PressableScale>
-      </View>
+          <View
+            style={[styles.body, { paddingBottom: theme.spacing.lg + insets.bottom }]}
+            onLayout={handleBodyLayout}
+          >
+            <Text style={styles.title} accessibilityRole="header">
+              How full is this bus?
+            </Text>
+            <Text style={styles.subtitle}>Route {routeId} · your report helps other riders</Text>
+
+            {submitted ? (
+              <View style={styles.thankYou}>
+                <CelebrationBurst count={14} radius={72} style={StyleSheet.absoluteFill} />
+                <View style={styles.thankYouGlyph}>
+                  <Check size={26} color={theme.colors.successDeep} strokeWidth={2.6} />
+                </View>
+                <Text style={styles.thankYouText}>Thanks for reporting!</Text>
+                {cooldownSecs > 0 && (
+                  <Text
+                    style={styles.cooldownText}
+                    accessibilityLabel={cooldownAnnouncement(cooldownSecs)}
+                  >
+                    You can report again in {fmtCooldown(cooldownSecs)}
+                  </Text>
+                )}
+              </View>
+            ) : (
+              <>
+                <View accessibilityRole="radiogroup" accessibilityLabel="How full is this bus?">
+                  {OPTIONS.map((opt) => {
+                    const isSelected = selected === opt.level;
+                    const accent = theme.colors.crowd[opt.level];
+                    const Glyph = CROWD_GLYPHS[opt.level];
+                    return (
+                      <Press
+                        key={opt.level}
+                        variant="scale"
+                        scaleTo={0.98}
+                        haptic="select"
+                        onPress={() => setSelected(opt.level)}
+                        disabled={isPending}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: isSelected, selected: isSelected, disabled: isPending }}
+                        accessibilityLabel={`${opt.label}. ${opt.sub}`}
+                        style={[styles.option, isSelected && styles.optionSelected]}
+                      >
+                        <View style={[styles.glyphHalo, { borderColor: accent }]}>
+                          <Glyph size={17} color={accent} strokeWidth={2.2} />
+                        </View>
+                        <View style={styles.optionText}>
+                          <Text style={styles.optionLabel}>{opt.label}</Text>
+                          <Text style={styles.optionSub}>{opt.sub}</Text>
+                        </View>
+                        <View style={[styles.radio, isSelected && styles.radioSelected]}>
+                          {isSelected && (
+                            <Check size={13} color={theme.colors.textOnNavy} strokeWidth={3} />
+                          )}
+                        </View>
+                      </Press>
+                    );
+                  })}
+                </View>
+                {error && (
+                  <Text style={styles.error} accessibilityLiveRegion="polite">
+                    {error}
+                  </Text>
+                )}
+                <View style={styles.submitWrap}>
+                  <Button
+                    label={selected ? "Submit report" : "Select a level to report"}
+                    onPress={() => {
+                      if (selected) handleSelect(selected);
+                    }}
+                    variant="primary"
+                    loading={isPending}
+                    disabled={!selected}
+                  />
+                </View>
+              </>
+            )}
+
+            <Press
+              variant="tint"
+              haptic="tap"
+              onPress={onClose}
+              style={styles.closeBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+            >
+              <Text style={styles.closeBtnText}>Close</Text>
+            </Press>
+          </View>
+        </Sheet>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)" },
-  sheet: {
-    backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: theme.radius.xxl,
-    borderTopRightRadius: theme.radius.xxl,
-    padding: theme.spacing.lg,
-    paddingBottom: theme.spacing.xxl,
-    ...theme.elevation[3],
-  },
-  handle: {
-    width: 36,
-    height: 4,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.border,
-    alignSelf: "center",
-    marginBottom: theme.spacing.md,
+  portal: { flex: 1 },
+  sheetContent: { flex: 0 },
+  body: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xs,
   },
   title: {
     ...theme.text.title2,
@@ -196,7 +373,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing.md,
-    minHeight: theme.layout.tapMin + 12,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.lg,
@@ -219,7 +395,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  glyph: { fontSize: 14 },
   optionText: { flex: 1 },
   optionLabel: {
     ...theme.text.subhead,
@@ -243,12 +418,6 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.navy,
     backgroundColor: theme.colors.navy,
   },
-  radioCheck: {
-    color: theme.colors.textOnNavy,
-    fontSize: 12,
-    lineHeight: 14,
-    fontFamily: "DMSans_700Bold",
-  },
   error: {
     ...theme.text.caption,
     color: theme.colors.errorDeep,
@@ -264,12 +433,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  thankYouCheck: {
-    fontSize: 26,
-    lineHeight: 32,
-    color: theme.colors.successDeep,
-    fontFamily: "DMSans_700Bold",
-  },
   thankYouText: {
     ...theme.text.heading,
     color: theme.colors.text,
@@ -282,8 +445,7 @@ const styles = StyleSheet.create({
   closeBtn: {
     marginTop: theme.spacing.md,
     alignItems: "center",
-    justifyContent: "center",
-    minHeight: theme.layout.tapMin,
+    borderRadius: theme.radius.lg,
   },
   closeBtnText: {
     ...theme.text.subhead,
