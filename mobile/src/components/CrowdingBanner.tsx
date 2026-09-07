@@ -1,12 +1,33 @@
+/**
+ * CrowdingBanner — the one-line crowding readout above a bus recommendation,
+ * and the entry point to reporting one.
+ *
+ * ── Status is written down, three times over ──────────────────────────────
+ * The crowd tokens (`theme.colors.crowd`) are AA-safe as text and border ink,
+ * but they are still only hue. So a level is carried by a SHAPE (the glyph
+ * vocabulary shared with `CrowdingSheet` — seat / riders / standing figure /
+ * barred ring), by a WORD (`crowdingLabel`), and by a second line saying where
+ * the reading came from. Strip the colour out entirely and the banner still
+ * says exactly the same thing; that is the test it has to pass.
+ *
+ * "Estimated" is a status too, and it is the one most easily lost. It gets the
+ * neutral `crowd.estimated` token, a slashed-circle glyph that matches no real
+ * level, and `crowdingSourceLabel`'s own sentence.
+ *
+ * ── Tap target ────────────────────────────────────────────────────────────
+ * `Press` rather than `PressableScale`: it enforces the 44pt floor and a
+ * declared role at compile time, which is what a whole-row control that opens
+ * a reporting sheet needs.
+ */
 import { theme } from "@/src/constants/theme";
 import type { CrowdingInfo } from "@/src/api/types";
 import { useCrowding } from "@/src/queries/crowding";
 import { crowdingLabel, crowdingSourceLabel } from "@/src/utils/crowding";
-import { CrowdingBadge } from "@/src/components/ui/CrowdingBadge";
-import { PressableScale } from "@/src/components/ui/motion";
+import { Press } from "@/src/components/ui/motion";
+import { ChevronRight, CircleSlash, type LucideIcon } from "lucide-react-native";
 import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { CrowdingSheet } from "./CrowdingSheet";
+import { CROWD_GLYPHS, CrowdingSheet } from "./CrowdingSheet";
 
 interface CrowdingBannerProps {
   vehicleId: string;
@@ -14,10 +35,21 @@ interface CrowdingBannerProps {
   tripId?: string;
 }
 
+/** True when there is no observed reading — no data at all, or a schedule guess. */
+function isEstimated(info: CrowdingInfo | null | undefined): boolean {
+  return !info || info.source === "estimated";
+}
+
 /** AA crowding accent from theme tokens — same vocabulary as CrowdingBadge. */
 function crowdThemeColor(info: CrowdingInfo | null | undefined): string {
-  if (!info || info.source === "estimated") return theme.colors.crowd.estimated;
-  return theme.colors.crowd[info.level] ?? theme.colors.crowd.estimated;
+  if (isEstimated(info)) return theme.colors.crowd.estimated;
+  return theme.colors.crowd[info!.level] ?? theme.colors.crowd.estimated;
+}
+
+/** Same per-level shapes the report sheet uses; a slashed ring means "not observed". */
+function crowdGlyph(info: CrowdingInfo | null | undefined): LucideIcon {
+  if (isEstimated(info)) return CircleSlash;
+  return CROWD_GLYPHS[info!.level] ?? CircleSlash;
 }
 
 export function CrowdingBanner({ vehicleId, routeId, tripId }: CrowdingBannerProps) {
@@ -29,24 +61,36 @@ export function CrowdingBanner({ vehicleId, routeId, tripId }: CrowdingBannerPro
   const accentColor = crowdThemeColor(crowding);
   const label = crowdingLabel(crowding);
   const sourceLabel = crowding ? crowdingSourceLabel(crowding) : "No crowding data yet";
+  const Glyph = crowdGlyph(crowding);
 
   return (
     <>
-      <PressableScale
-        scaleTo={0.98}
+      <Press
+        variant="lift"
+        haptic="tap"
         style={[styles.banner, { borderLeftColor: accentColor }]}
         onPress={() => setSheetOpen(true)}
         accessibilityRole="button"
         accessibilityLabel={`Crowding: ${label}. ${sourceLabel}. Report crowding`}
       >
+        <View style={[styles.glyphHalo, { borderColor: accentColor }]}>
+          <Glyph size={16} color={accentColor} strokeWidth={2.2} />
+        </View>
+
         <View style={styles.left}>
-          <CrowdingBadge info={crowding} size="md" />
+          <Text style={[styles.status, { color: accentColor }]} numberOfLines={1}>
+            {label}
+          </Text>
           <Text style={styles.source} numberOfLines={1}>
             {sourceLabel}
           </Text>
         </View>
-        <Text style={styles.reportBtn}>Report</Text>
-      </PressableScale>
+
+        <View style={styles.report}>
+          <Text style={styles.reportText}>Report</Text>
+          <ChevronRight size={14} color={theme.colors.brandInk} strokeWidth={2.4} />
+        </View>
+      </Press>
 
       <CrowdingSheet
         visible={sheetOpen}
@@ -63,9 +107,7 @@ const styles = StyleSheet.create({
   banner: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     gap: theme.spacing.md,
-    minHeight: theme.layout.tapMin,
     backgroundColor: theme.colors.surface,
     borderLeftWidth: 4,
     borderWidth: 1,
@@ -77,13 +119,31 @@ const styles = StyleSheet.create({
     marginVertical: theme.spacing.xs,
     ...theme.elevation[1],
   },
-  left: { flex: 1, gap: 3 },
+  glyphHalo: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1.5,
+    backgroundColor: theme.colors.surfaceAlt,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  left: { flex: 1, gap: 1 },
+  status: {
+    ...theme.text.subhead,
+    fontSize: 14,
+  },
   source: {
     ...theme.text.caption,
     fontSize: 12,
     color: theme.colors.textMuted,
   },
-  reportBtn: {
+  report: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  reportText: {
     ...theme.text.subhead,
     fontSize: 13,
     color: theme.colors.brandInk,
