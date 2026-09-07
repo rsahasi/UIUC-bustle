@@ -10,7 +10,7 @@ import {
   type FavoriteStop,
   type SavedPlace,
 } from "@/src/storage/favorites";
-import { FadeInView, PressableScale } from "@/src/components/ui/motion";
+import { FadeInView, Press, PressableScale, useReducedMotion } from "@/src/components/ui/motion";
 import { EmptyState } from "@/src/components/ui/EmptyState";
 import { Check, MapPin, Plus, Star, Trash2 } from "lucide-react-native";
 import { theme } from "@/src/constants/theme";
@@ -21,14 +21,49 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import Animated, {
+  FadeInDown,
+  LayoutAnimationConfig,
+  LinearTransition,
+  ReduceMotion,
+} from "react-native-reanimated";
 
 // ── Render-only pieces ─────────────────────────────────────────────────────
+
+/**
+ * Reorder transition for the saved-place / favorite-stop rows. Mirrors
+ * `SPRING.settle` (the "list settle" config) in the layout-builder lane, which
+ * cannot take a spring config object. `reduceMotion` is belt-and-braces: the
+ * builder is also swapped for `undefined` in JS off the live accessibility flag.
+ */
+const ROW_REORDER = LinearTransition.springify()
+  .damping(120)
+  .mass(4)
+  .stiffness(900)
+  .reduceMotion(ReduceMotion.System);
+
+/**
+ * Row entrance. `LayoutAnimationConfig skipEntering` suppresses this for the
+ * rows already present when the list mounts, so it only ever plays for a place
+ * or stop that genuinely appears later.
+ */
+const ROW_ENTERING = FadeInDown.duration(theme.motion.slow).reduceMotion(ReduceMotion.System);
+
+/**
+ * One flat, single-column list carries both sections so a single
+ * `itemLayoutAnimation` covers every row — including the "Favorite stops"
+ * heading, which slides as the places above it are added or removed. Keys are
+ * namespaced because a place id and a stop id could otherwise collide.
+ */
+type FavoriteRow =
+  | { kind: "place"; key: string; place: SavedPlace }
+  | { kind: "stopsHeading"; key: string }
+  | { kind: "stop"; key: string; stop: FavoriteStop };
 
 /** Springy selector chip — selected state pairs the fill with a check glyph. */
 function Chip({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
@@ -51,6 +86,7 @@ function Chip({ label, selected, onPress }: { label: string; selected: boolean; 
 
 export default function FavoritesScreen() {
   const router = useRouter();
+  const reduceMotion = useReducedMotion();
   const [places, setPlaces] = useState<SavedPlace[]>([]);
   const [stops, setStops] = useState<FavoriteStop[]>([]);
   const [afterLastClassId, setAfterLastClassId] = useState("");
@@ -122,8 +158,26 @@ export default function FavoritesScreen() {
     );
   }
 
+  const rows: FavoriteRow[] = [
+    ...places.map((p) => ({ kind: "place" as const, key: `place:${p.id}`, place: p })),
+    { kind: "stopsHeading" as const, key: "stops-heading" },
+    ...stops.map((s) => ({ kind: "stop" as const, key: `stop:${s.stop_id}`, stop: s })),
+  ];
+
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
+    <LayoutAnimationConfig skipEntering>
+    <Animated.FlatList
+      style={styles.screen}
+      contentContainerStyle={styles.container}
+      data={rows}
+      // MANDATORY: stable, non-index keys (place id / stop id). With a
+      // positional key `itemLayoutAnimation` animates the WRONG rows when a
+      // place or stop is removed from the middle.
+      keyExtractor={(row: FavoriteRow) => row.key}
+      // Single column only — `itemLayoutAnimation` is unsupported past one.
+      itemLayoutAnimation={reduceMotion ? undefined : ROW_REORDER}
+      ListHeaderComponent={
+      <>
       <FadeInView delay={0}>
         <Text style={styles.sectionLabel} accessibilityRole="header">After last class I go to</Text>
         <View style={styles.sectionCard}>
@@ -201,86 +255,88 @@ export default function FavoritesScreen() {
           />
         </FadeInView>
       )}
-      {places.map((p, i) => (
-        <FadeInView key={p.id} delay={100 + i * 60}>
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <View style={styles.iconCircle}>
-                <MapPin size={16} color={theme.colors.brandInk} strokeWidth={2} />
+      </>
+      }
+      renderItem={({ item }: { item: FavoriteRow }) => (
+        <Animated.View entering={reduceMotion ? undefined : ROW_ENTERING}>
+          {item.kind === "place" ? (
+            <View style={styles.card}>
+              <View style={styles.cardHeader}>
+                <View style={styles.iconCircle}>
+                  <MapPin size={16} color={theme.colors.brandInk} strokeWidth={2} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.placeName}>{item.place.name}</Text>
+                  <Text style={styles.placeCoords}>{item.place.lat.toFixed(4)}, {item.place.lng.toFixed(4)}</Text>
+                </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.placeName}>{p.name}</Text>
-                <Text style={styles.placeCoords}>{p.lat.toFixed(4)}, {p.lng.toFixed(4)}</Text>
+              <View style={styles.cardRow}>
+                <Press
+                  style={styles.linkBtn}
+                  onPress={() => router.push("/(tabs)")}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open Home for routes to ${item.place.name}`}
+                >
+                  <Text style={styles.linkBtnText}>Open Home for routes</Text>
+                </Press>
+                <Press
+                  style={styles.removeBtn}
+                  onPress={() => removePlace(item.place.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove ${item.place.name} from saved places`}
+                >
+                  <Trash2 size={13} color={theme.colors.errorDeep} strokeWidth={2.2} />
+                  <Text style={styles.removeBtnText}>Remove</Text>
+                </Press>
               </View>
             </View>
-            <View style={styles.cardRow}>
-              <PressableScale
-                style={styles.linkBtn}
-                onPress={() => router.push("/(tabs)")}
-                accessibilityRole="button"
-                accessibilityLabel={`Open Home for routes to ${p.name}`}
-              >
-                <Text style={styles.linkBtnText}>Open Home for routes</Text>
-              </PressableScale>
-              <PressableScale
-                style={styles.removeBtn}
-                onPress={() => removePlace(p.id)}
-                accessibilityRole="button"
-                accessibilityLabel={`Remove ${p.name} from saved places`}
-              >
-                <Trash2 size={13} color={theme.colors.errorDeep} strokeWidth={2.2} />
-                <Text style={styles.removeBtnText}>Remove</Text>
-              </PressableScale>
-            </View>
-          </View>
-        </FadeInView>
-      ))}
-
-      <FadeInView delay={140}>
-        <Text style={styles.sectionLabel} accessibilityRole="header">Favorite stops</Text>
-        <Text style={styles.hint}>Add stops from Home or Map. Quick access to departures.</Text>
-        {stops.length === 0 && (
-          <View style={styles.emptyCard}>
-            <EmptyState
-              icon={Star}
-              title="No favorite stops yet"
-              subtitle="Tap the star on any stop in Home or Map for one-tap departures."
-            />
-          </View>
-        )}
-      </FadeInView>
-      {stops.map((s, i) => (
-        <FadeInView key={s.stop_id} delay={170 + i * 60}>
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <View style={styles.iconCircle}>
-                <Star size={16} color={theme.colors.brandInk} strokeWidth={2} />
+          ) : item.kind === "stop" ? (
+            <View style={styles.card}>
+              <View style={styles.cardHeader}>
+                <View style={styles.iconCircle}>
+                  <Star size={16} color={theme.colors.brandInk} strokeWidth={2} />
+                </View>
+                <Text style={[styles.stopName, { flex: 1 }]}>{item.stop.stop_name}</Text>
               </View>
-              <Text style={[styles.stopName, { flex: 1 }]}>{s.stop_name}</Text>
+              <View style={styles.cardRow}>
+                <Press
+                  style={styles.linkBtn}
+                  onPress={() => router.push({ pathname: "/trip", params: { stop_id: item.stop.stop_id, stop_name: item.stop.stop_name } })}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Departures from ${item.stop.stop_name}`}
+                >
+                  <Text style={styles.linkBtnText}>Departures</Text>
+                </Press>
+                <Press
+                  style={styles.removeBtn}
+                  onPress={() => removeStop(item.stop.stop_id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove ${item.stop.stop_name} from favorite stops`}
+                >
+                  <Trash2 size={13} color={theme.colors.errorDeep} strokeWidth={2.2} />
+                  <Text style={styles.removeBtnText}>Remove</Text>
+                </Press>
+              </View>
             </View>
-            <View style={styles.cardRow}>
-              <PressableScale
-                style={styles.linkBtn}
-                onPress={() => router.push({ pathname: "/trip", params: { stop_id: s.stop_id, stop_name: s.stop_name } })}
-                accessibilityRole="button"
-                accessibilityLabel={`Departures from ${s.stop_name}`}
-              >
-                <Text style={styles.linkBtnText}>Departures</Text>
-              </PressableScale>
-              <PressableScale
-                style={styles.removeBtn}
-                onPress={() => removeStop(s.stop_id)}
-                accessibilityRole="button"
-                accessibilityLabel={`Remove ${s.stop_name} from favorite stops`}
-              >
-                <Trash2 size={13} color={theme.colors.errorDeep} strokeWidth={2.2} />
-                <Text style={styles.removeBtnText}>Remove</Text>
-              </PressableScale>
+          ) : (
+            <View>
+              <Text style={styles.sectionLabel} accessibilityRole="header">Favorite stops</Text>
+              <Text style={styles.hint}>Add stops from Home or Map. Quick access to departures.</Text>
+              {stops.length === 0 && (
+                <View style={styles.emptyCard}>
+                  <EmptyState
+                    icon={Star}
+                    title="No favorite stops yet"
+                    subtitle="Tap the star on any stop in Home or Map for one-tap departures."
+                  />
+                </View>
+              )}
             </View>
-          </View>
-        </FadeInView>
-      ))}
-    </ScrollView>
+          )}
+        </Animated.View>
+      )}
+    />
+    </LayoutAnimationConfig>
   );
 }
 

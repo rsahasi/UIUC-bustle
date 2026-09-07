@@ -10,7 +10,7 @@ import type { AutocompleteResult } from "@/src/api/client";
 import type { Building, ScheduleClass } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { theme } from "@/src/constants/theme";
-import { FadeInView, PressableScale, Skeleton } from "@/src/components/ui/motion";
+import { FadeInView, Press, PressableScale, Skeleton, useReducedMotion } from "@/src/components/ui/motion";
 import { EmptyState } from "@/src/components/ui/EmptyState";
 import { LinearGradient } from "expo-linear-gradient";
 import { Bell, BellOff, CalendarDays, Clock, MapPin, Pencil, Plus, Trash2 } from "lucide-react-native";
@@ -28,6 +28,12 @@ import {
   TextInput,
   View,
 } from "react-native";
+import Animated, {
+  FadeInDown,
+  LayoutAnimationConfig,
+  LinearTransition,
+  ReduceMotion,
+} from "react-native-reanimated";
 import { useClasses, useBuildings, useDeleteClass, useCreateClass, useUpdateClass, useBuildingSearch } from "@/src/queries/schedule";
 import { usePlacesAutocomplete } from "@/src/queries/places";
 
@@ -38,6 +44,25 @@ const DAY_LABELS: Record<string, string> = {
 const DAY_FULL: Record<string, string> = {
   MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday",
 };
+
+/**
+ * Reorder transition for the class list. Mirrors `SPRING.settle` (the "list
+ * settle" config) in the layout-builder lane, which cannot take a spring config
+ * object. `reduceMotion` is belt-and-braces: the builder is also swapped for
+ * `undefined` in JS off the live accessibility flag.
+ */
+const CARD_REORDER = LinearTransition.springify()
+  .damping(120)
+  .mass(4)
+  .stiffness(900)
+  .reduceMotion(ReduceMotion.System);
+
+/**
+ * Row entrance. `LayoutAnimationConfig skipEntering` suppresses this for the
+ * rows already present when the list mounts, so it only ever plays for a class
+ * that genuinely appears later (added, or revealed by the week filter).
+ */
+const CARD_ENTERING = FadeInDown.duration(theme.motion.slow).reduceMotion(ReduceMotion.System);
 
 function getLeaveByTime(startTime: string, departInMins: number): string {
   const [h, m] = startTime.split(':').map(Number);
@@ -73,6 +98,7 @@ export default function ScheduleScreen() {
   const { apiBaseUrl, apiKey } = useApiBaseUrl();
   const router = useRouter();
   const { capture } = useAnalytics();
+  const reduceMotion = useReducedMotion();
 
   const { data: classesData, isLoading, refetch: refetchClasses } = useClasses();
   const { data: buildingsData } = useBuildings();
@@ -583,12 +609,21 @@ export default function ScheduleScreen() {
         </View>
       </Modal>
 
-    <ScrollView
+    <LayoutAnimationConfig skipEntering>
+    <Animated.FlatList
+      style={styles.list}
+      data={filteredClasses}
+      // MANDATORY: a stable, non-index key. With a positional key
+      // `itemLayoutAnimation` animates the WRONG rows when the sort changes.
+      keyExtractor={(c: ScheduleClass) => c.class_id}
+      // Single column only — `itemLayoutAnimation` is unsupported past one.
+      itemLayoutAnimation={reduceMotion ? undefined : CARD_REORDER}
       contentContainerStyle={styles.container}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={() => { refetchClasses(); }} tintColor={theme.colors.navy} />
       }
-    >
+      ListHeaderComponent={
+      <>
       {successToast && (
         <FadeInView dy={-8} duration={theme.motion.base}>
           <View style={styles.successToast}>
@@ -654,7 +689,9 @@ export default function ScheduleScreen() {
       )}
 
       <Text style={styles.listTitle}>Your classes</Text>
-      {filteredClasses.length === 0 ? (
+      </>
+      }
+      ListEmptyComponent={
         <View style={styles.emptyCard}>
           {viewMode === "week" && selectedWeekDay ? (
             <EmptyState
@@ -671,20 +708,32 @@ export default function ScheduleScreen() {
             />
           )}
         </View>
-      ) : (
-        filteredClasses.map((c, index) => {
+      }
+      ListFooterComponent={
+        <PressableScale
+          scaleTo={0.96}
+          style={styles.planWeekBtn}
+          onPress={() => router.push('/after-class-planner')}
+          accessibilityRole="button"
+          accessibilityLabel="Plan my evening"
+        >
+          <CalendarDays size={16} color={theme.colors.brandInk} />
+          <Text style={styles.planWeekBtnText}>Plan my evening →</Text>
+        </PressableScale>
+      }
+      renderItem={({ item: c }: { item: ScheduleClass }) => {
           const route = classRouteDatas[c.class_id];
           const status = route != null ? getTransitStatus(c.start_time_local, route.bestDepartInMinutes) : null;
           const muted = disabledNotifIds.includes(c.class_id);
           return (
-            <FadeInView key={c.class_id} delay={index * 60}>
+            <Animated.View entering={reduceMotion ? undefined : CARD_ENTERING}>
               <View style={styles.card}>
                 <View style={[styles.cardAccent, { backgroundColor: status?.main ?? theme.colors.orange }]} />
                 <View style={styles.cardBody}>
                   <View style={styles.cardHeader}>
                     <Text style={styles.classTitle}>{c.title}</Text>
                     <View style={styles.cardActions}>
-                      <PressableScale
+                      <Press
                         scaleTo={0.85}
                         style={styles.iconBtn}
                         hitSlop={4}
@@ -703,8 +752,8 @@ export default function ScheduleScreen() {
                         {muted
                           ? <BellOff size={18} color={theme.colors.textMuted} />
                           : <Bell size={18} color={theme.colors.navy} />}
-                      </PressableScale>
-                      <PressableScale
+                      </Press>
+                      <Press
                         scaleTo={0.85}
                         style={styles.iconBtn}
                         hitSlop={4}
@@ -713,8 +762,10 @@ export default function ScheduleScreen() {
                         accessibilityLabel={`Edit ${c.title}`}
                       >
                         <Pencil size={18} color={theme.colors.navy} />
-                      </PressableScale>
-                      <PressableScale
+                      </Press>
+                      {/* Destructive: `onDeleteClass` keeps its own Alert
+                          confirmation and its reminder cancellation. */}
+                      <Press
                         scaleTo={0.85}
                         style={styles.iconBtn}
                         hitSlop={4}
@@ -723,7 +774,7 @@ export default function ScheduleScreen() {
                         accessibilityLabel={`Delete ${c.title}`}
                       >
                         <Trash2 size={18} color={theme.colors.errorDeep} />
-                      </PressableScale>
+                      </Press>
                     </View>
                   </View>
 
@@ -762,21 +813,11 @@ export default function ScheduleScreen() {
                   )}
                 </View>
               </View>
-            </FadeInView>
+            </Animated.View>
           );
-        })
-      )}
-      <PressableScale
-        scaleTo={0.96}
-        style={styles.planWeekBtn}
-        onPress={() => router.push('/after-class-planner')}
-        accessibilityRole="button"
-        accessibilityLabel="Plan my evening"
-      >
-        <CalendarDays size={16} color={theme.colors.brandInk} />
-        <Text style={styles.planWeekBtnText}>Plan my evening →</Text>
-      </PressableScale>
-    </ScrollView>
+        }}
+    />
+    </LayoutAnimationConfig>
 
       {/* FAB — add class */}
       <View style={styles.fabWrap} pointerEvents="box-none">
@@ -808,6 +849,7 @@ const styles = StyleSheet.create({
     padding: theme.layout.gutter,
     gap: theme.layout.cardGap,
   },
+  list: { flex: 1 },
   container: { padding: theme.layout.gutter, paddingBottom: 100 },
 
   // FAB
@@ -1011,8 +1053,10 @@ const styles = StyleSheet.create({
   classTitle: { ...theme.text.heading, fontFamily: "DMSans_700Bold", color: theme.colors.text, flex: 1, marginRight: theme.spacing.sm },
   cardActions: { flexDirection: "row", alignItems: "center" },
   iconBtn: {
-    width: 40,
-    height: 40,
+    // 44pt square: `Press` enforces the height floor, and the width has to keep
+    // up or the target is only 40pt wide.
+    width: theme.layout.tapMin,
+    height: theme.layout.tapMin,
     borderRadius: theme.radius.pill,
     alignItems: "center",
     justifyContent: "center",
