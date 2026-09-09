@@ -7,17 +7,17 @@ app would boot against an unmigrated database. The guard must exit nonzero.
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-ALEMBIC = BACKEND_DIR / ".venv" / "bin" / "alembic"
 
 
 def test_empty_database_url_exits_nonzero():
     env = dict(os.environ)
     env["DATABASE_URL"] = ""
     result = subprocess.run(
-        [str(ALEMBIC), "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=str(BACKEND_DIR),
         env=env,
         capture_output=True,
